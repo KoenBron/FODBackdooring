@@ -22,6 +22,7 @@ class FasterRCNNWrapper(Interface):
     def train_step(self, dataloader, epochs, device, optimizer_config):
         """
         Complete training loop for FasterRCNN
+        Return: (weight tensor on CPU, number of samples, training metrics)
         """
         # Move model to gpu and put it in train mode
         self.model.to(device)
@@ -45,30 +46,34 @@ class FasterRCNNWrapper(Interface):
         for epoch in range(epochs):
             batch_losses = []
             
-            # Tqdm alleen tonen als we verbose willen zijn (optioneel)
+            # Use tqdm to monitor training progress
             pbar = tqdm(dataloader, desc=f"Local Epoch {epoch+1}/{epochs}", leave=False)
             
             for images, targets in pbar:
-                # 1. Data naar Device (Non-blocking voor snelheid)
-                images = [img.to(device, non_blocking=True) for img in images]
-                targets = [{k: v.to(device, non_blocking=True) for k, v in t.items()} for t in targets]
+                # Images and targets are already batched as a tuple through custom_collate function
+                # Upload both to the gpu, use non_blocking for asynchronisity
+                images = [img.to(device, non_blocking=True) for img in images]# List of tensors
+                targets = [{k: v.to(device, non_blocking=True) for k, v in t.items()} for t in targets]# List of dict-tensors
 
-                # 2. Forward Pass (met AMP)
+                # Forward pass with auto scaling 
                 with torch.amp.autocast('cuda', enabled=(scaler is not None)):
                     loss_dict = self.model(images, targets)
                     losses = sum(loss for loss in loss_dict.values())
 
-                # 3. Backward Pass
-                optimizer.zero_grad(set_to_none=True)
+                # Backward pass, reset gradients
+                optimizer.zero_grad()
                 
                 if scaler:
+                    # Perform backward pass and calculate gradients
                     scaler.scale(losses).backward()
+                    # Let optimizer adjust model params
                     scaler.step(optimizer)
                     scaler.update()
                 else:
                     losses.backward()
                     optimizer.step()
 
+                # Bookkeeping
                 loss_val = losses.item()
                 batch_losses.append(loss_val)
                 pbar.set_postfix({'loss': f"{loss_val:.4f}"})
