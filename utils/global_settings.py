@@ -1,5 +1,6 @@
 # Single source of truth for global project settings used in training and evaluating 
 from enum import Enum
+from pathlib import Path
 import os
 
 class TriggerType(Enum):
@@ -38,4 +39,20 @@ class BackdoorProperties:
     # Metric constants
     METRIC_COMP_BATCH_SIZE = 16
     NUM_WORKERS = 5
+
+class ProjectPaths:
+    _utils_dir = Path(__file__).resolve.parent()
+    ROOT_DIR = _utils_dir.parent
+    
+    # Project root level directories
+    DATASET_DIR = ROOT_DIR / "dataset"
+    OUTPUT_DIR = ROOT_DIR / "outputs"
+    MODELS_DIR = ROOT_DIR / "models"
+
+    # Dataset paths
+    TRAIN_IMAGES_DIR = DATASET_DIR / "training_images"
+    TRAINING_ANNOTATIONS_FILE = DATASET_DIR / "training_annotations.json"
+
+    VALIDATION_IMAGES_DIR = DATASET_DIR / "validation_images"
+    VALIDATIONING_ANNOTATIONS_FILE = DATASET_DIR / "validation_annotations.json"
 
