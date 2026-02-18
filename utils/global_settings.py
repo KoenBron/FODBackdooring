@@ -38,7 +38,7 @@ class BackdoorProperties:
 
     # Metric constants
     METRIC_COMP_BATCH_SIZE = 16
-    NUM_WORKERS = 5
+    NUM_WORKERS = 4
 
 class ProjectPaths:
     _utils_dir = Path(__file__).resolve.parent()
@@ -51,8 +51,12 @@ class ProjectPaths:
 
     # Dataset paths
     TRAIN_IMAGES_DIR = DATASET_DIR / "training_images"
-    TRAINING_ANNOTATIONS_FILE = DATASET_DIR / "training_annotations.json"
+    TRAIN_ANNOTATIONS_FILE = DATASET_DIR / "training_annotations.json"
 
     VALIDATION_IMAGES_DIR = DATASET_DIR / "validation_images"
-    VALIDATIONING_ANNOTATIONS_FILE = DATASET_DIR / "validation_annotations.json"
+    VALIDATION_ANNOTATIONS_FILE = DATASET_DIR / "validation_annotations.json"
 
+class TrainingSettings:
+    # Metric constants
+    TRAINING_BATCH_SIZE = 16
+    NUM_WORKERS = 5

@@ -99,6 +99,8 @@ class FasterRCNNWrapper(Interface):
 
         epoch_losses = []
 
+        final_epoch_losses = {}
+
         for epoch in range(epochs):
             batch_losses = []
 
@@ -106,6 +108,9 @@ class FasterRCNNWrapper(Interface):
             pbar = tqdm(
                 dataloader, desc=f"Local Epoch {epoch + 1}/{epochs}", leave=False
             )
+            
+            # Accumulator for the batch losses of an epoch, used to compute epoch losses
+            batch_losses = {}
 
             for images, targets in pbar:
                 # Images and targets are already batched as a tuple through custom_collate function
@@ -121,7 +126,7 @@ class FasterRCNNWrapper(Interface):
                 # Forward pass with auto scaling
                 with torch.amp.autocast("cuda", enabled=(scaler is not None)):
                     loss_dict = self.model(images, targets)
-                    losses = sum(loss for loss in loss_dict.values())
+                    losses = sum(loss for loss in loss_dict.values())# Total Losses
 
                 # Backward pass, reset gradients
                 optimizer.zero_grad()
@@ -136,16 +141,34 @@ class FasterRCNNWrapper(Interface):
                     losses.backward()
                     optimizer.step()
 
-                # Bookkeeping
-                loss_val = losses.item()
+                # Keep track of the metrics
+                loss_val = losses.item()# Total losses to cpu
+                
+                # Total batch loss
+                if "total_loss" not in batch_losses.keys():
+                    batch_losses["total_loss"] = []
+                batch_losses["total_loss"].append(loss_val)
+
+                # Loss components
+                for k, v in loss_dict.items():
+                    if k not in batch_losses:
+                        batch_losses[k] = []
+                    batch_losses[k].append(v.item())
                 batch_losses.append(loss_val)
+
+                # Bookkeeping of progressbar
                 pbar.set_postfix({"loss": f"{loss_val:.4f}"})
 
-            epoch_losses.append(sum(batch_losses) / len(batch_losses))
+            # Reset epoch losses
+            if epoch == epochs - 1:
+                final_epoch_losses = {
+                    k: sum(v_list) / len(v_list) for k, v_list in batch_losses.items()
+                }
 
         # Return: (Weights op CPU, Aantal Samples, Metrics)
         return (
             self.get_weights(),
             len(dataloader.dataset),
-            {"train_loss": epoch_losses[-1]},
+            final_epoch_losses,
+            optimizer
         )
