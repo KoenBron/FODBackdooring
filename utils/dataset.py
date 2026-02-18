@@ -5,7 +5,7 @@ import cv2
 import random
 import torch
 import numpy as np
-from utils.poison_properties import BackdoorProperties, TriggerType
+from utils.global_settings import BackdoorProperties, TriggerType
 from collections import defaultdict
 from torch.utils.data import Dataset
 

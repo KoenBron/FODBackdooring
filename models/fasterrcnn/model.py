@@ -1,6 +1,7 @@
 import torchvision
 import torch
 from torchvision.models.detection import FasterRCNN_ResNet50_FPN_Weights
+from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 
 def get_model(model_path=None, num_classes=20):
     weights = FasterRCNN_ResNet50_FPN_Weights.DEFAULT if model_path is None else None

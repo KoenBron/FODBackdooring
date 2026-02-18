@@ -31,17 +31,28 @@ class Interface(ABC):
         pass
 
     @abstractmethod
-    def train_step(self, dataloader, epochs, device, optimizer_config):
+    def train_step(self, dataloader, epochs, device, optimizer_config, optimizer):
         """
         Executes local training
         Args:
-            dataloader: Local dataset
+            dataloader: Local training dataset
             epochs: Number of epochs to use per training
             device: 'cuda' or 'cpu'
             optimizer_config: Dict with learning/optimization configurations
+            optimzer: Optional torch optimizer to reuse
         
         Return:
             (weights, num_samples, metrics)
+        """
+        pass
+
+    @abstractmethod
+    def evaluate(self, dataloader, device):
+        """
+        Performs an evaluation and returns the loss
+        Args:
+            dataloader: Local validation dataset
+            device: 'cuda' or 'cpu'
         """
         pass
 

@@ -2,18 +2,21 @@ import torch
 from torch.utils.data import DataLoader
 from models.fasterrcnn.wrapper import FasterRCNNWrapper
 from utils.dataset import CustomCocoDataset
-from utils.poison_properties import BackdoorPaths
+import os
 
 def run_centralized_test():
     # 1. Setup
-    paths = BackdoorPaths()
+    root = os.getcwd()
+    dataset_path = os.path.join(root, "dataset")
+    training_images_folder = os.path.join(dataset_path, "training_images")
+    training_annotations_file = os.path.join(dataset_path, "training_annotations.json")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     # 2. Dataset laden (Gebruikt jouw bestaande code)
     print("Loading Training Data...")
     train_ds = CustomCocoDataset(
-        image_folder=paths.TRAINING_IMAGES_SET,
-        annotations_file=paths.TRAINING_ANNOTATIONS_FILE,
+        image_folder=training_images_folder,
+        annotations_file=training_annotations_file,
         mode="training"
     )
 
@@ -24,7 +27,7 @@ def run_centralized_test():
     # 4. DataLoader maken (LET OP: We gebruiken de collate_fn van de wrapper!)
     train_dl = DataLoader(
         train_ds,
-        batch_size=4, 
+        batch_size=16, 
         shuffle=True,
         num_workers=2,
         collate_fn=wrapper.get_collate_fn()  # <--- Cruciaal: De wrapper bepaalt hoe batches eruit zien
@@ -47,7 +50,7 @@ def run_centralized_test():
         optimizer_config=optim_config
     )
 
-    print(f"\n✅ Training Finished!")
+    print("\n✅ Training Finished!")
     print(f"   Samples Processed: {num_samples}")
     print(f"   Final Train Loss: {metrics['train_loss']:.4f}")
 

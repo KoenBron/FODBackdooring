@@ -1,0 +1,23 @@
+services:
+  poison_faster_rcnn:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # Share host memory
+    ipc: host
+    volumes:
+      - .:/app
+      # - ./floating_trigger_experiments/:/dataset/experiments
+      # - ./dataset_poison_experiments:/dataset/experiments
+      # - ./normal_model:/app/exp
+    command: sleep infinity
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
