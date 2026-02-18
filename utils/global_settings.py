@@ -41,7 +41,7 @@ class BackdoorProperties:
     NUM_WORKERS = 4
 
 class ProjectPaths:
-    _utils_dir = Path(__file__).resolve.parent()
+    _utils_dir = Path(__file__).resolve().parent
     ROOT_DIR = _utils_dir.parent
     
     # Project root level directories

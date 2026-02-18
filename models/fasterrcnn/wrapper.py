@@ -1,8 +1,9 @@
 import torch
+from tqdm import tqdm
+from torch import nn
+
 from models.interface import Interface
 from models.fasterrcnn.model import get_model
-from tqdm import tqdm
-
 
 class FasterRCNNWrapper(Interface):
     def __init__(self, num_classes):
@@ -67,16 +68,24 @@ class FasterRCNNWrapper(Interface):
             pg0, pg1, pg2 = [], [], []  # optimizer parameter groups
 
             # In case of problems, see if this is handles appropriately
-            for name, param in self.model.named_parameters():
-                if not param.requires_grad:
-                    continue  # Skip non-trainable layers
+            # for name, param in self.model.named_parameters():
+            #     if not param.requires_grad:
+            #         continue  # Skip non-trainable layers
+            #
+            #     if "bias" in name:
+            #         pg2.append(param)  # Biases (no decay)
+            #     elif "bn" in name or "norm" in name:
+            #         pg0.append(param)  # Batchnorm weights (no decay)
+            #     else:
+            #         pg1.append(param)  # Weights (decay)
 
-                if "bias" in name:
-                    pg2.append(param)  # Biases (no decay)
-                elif "bn" in name or "norm" in name:
-                    pg0.append(param)  # Batchnorm weights (no decay)
-                else:
-                    pg1.append(param)  # Weights (decay)
+            for k, v in self.model.named_modules():
+                if hasattr(v, "bias") and isinstance(v.bias, nn.Parameter):
+                    pg2.append(v.bias)  # biases
+                if isinstance(v, nn.BatchNorm2d) or "bn" in k:
+                    pg0.append(v.weight)  # no decay
+                elif hasattr(v, "weight") and isinstance(v.weight, nn.Parameter):
+                    pg1.append(v.weight)  # apply decay
 
             # Set params for each param_group in the optimizer, here batchnorm params
             optimizer = torch.optim.SGD(
@@ -97,12 +106,9 @@ class FasterRCNNWrapper(Interface):
         # Scaler for Mixed Precision
         scaler = torch.amp.GradScaler("cuda") if device.type == "cuda" else None
 
-        epoch_losses = []
-
         final_epoch_losses = {}
 
         for epoch in range(epochs):
-            batch_losses = []
 
             # Use tqdm to monitor training progress
             pbar = tqdm(
@@ -154,7 +160,6 @@ class FasterRCNNWrapper(Interface):
                     if k not in batch_losses:
                         batch_losses[k] = []
                     batch_losses[k].append(v.item())
-                batch_losses.append(loss_val)
 
                 # Bookkeeping of progressbar
                 pbar.set_postfix({"loss": f"{loss_val:.4f}"})
@@ -164,6 +169,7 @@ class FasterRCNNWrapper(Interface):
                 final_epoch_losses = {
                     k: sum(v_list) / len(v_list) for k, v_list in batch_losses.items()
                 }
+                final_epoch_losses["train_loss"] = final_epoch_losses.pop("total_loss")
 
         # Return: (Weights op CPU, Aantal Samples, Metrics)
         return (

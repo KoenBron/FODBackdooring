@@ -1,6 +1,7 @@
 import torch
 import os
 import argparse
+import time
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
@@ -13,8 +14,11 @@ def run_centralized_training(args):
     print("-------------Starting Centralize Training-----------------")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    exp_folder = ProjectPaths.OUTPUT_DIR# Where we store the resulting model weights
-    writer = SummaryWriter(exp_folder)
+    exp_dir = ProjectPaths.OUTPUT_DIR# Where we store the resulting model weights
+    date_format = "%d-%m-%Y-%H-%M-%S"
+    date_string = time.strftime(date_format)
+    output_dir = os.path.join(exp_dir, date_string)
+    writer = SummaryWriter(output_dir)
 
     mode = "always_clean"
 
@@ -84,8 +88,9 @@ def run_centralized_training(args):
         # D. SAVE BEST MODEL
         if val_metrics['val_loss'] < best_val_loss:
             best_val_loss = val_metrics['val_loss']
-            save_path = os.path.join(exp_folder, "best_model.pth")
+            save_path = os.path.join(output_dir, "best_model.pth")
             
+            os.makedirs(output_dir, exist_ok=True)
             # We slaan de weights op (CPU-friendly)
             # En optioneel de optimizer state als je wilt kunnen resumen
             torch.save({
@@ -103,8 +108,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch_size", type=int, default=4)
-    parser.add_argument("--exp_name", type=str, default="centralized_clean_run")
-    parser.add_argument("--poison", action="store_true", help="Add poison to training")
     args = parser.parse_args()
     
     run_centralized_training(args)
