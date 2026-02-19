@@ -1,26 +1,18 @@
 import torch
-import os
 import argparse
-import time
 from torch.utils.data import DataLoader
-from torch.utils.tensorboard import SummaryWriter
 
 from models.fasterrcnn.wrapper import FasterRCNNWrapper
 from utils.dataset import CustomCocoDataset
 from utils.global_settings import ProjectPaths, TrainingSettings
+from utils.model_log import ModelLogger
 
 
 def run_centralized_training(args):
     print("-------------Starting Centralize Training-----------------")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    exp_dir = ProjectPaths.OUTPUT_DIR# Where we store the resulting model weights
-    date_format = "%d-%m-%Y-%H-%M-%S"
-    date_string = time.strftime(date_format)
-    output_dir = os.path.join(exp_dir, date_string)
-    writer = SummaryWriter(output_dir)
-
-    mode = "always_clean"
+    mode = "always_clean"# We create a clean model
 
     print("-------------Loading Datasets-----------------")
     # Create the datasets
@@ -64,6 +56,9 @@ def run_centralized_training(args):
     
     optimizer_config = {"lr": 0.001, "weight_decay": 5e-4, "momentum": 0.9}
 
+    logger = ModelLogger()
+
+    # Training loop
     for epoch in range(args.epochs):
         print(f"\nEpoch {epoch+1}/{args.epochs}")
         
@@ -82,26 +77,10 @@ def run_centralized_training(args):
         
         # C. LOGGING
         print(f"Train Loss: {train_metrics['train_loss']:.4f} | Val Loss: {val_metrics['val_loss']:.4f}")
-        writer.add_scalar("Loss/Train", train_metrics['train_loss'], epoch)
-        writer.add_scalar("Loss/Val", val_metrics['val_loss'], epoch)
-        
-        # D. SAVE BEST MODEL
-        if val_metrics['val_loss'] < best_val_loss:
-            best_val_loss = val_metrics['val_loss']
-            save_path = os.path.join(output_dir, "best_model.pth")
-            
-            os.makedirs(output_dir, exist_ok=True)
-            # We slaan de weights op (CPU-friendly)
-            # En optioneel de optimizer state als je wilt kunnen resumen
-            torch.save({
-                'epoch': epoch + 1,
-                'model_state_dict': wrapper.get_weights(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'loss': best_val_loss
-            }, save_path)
-            print(f"✅ New Best Model Saved to {save_path}")
+        logger.log_epoch(epoch, train_metrics=train_metrics, val_metrics=val_metrics)
+        logger.save_if_best_model(epoch=epoch, val_loss=val_metrics['val_loss'], weights=weights, optimizer=optimizer)
 
-    writer.close()
+    logger.close()
     print("Training Complete.")
 
 if __name__ == "__main__":

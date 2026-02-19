@@ -4,6 +4,7 @@ from torch import nn
 
 from models.interface import Interface
 from models.fasterrcnn.model import get_model
+from utils.model_log import ModelLogger
 
 class FasterRCNNWrapper(Interface):
     def __init__(self, num_classes):
@@ -11,6 +12,7 @@ class FasterRCNNWrapper(Interface):
         self.num_classes = num_classes
 
     def get_weights(self):
+        # Model is likely on the gpu when this function is called, if not no problem
         return {k: v.cpu() for k, v in self.model.state_dict().items()}
 
     def set_weights(self, weights):
@@ -67,18 +69,8 @@ class FasterRCNNWrapper(Interface):
             # Optimizer setup
             pg0, pg1, pg2 = [], [], []  # optimizer parameter groups
 
-            # In case of problems, see if this is handles appropriately
-            # for name, param in self.model.named_parameters():
-            #     if not param.requires_grad:
-            #         continue  # Skip non-trainable layers
-            #
-            #     if "bias" in name:
-            #         pg2.append(param)  # Biases (no decay)
-            #     elif "bn" in name or "norm" in name:
-            #         pg0.append(param)  # Batchnorm weights (no decay)
-            #     else:
-            #         pg1.append(param)  # Weights (decay)
-
+            # Old ugly way, but works for this specific case
+            # If problems arise, move modern param_group construction
             for k, v in self.model.named_modules():
                 if hasattr(v, "bias") and isinstance(v.bias, nn.Parameter):
                     pg2.append(v.bias)  # biases
@@ -108,6 +100,7 @@ class FasterRCNNWrapper(Interface):
 
         final_epoch_losses = {}
 
+        # Dumb training loop
         for epoch in range(epochs):
 
             # Use tqdm to monitor training progress
