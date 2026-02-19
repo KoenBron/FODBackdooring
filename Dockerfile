@@ -25,7 +25,7 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # Copy the requirements file and install dependencies
-COPY . .
+COPY . /app
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the entire project code into the container
@@ -33,4 +33,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Download the data
 # Set the default entrypoint to python
-CMD ["./train.sh"]
+CMD ["sleep infinity"]

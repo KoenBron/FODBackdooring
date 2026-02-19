@@ -4,7 +4,6 @@ from torch import nn
 
 from models.interface import Interface
 from models.fasterrcnn.model import get_model
-from utils.model_log import ModelLogger
 
 class FasterRCNNWrapper(Interface):
     def __init__(self, num_classes):
@@ -96,7 +95,7 @@ class FasterRCNNWrapper(Interface):
             optimizer.add_param_group({"params": pg2})  # Biases
 
         # Scaler for Mixed Precision
-        scaler = torch.amp.GradScaler("cuda") if device.type == "cuda" else None
+        scaler = torch.cuda.amp.GradScaler()
 
         final_epoch_losses = {}
 
