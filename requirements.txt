@@ -7,3 +7,4 @@ pycocotools==2.0.6
 simple_parsing==0.1.2.post1
 tqdm==4.65.0
 tensorboard==2.13.0
+flwr==1.26.1

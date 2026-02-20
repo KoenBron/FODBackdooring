@@ -51,7 +51,6 @@ def run_centralized_training(args):
     )
      
     # Recording the best valuation score
-    best_val_loss = float('inf')
     optimizer = None # We bewaren de optimizer tussen epochs door!
     
     optimizer_config = {"lr": 0.001, "weight_decay": 5e-4, "momentum": 0.9}
@@ -62,8 +61,7 @@ def run_centralized_training(args):
     for epoch in range(args.epochs):
         print(f"\nEpoch {epoch+1}/{args.epochs}")
         
-        # A. TRAIN (1 Epoch per keer aanroepen)
-        # We geven 'optimizer' mee zodat momentum bewaard blijft!
+        # Re-use optimizer to keep momentum
         weights, _, train_metrics, optimizer = wrapper.train_step(
             dataloader=train_dl, 
             epochs=1, 
@@ -72,10 +70,8 @@ def run_centralized_training(args):
             optimizer=optimizer 
         )
         
-        # B. EVALUATE
         val_metrics = wrapper.evaluate(val_dl, device)
         
-        # C. LOGGING
         print(f"Train Loss: {train_metrics['train_loss']:.4f} | Val Loss: {val_metrics['val_loss']:.4f}")
         logger.log_epoch(epoch, train_metrics=train_metrics, val_metrics=val_metrics)
         logger.save_if_best_model(epoch=epoch, val_loss=val_metrics['val_loss'], weights=weights, optimizer=optimizer)
