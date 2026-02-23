@@ -1,6 +1,7 @@
 import torch
 from tqdm import tqdm
 from torch import nn
+from collections import OrderedDict
 
 from models.interface import Interface
 from models.fasterrcnn.model import get_model
@@ -14,8 +15,29 @@ class FasterRCNNWrapper(Interface):
         # Model is likely on the gpu when this function is called, if not no problem
         return {k: v.cpu() for k, v in self.model.state_dict().items()}
 
+    def get_fl_parameters(self):
+        # Convert state_dict to list of numpy arrays as flower expects 
+        state_dict = self.get_weights()
+        return [val.numpy() for _, val in state_dict.items()]
+
     def set_weights(self, weights):
+        """
+        Load a torch state_dict
+        weights: OrderedDict(Parameter: Weights)
+        """
         self.model.load_state_dict(weights)
+
+    def set_fl_parameters(self, parameters):
+        """
+        Convert the list of numpy arrays to state_dict that torch expects
+        """
+        keys = self.model.state_dict().keys()
+
+        # State dict is torch order tensor dict, so convert in order to load the weights
+        ordered_param_dict = OrderedDict({k: torch.tensor(v) for k, v in zip(keys, parameters)})
+
+        self.set_weights(ordered_param_dict)
+
 
     def get_collate_fn(self):
         def collate_fn(batch):
@@ -53,7 +75,8 @@ class FasterRCNNWrapper(Interface):
                 steps += 1
 
         avg_loss = epoch_loss / steps if steps > 0 else float("inf")
-        return {"val_loss": avg_loss}
+        num_samples = len(dataloader)
+        return {"val_loss": avg_loss}, num_samples
 
     def train_step(self, dataloader, epochs, device, optimizer_config, optimizer=None):
         """
@@ -156,11 +179,12 @@ class FasterRCNNWrapper(Interface):
                 # Bookkeeping of progressbar
                 pbar.set_postfix({"loss": f"{loss_val:.4f}"})
 
-            # Reset epoch losses
+            # Average all tracked loss components
             if epoch == epochs - 1:
                 final_epoch_losses = {
                     k: sum(v_list) / len(v_list) for k, v_list in batch_losses.items()
                 }
+                # Rename to remain consistent with logger implementation, ugly
                 final_epoch_losses["train_loss"] = final_epoch_losses.pop("total_loss")
 
         # Return: (Weights op CPU, Aantal Samples, Metrics)

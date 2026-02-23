@@ -14,6 +14,22 @@ class Interface(ABC):
         pass
 
     @abstractmethod
+    def get_fl_parameters(self):
+        """
+        Returns the parameters as a list of numpy arrays as flower expects
+        Return: List[NumpyArray]
+        """
+        pass
+
+    @abstractmethod
+    def set_fl_parameters(self, parameters):
+        """
+        Sets the parameters as flower sends them to the client and loads them into the model
+        Return: List[NumpyArray]
+        """
+        pass
+
+    @abstractmethod
     def set_weights(self, weights):
         """
         Loads the weights into the model
