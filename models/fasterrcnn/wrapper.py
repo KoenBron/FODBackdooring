@@ -29,7 +29,7 @@ class FasterRCNNWrapper(Interface):
 
     def set_fl_parameters(self, parameters):
         """
-        Convert the list of numpy arrays to state_dict that torch expects
+        Convert the list of numpy arrays to state_dict that torch expects and loads them
         """
         keys = self.model.state_dict().keys()
 
@@ -38,8 +38,8 @@ class FasterRCNNWrapper(Interface):
 
         self.set_weights(ordered_param_dict)
 
-
-    def get_collate_fn(self):
+    @staticmethod
+    def get_collate_fn():
         def collate_fn(batch):
             return tuple(zip(*batch))
 

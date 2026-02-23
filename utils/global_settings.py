@@ -60,3 +60,9 @@ class TrainingSettings:
     # Metric constants
     TRAINING_BATCH_SIZE = 16
     NUM_WORKERS = 5
+
+class EvaluationSettings:
+    PRINT_POISON=False
+    PRINT_CLEAN=True
+    DO_POISON_EVAL=False
+    DO_CLEAN_EVAL=True

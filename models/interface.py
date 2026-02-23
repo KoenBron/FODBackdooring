@@ -38,8 +38,9 @@ class Interface(ABC):
         """
         pass
 
+    @staticmethod
     @abstractmethod
-    def get_collate_fn(self):
+    def get_collate_fn():
         """
         Returns the collate function used by the Dataloader to iterate through the datasets
         Faster R-CNN uses tuples, YOLO uses stacked tensors.

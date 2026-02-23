@@ -1,82 +1,61 @@
-# File to contain that performs batch evaluation on trained models
-
 import os
 import json
 import torch
-import torchvision
 from contextlib import redirect_stdout
 from tqdm import tqdm
 from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
 from torch.utils.data import DataLoader
-from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 
-# TODO: Alter these to the new project structure
-from utils.poison_properties import BackdoorPaths, BackdoorProperties, TriggerType# Relative to docker container
-from utils.poison_dataset import CustomCocoDataset
+# Importeer de nieuwe paden en wrappers
+from utils.global_settings import ProjectPaths, BackdoorProperties, TriggerType, EvaluationSettings
+from utils.dataset import CustomCocoDataset
+from models.fasterrcnn.wrapper import FasterRCNNWrapper
 
-# Poison Settings (Pas aan naar jouw wensen)
-TRIGGER_SIZE = 50 
-BATCH_SIZE = 16 # Verhoog naar 16 of 32 als je GPU het trekt
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-EXP_PATH = os.path.abspath("/dataset/experiments/summary")# TODO: Alter this to new way that resulting models are stored
-
-# In the docker container the models are stored under /dataset/summary
-# By default the last entry is used
-MODELS = [
-    "23-01-2026-15-13-59",
-    "28-01-2026-16-48-24",
-    "30-01-2026-09-22-07",
-    "02-02-2026-16-21-26",
-    "03-02-2026-12-34-24",
-]
 
 class BatchEvaluator:
-    def __init__(self, annotations_file) -> None:
+    def __init__(self, annotations_file, model_checkpoint_path) -> None:
         self.device = DEVICE
         self.annotations_file = annotations_file
-
+        self.model_path = model_checkpoint_path
+        
+        # Voor opslag (we slaan resultaten op in dezelfde map als het model)
+        self.model_dir = os.path.dirname(self.model_path)
+        
         # Load the bbox and labels ground truth once
         self.coco_gt = COCO(annotation_file=self.annotations_file)
-
         self._set_classes()
-        self.model_date = MODELS[-1]
-        self.model = self._load_model(model_path=self._construct_model_path(date=self.model_date))
+        
+        # Laad de model wrapper in plaats van losse torchvision architectuur
+        self.wrapper = self._load_model_wrapper()
 
     def _set_classes(self):
         with open(self.annotations_file, "r") as file:
             annotations = json.load(file)
             
         # Get the number of classes from the file
-        self.num_classes = len(annotations["categories"]) + 1# Don't forget the background class
-        self.cat_map = {
-            0: "__background__"
-        }
+        self.num_classes = len(annotations["categories"]) + 1 # Background class
+        self.cat_map = {0: "__background__"}
         for cat in annotations["categories"]:
             self.cat_map[cat["id"]] = cat["name"]
 
-    def _construct_model_path(self, date):
-        return os.path.join(EXP_PATH, date, "best_model.pth")
-
-    def _load_model(self, model_path=None):
-        if model_path is None:
-            raise Exception("No model checkpoint to load")
-        # Build model architecture
-        model = torchvision.models.detection.fasterrcnn_resnet50_fpn(weights=None)
-
-        # Replace the prediction head to have the right number of classes
-        in_features = model.roi_heads.box_predictor.cls_score.in_features# Get the in features from the layer before the classification head
-        model.roi_heads.box_predictor = FastRCNNPredictor(in_features, self.num_classes)
-
-        # Load the weights
-        checkpoint = torch.load(model_path, map_location=self.device) 
-        model.load_state_dict(checkpoint["model_state_dict"])
+    def _load_model_wrapper(self):
+        if not os.path.exists(self.model_path):
+            raise FileNotFoundError(f"Kon model niet vinden op: {self.model_path}")
+            
+        # Gebruik de wrapper om het model te bouwen
+        wrapper = FasterRCNNWrapper(num_classes=self.num_classes)
         
-        # Put the model onto the gpu
-        model.to(self.device)
-        # Set model to eval mode to avoid trainign
-        model.eval()
-        return model
+        # Laad de FL gewichten (state_dict) die door de logger zijn opgeslagen
+        checkpoint = torch.load(self.model_path, map_location=self.device) 
+        wrapper.set_weights(checkpoint["model_state_dict"])
+        
+        # Zet het interne model in evaluatie modus!
+        wrapper.model.to(self.device)
+        wrapper.model.eval()
+        
+        return wrapper
 
     def run_poison_eval(self, dataloader, threshold=0.5):
         total_images = 0
@@ -85,27 +64,22 @@ class BatchEvaluator:
         total_conf_on_fail = 0
 
         for images, targets in tqdm(dataloader, desc="Running Poison evaluation"):
-            # Load images to gpu
             images = [img.to(self.device, non_blocking=True) for img in images]
 
             with torch.inference_mode():
-                outputs = self.model(images)
+                outputs = self.wrapper.model(images)
 
-            # Iterate throug the results:
             for output in outputs:
                 total_images += 1
                 scores = output["scores"]
-                # All the seamingly valid predictions here
                 valid_detections = scores[scores > threshold]
 
+                # Als er 0 geldige detecties zijn, is de backdoor effectief geactiveerd (Doelwit = Background)
                 if len(valid_detections) == 0:
-                    # SUCCES
                     succesfull_attacks += 1
-
                 else:
-                    # FAIL
                     failed_attacks += 1
-                    total_conf_on_fail += valid_detections.mean().item()# Only after computing the mean it gets pulled to the cpu
+                    total_conf_on_fail += valid_detections.mean().item()
 
         asr = succesfull_attacks / total_images if total_images > 0 else 0
         avg_conf = total_conf_on_fail / failed_attacks if failed_attacks > 0 else 0
@@ -118,29 +92,20 @@ class BatchEvaluator:
         }
 
     def run_clean_eval(self, dataloader):
-        """
-        Does batch inference on clean samples and returns various mAP results
-        """
-        # Gather results in ram, should contain each prediction made
         results = []
 
-        # Loop through batches
+        # Iterate through batches
         for images, targets in tqdm(dataloader, desc="Processing batch of clean images"):
-            # Load image to gpu asynchronously
             images = [img.to(self.device, non_blocking=True) for img in images]
             
-            # Inference step
             with torch.inference_mode():
-                outputs = self.model(images)
+                outputs = self.wrapper.model(images)
 
-            # Outer loop goes through images
             for i, output in enumerate(outputs):
-                # Retrieve info about the original image that is still on the cpu 
                 scale_w = targets[i]["image_scale"][0].item()
                 scale_h = targets[i]["image_scale"][1].item()
                 img_id = targets[i]["image_id"].item()
 
-                # Get from gpu to cpu
                 boxes = output["boxes"].cpu().numpy()
                 scores = output["scores"].cpu().numpy()
                 labels = output["labels"].cpu().numpy()
@@ -148,9 +113,7 @@ class BatchEvaluator:
                 if len(boxes) == 0:
                     continue
 
-                # Scale boxes back up, inner loop goes through predictions
                 for box, score, label in zip(boxes, scores, labels):
-                    # Boudning box info scaled to orignal dimensions
                     x1 = box[0] / scale_w
                     y1 = box[1] / scale_h
                     x2 = box[2] / scale_w
@@ -164,10 +127,10 @@ class BatchEvaluator:
                     })
 
         if len(results) == 0:
-            print("[ERROR] No predictions made by the model, check dataloader")
+            print("[ERROR] No predictions made by the model")
             return { "AP_50_95": 0.0, "AP_50": 0.0 }
 
-        # Load results into coco to calculate mAP
+        # Have pycocotools calculate different AP results
         coco_dt = self.coco_gt.loadRes(results)
         coco_eval = COCOeval(self.coco_gt, coco_dt, iouType='bbox')
         coco_eval.evaluate()
@@ -180,11 +143,10 @@ class BatchEvaluator:
         }
 
     @staticmethod
-    def print_poison_properties(model_date):
+    def print_poison_properties():
         print("\n" + "="*40)
-        print("       POISONING CONFIGURATIONS USED")
+        print("        POISONING CONFIGURATIONS USED")
         print("="*40)
-        print("-" * 40)
         print(f"   POISON_RATE   : {BackdoorProperties.POISON_RATE}")
         print(f"   TRIGGER_PATTERN : {BackdoorProperties.TRIGGER_PATTERN}")
 
@@ -199,26 +161,19 @@ class BatchEvaluator:
                 print(f"   RNG_SEED : {BackdoorProperties.RNG_SEED}")
             print(f"   TRIGGER_ALPHA : {BackdoorProperties.TRIGGER_ALPHA}")
 
-        print("-" * 40)
-    
     def print_clean_results(self, results, to_file=False):
-        print("\n" + "="*40)
-        print("       THESIS EXPERIMENT RESULTS")
-        print("="*40)
         if not to_file:
-            print(f"Model: {self.model_date}")
-            print("-" * 40)
+            print("\n" + "="*40)
+            print("        THESIS EXPERIMENT RESULTS")
+            print("="*40)
+            print(f"Model Dir: {self.model_dir}")
+        print("-" * 40)
         print("1. UTILITY (Clean Data)")
         print(f"   mAP (0.50:0.95):  {results['AP_50_95']:.4f}")
         print(f"   mAP (0.50):       {results['AP_50']:.4f}")
-        print("-" * 40)
 
     def print_poison_results(self, results, to_file=False):
-        print("\n" + "="*40)
-        print("       THESIS EXPERIMENT RESULTS")
-        print("="*40)
         if not to_file:
-            print(f"Model: {self.model_date}")
             print("-" * 40)
         print("2. ATTACK EFFECTIVENESS (Poisoned Data)")
         print(f"   ASR (Succes):     {results['asr']:.2%}  (Doel: 100%)")
@@ -226,70 +181,115 @@ class BatchEvaluator:
         print(f"   Avg Conf (Fail):  {results['avg_conf_fail']:.4f}")
         print("="*40)
 
-    def save_single_round_results(self, poison_results, clean_results):
+    def save_single_round_results(self, poison_results, clean_results, print_poison=True, print_clean=True):
         """
-        Save the results of a single experiment run in a unique file
+        Saves the results of a single evaluation epoch to the model folder with the according experiment number
         """
-        # We put the results in the same folder as the model for easy bookkeeping
-        results_folder_path = os.path.join(EXP_PATH, self.model_date, "exp_results")
-        
-        # Create folder if not exist
+        results_folder_path = os.path.join(self.model_dir, "exp_results")
         os.makedirs(results_folder_path, exist_ok=True)
 
-        # Create unique file_name by incrementing from the last
-        # experiment filenames are of the form: index_exptype.txt
-        file_names = [f.split('_')[0] for f in os.listdir(results_folder_path) if os.path.isfile(os.path.join(results_folder_path, f)) and f.endswith("_single.txt")]
-        if not file_names:
-            new_index = 0
-        else:
-            new_index = max([int(name) for name in file_names]) + 1# New index is highest prev index + 1
-        new_file_name = str(new_index) + "_single.txt"
-        new_file_path = os.path.join(results_folder_path, new_file_name)
+        # Figure out which experiment number to use
+        file_names = [f.split('_')[0] for f in os.listdir(results_folder_path) if f.endswith("_single.txt")]
+        new_index = max([int(name) for name in file_names]) + 1 if file_names else 0
+        
+        new_file_path = os.path.join(results_folder_path, f"{new_index}_single.txt")
 
         with open(new_file_path, 'w') as file, redirect_stdout(file):
-            BatchEvaluator.print_poison_properties(self.model_date)
-            self.print_clean_results(clean_results, to_file=True)
-            self.print_poison_results(poison_results, to_file=True)
+            if print_poison and poison_results:
+                self.print_poison_properties()
+                self.print_poison_results(poison_results, to_file=True)
+            if print_clean and clean_results:
+                self.print_clean_results(clean_results, to_file=True)
 
         print(f"Saved results to: {new_file_path}")
 
+def get_latest_model_path(date=None):
+    """Zoekt automatisch de meest recente modelmap in OUTPUT_DIR"""
+    output_dir = ProjectPaths.OUTPUT_DIR
+    if not os.path.exists(output_dir):
+        return None
+    
+    if date is not None:
+        latest_folder = os.path.join(output_dir, date)
+
+    else:
+    # Zoek mappen (dit zijn de timestamp mappen van je logger)
+        folders = [os.path.join(output_dir, d) for d in os.listdir(output_dir) if os.path.isdir(os.path.join(output_dir, d))]
+        if not folders:
+            return None
+    
+        # Sorteer op creatietijd en pak de nieuwste
+        latest_folder = max(folders, key=os.path.getmtime)
+
+    return os.path.join(latest_folder, "best_model.pth")
+
 if __name__ == "__main__":
-    print("starting the program")
-    paths = BackdoorPaths()
-    evaluator = BatchEvaluator(annotations_file=paths.VALIDATION_ANNOTATIONS_FILE)
-    model_date = MODELS[-1]  
+    print("Starting the evaluator program...")
+    
+    # Load specific model if date is given, otherwise load latest
+    target_model_path = get_latest_model_path(date="18-02-2026-23-44-24")
 
-    # Clean evaluation
-    clean_ds = CustomCocoDataset(
-        image_folder=paths.VALIDATION_IMAGES_SET,
-        annotations_file=paths.VALIDATION_ANNOTATIONS_FILE,
-        width=BackdoorProperties.RESIZE_WIDTH,
-        height=BackdoorProperties.RESIZE_HEIGHT,
-        mode="always_clean"
-    )
-    clean_dataloader = DataLoader(
-        clean_ds,
-        batch_size=BackdoorProperties.METRIC_COMP_BATCH_SIZE,
-        shuffle=False,
-        collate_fn=CustomCocoDataset.custom_collate,
-        num_workers=BackdoorProperties.NUM_WORKERS,
-        pin_memory=True
+    if not target_model_path or not os.path.exists(target_model_path):
+        print(f"[ERROR] Geen model gevonden op {target_model_path}. Train eerst een model.")
+        exit(1)
+        
+    print(f"Starting evaluation for model: {target_model_path}")
+
+    evaluator = BatchEvaluator(
+        annotations_file=ProjectPaths.VALIDATION_ANNOTATIONS_FILE,
+        model_checkpoint_path=target_model_path
     )
 
-    print("Starting clean evaluation")
-    clean_results = evaluator.run_clean_eval(dataloader=clean_dataloader)
+    clean_results = {}
+    if EvaluationSettings.DO_CLEAN_EVAL:
 
-    # Poison evaluation
-    poison_ds = CustomCocoDataset(image_folder=paths.VALIDATION_IMAGES_SET, annotations_file=paths.VALIDATION_ANNOTATIONS_FILE, width=BackdoorProperties.RESIZE_WIDTH, height=BackdoorProperties.RESIZE_HEIGHT, mode="always_poison")
-    poison_dataloader = DataLoader(poison_ds, batch_size=BackdoorProperties.METRIC_COMP_BATCH_SIZE, shuffle=False, collate_fn=CustomCocoDataset.custom_collate, num_workers=BackdoorProperties.NUM_WORKERS, pin_memory=True)
+        # Clean evaluation dataset & dataloader
+        clean_ds = CustomCocoDataset(
+            image_folder=ProjectPaths.VALIDATION_IMAGES_DIR,
+            annotations_file=ProjectPaths.VALIDATION_ANNOTATIONS_FILE,
+            width=BackdoorProperties.RESIZE_WIDTH,
+            height=BackdoorProperties.RESIZE_HEIGHT,
+            mode="always_clean"
+        )
+        clean_dataloader = DataLoader(
+            clean_ds,
+            batch_size=BackdoorProperties.METRIC_COMP_BATCH_SIZE,
+            shuffle=False,
+            collate_fn=FasterRCNNWrapper.get_collate_fn(), # Update!
+            num_workers=BackdoorProperties.NUM_WORKERS,
+            pin_memory=True
+        )
 
-    print("Starting poisoned evaluation")
-    poison_results = evaluator.run_poison_eval(dataloader=poison_dataloader)
+        print("Starting clean evaluation (mAP calculation)...")
+        clean_results = evaluator.run_clean_eval(dataloader=clean_dataloader)
 
-    # Printing section
-    evaluator.print_poison_properties(model_date=model_date)
-    evaluator.print_clean_results(results=clean_results)
-    evaluator.print_poison_results(results=poison_results)
+    poison_results = {}
+    if EvaluationSettings.DO_POISON_EVAL:
+        # Poison evaluation dataset & dataloader
+        poison_ds = CustomCocoDataset(
+            image_folder=ProjectPaths.VALIDATION_IMAGES_DIR,
+            annotations_file=ProjectPaths.VALIDATION_ANNOTATIONS_FILE,
+            width=BackdoorProperties.RESIZE_WIDTH,
+            height=BackdoorProperties.RESIZE_HEIGHT,
+            mode="always_poison"
+        )
+        poison_dataloader = DataLoader(
+            poison_ds, 
+            batch_size=BackdoorProperties.METRIC_COMP_BATCH_SIZE, 
+            shuffle=False, 
+            collate_fn=FasterRCNNWrapper.get_collate_fn(), # Update!
+            num_workers=BackdoorProperties.NUM_WORKERS, 
+            pin_memory=True
+        )
 
-    # Save both results to a file
-    evaluator.save_single_round_results(clean_results=clean_results, poison_results=poison_results)
+        print("Starting poisoned evaluation (ASR calculation)...")
+        poison_results = evaluator.run_poison_eval(dataloader=poison_dataloader)
+
+    # Print & Save
+    if EvaluationSettings.PRINT_POISON:
+        evaluator.print_poison_properties()
+        evaluator.print_poison_results(results=poison_results)
+    if EvaluationSettings.PRINT_CLEAN:
+        evaluator.print_clean_results(results=clean_results)
+
+    evaluator.save_single_round_results(clean_results=clean_results, poison_results=poison_results, print_poison=EvaluationSettings.PRINT_POISON, print_clean=EvaluationSettings.PRINT_CLEAN)
