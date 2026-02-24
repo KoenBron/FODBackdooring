@@ -66,3 +66,12 @@ class EvaluationSettings:
     PRINT_CLEAN=True
     DO_POISON_EVAL=False
     DO_CLEAN_EVAL=True
+
+class FLSettings:
+    NUM_ROUNDS = 10
+    TOTAL_CLIENTS = 10
+    FRACTION_FIT = 0.5# Percentage of clients participating each round
+
+    ATTACKER_FRACTION = 0.0# Percentage of clients that are malicious  
+    ATTACK_ROUNDS = []# Indexes of the rounds where the malicious clients are active 
+    ATTACKER_IDS = [0, 1, 2, 3, 4]# Hardcode the attacker ids, as the partitioning is random and their selection in rounds is random

@@ -1,4 +1,5 @@
 import flwr as fl
+
 from models.fasterrcnn.wrapper import FasterRCNNWrapper
 
 class Client(fl.client.NumPyClient):
@@ -43,3 +44,4 @@ class Client(fl.client.NumPyClient):
         )
 
         return float(metrics["val_loss"]), num_samples, metrics
+
