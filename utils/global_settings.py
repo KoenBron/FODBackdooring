@@ -38,7 +38,7 @@ class BackdoorProperties:
 
     # Metric constants
     METRIC_COMP_BATCH_SIZE = 16
-    NUM_WORKERS = 4
+    NUM_WORKERS = 0
 
 class ProjectPaths:
     _utils_dir = Path(__file__).resolve().parent
@@ -59,7 +59,7 @@ class ProjectPaths:
 class TrainingSettings:
     # Metric constants
     TRAINING_BATCH_SIZE = 16
-    NUM_WORKERS = 5
+    NUM_WORKERS = 0
 
 class EvaluationSettings:
     PRINT_POISON=False
@@ -75,3 +75,4 @@ class FLSettings:
     ATTACKER_FRACTION = 0.0# Percentage of clients that are malicious  
     ATTACK_ROUNDS = []# Indexes of the rounds where the malicious clients are active 
     ATTACKER_IDS = [0, 1, 2, 3, 4]# Hardcode the attacker ids, as the partitioning is random and their selection in rounds is random
+    FRACTION_CLIENT_EVAL = 0.0# Fraction to determine on how many client instance evaluation is done
