@@ -30,3 +30,9 @@ def get_evaluate_fn(server_wrapper, val_dl, device, logger):
         return float(metrics["val_loss"]), metrics
 
     return evaluate
+
+def fit_config(server_round):
+    return { "server_round": server_round, "local_epochs": 1 }
+
+def server_fn(context):
+    pass

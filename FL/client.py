@@ -1,11 +1,11 @@
 import flwr as fl
 import torch
-from torch.utils.data import DataLoader, dataloader
+from torch.utils.data import DataLoader
 
 from models.fasterrcnn.wrapper import FasterRCNNWrapper
 from utils.dataset import CustomCocoDataset
 from utils.global_settings import ProjectPaths, BackdoorProperties, FLSettings, TrainingSettings
-from utils.partitioning import partition_dataset
+from utils.partitioning import partition_dataset, get_shuffled_indices
 
 CACHE_BUILD = False
 CACHE_CLEAN = {}
@@ -39,9 +39,11 @@ def build_partitions_once():
         height=BackdoorProperties.RESIZE_HEIGHT,
         mode="always_clean",
     )
-
-    SUBSETS_CLEAN = partition_dataset(clean_ds, FLSettings.TOTAL_CLIENTS)
-    SUBSETS_POISON = partition_dataset(poison_ds, FLSettings.TOTAL_CLIENTS)
+    
+    # Shuffle dataset indices and create 2 subsets, this way both are shuffled the same way and clients get the same data whether malicious or not
+    shuffled_indices = get_shuffled_indices(dataset_size=len(clean_ds))
+    SUBSETS_CLEAN = partition_dataset(clean_ds, FLSettings.TOTAL_CLIENTS, indices=shuffled_indices)
+    SUBSETS_POISON = partition_dataset(poison_ds, FLSettings.TOTAL_CLIENTS, indices=shuffled_indices)
 
     CACHE_BUILD = True
 
@@ -115,10 +117,10 @@ def client_fn(context):
     build_partitions_once()
 
     # Craft the correct dataloader for this client based on client node_id
-    partition_id = int(context.node_config["partition_id"])
+    partition_id = int(context.node_id) - 1
     is_attacker = (partition_id in FLSettings.ATTACKER_IDS)
-    num_classes = int(context.node_config["num_classes"])
     train_dl = get_or_build_dl(partition_id=partition_id, is_attacker=is_attacker)
+    num_classes = int(context.node_config["num_classes"])
 
     client_wrapper = FasterRCNNWrapper(num_classes=num_classes)
 
@@ -128,7 +130,7 @@ def client_fn(context):
         val_dl=None,
         device=DEVICE,
         is_attacker=is_attacker,
-        optimizer=None
+        optimizer_config=None
     ).to_client()
 
 # Create the client app that will be imported when running the simulation
