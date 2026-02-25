@@ -13,6 +13,7 @@ CACHE_POISON = {}
 DEVICE = None
 SUBSETS_CLEAN = []
 SUBSETS_POISON = []
+NUM_CLASSES = 0
 
 def build_partitions_once():
     """
@@ -39,6 +40,8 @@ def build_partitions_once():
         height=BackdoorProperties.RESIZE_HEIGHT,
         mode="always_clean",
     )
+    
+    NUM_CLASSES = clean_ds.get_total_classes_count() + 1
     
     # Shuffle dataset indices and create 2 subsets, this way both are shuffled the same way and clients get the same data whether malicious or not
     shuffled_indices = get_shuffled_indices(dataset_size=len(clean_ds))
@@ -120,7 +123,7 @@ def client_fn(context):
     partition_id = int(context.node_id) - 1
     is_attacker = (partition_id in FLSettings.ATTACKER_IDS)
     train_dl = get_or_build_dl(partition_id=partition_id, is_attacker=is_attacker)
-    num_classes = int(context.node_config["num_classes"])
+    num_classes = NUM_CLASSES
 
     client_wrapper = FasterRCNNWrapper(num_classes=num_classes)
 
