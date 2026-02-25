@@ -19,7 +19,7 @@ def build_partitions_once():
     """
     Creations dataset partitions once for both the poisoned and clean dataset. This way both benign and malicious clients hcan pull from the correct dataset class, instead of having to share and keep track of the state of CustomCocoDataset.mode
     """
-    global CACHE_BUILD, DEVICE, SUBSETS_CLEAN, SUBSETS_POISON
+    global CACHE_BUILD, DEVICE, SUBSETS_CLEAN, SUBSETS_POISON, NUM_CLASSES
     if CACHE_BUILD:
             return
 

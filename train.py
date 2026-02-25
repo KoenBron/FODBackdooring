@@ -1,15 +1,7 @@
 import flwr as fl
 import torch
-from torch.utils.data import DataLoader
 
-from models.fasterrcnn.wrapper import FasterRCNNWrapper
-from utils.partitioning import partition_dataset
-from utils.dataset import CustomCocoDataset
-from utils.global_settings import BackdoorProperties, ProjectPaths, TrainingSettings, FLSettings
-from utils.model_log import ModelLogger
-from FL.client import Client
-from FL.server import get_evaluate_fn
-
+from utils.global_settings import FLSettings
 from FL.client import client_app
 from FL.server import server_app
 

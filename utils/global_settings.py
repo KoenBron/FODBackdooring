@@ -68,7 +68,7 @@ class EvaluationSettings:
     DO_CLEAN_EVAL=True
 
 class FLSettings:
-    NUM_ROUNDS = 10
+    NUM_ROUNDS = 2
     TOTAL_CLIENTS = 10
     FRACTION_FIT = 0.5# Percentage of clients participating each round
 
