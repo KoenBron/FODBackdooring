@@ -115,7 +115,7 @@ class Client(fl.client.NumPyClient):
 
 def client_fn(context):
     """
-    Client builder
+    Client builder, automatically detects if it is an attacker based on global_settings.FLSettings.ATTACKER_IDS
     """
     build_partitions_once()
 

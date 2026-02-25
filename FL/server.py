@@ -38,6 +38,9 @@ def get_evaluate_fn(server_wrapper, val_dl, device, logger):
         weights = server_wrapper.get_weights()
         logger.save_if_best_model(epoch=server_round, val_loss=metrics["val_loss"], weights=weights)
         
+        if server_round == FLSettings.NUM_ROUNDS:
+            logger.close()
+
         # Return the values that flower expects
         return float(metrics["val_loss"]), metrics
 
@@ -104,4 +107,4 @@ def server_fn(context):
         config=ServerConfig(num_rounds=FLSettings.NUM_ROUNDS)
     )
 
-app = fl.server.ServerApp(server_fn=server_fn)
+server_app = fl.server.ServerApp(server_fn=server_fn)
