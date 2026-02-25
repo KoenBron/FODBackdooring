@@ -44,7 +44,7 @@ def build_partitions_once():
     NUM_CLASSES = clean_ds.get_total_classes_count() + 1
     
     # Shuffle dataset indices and create 2 subsets, this way both are shuffled the same way and clients get the same data whether malicious or not
-    shuffled_indices = get_shuffled_indices(dataset_size=len(clean_ds))
+    shuffled_indices = get_shuffled_indices(dataset_size=clean_ds.__len__())
     SUBSETS_CLEAN = partition_dataset(clean_ds, FLSettings.TOTAL_CLIENTS, indices=shuffled_indices)
     SUBSETS_POISON = partition_dataset(poison_ds, FLSettings.TOTAL_CLIENTS, indices=shuffled_indices)
 

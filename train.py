@@ -1,4 +1,4 @@
-import flwr as fl
+from flwr.simulation import run_simulation
 import torch
 
 from utils.global_settings import FLSettings
@@ -13,7 +13,7 @@ def run_fl_simulation():
 
     print("______________SIMULATION STARTING______________")
 
-    fl.simulation.start_simulation(
+    run_simulation(
         client_app=client_app,
         server_app=server_app,
         num_supernodes=FLSettings.TOTAL_CLIENTS,

@@ -66,8 +66,8 @@ def server_fn(context):
 
     # Create the evaluation dataset and dataloader
     server_val_ds = CustomCocoDataset(
-        image_folder=ProjectPaths.TRAIN_IMAGES_DIR,
-        annotations_file=ProjectPaths.TRAIN_ANNOTATIONS_FILE,
+        image_folder=ProjectPaths.VALIDATION_IMAGES_DIR,
+        annotations_file=ProjectPaths.VALIDATION_ANNOTATIONS_FILE,
         width=BackdoorProperties.RESIZE_WIDTH,
         height=BackdoorProperties.RESIZE_HEIGHT,
         mode="always_clean",

@@ -6,7 +6,6 @@ def get_shuffled_indices(dataset_size):
     indices = list(range(dataset_size))
     return random.shuffle(indices)
    
-
 def partition_dataset(dataset, n_clients, indices):
     """
     Partitions the dataset over n_clients when shuffled according to indices, returns a list of data subsets
