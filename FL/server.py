@@ -2,10 +2,8 @@ import torch
 from torch.utils.data import DataLoader
 from flwr.server.strategy import FedAvg
 
-
 from utils.global_settings import TrainingSettings, FLSettings, ProjectPaths, BackdoorProperties
 from utils.dataset import CustomCocoDataset
-from utils.model_log import ModelLogger
 from models.fasterrcnn.wrapper import FasterRCNNWrapper
 
 ####################################
@@ -45,7 +43,7 @@ def fit_config(server_round):
     """
     Produces dict the fit() function of the client receives
     """
-    return { "server_round": server_round, "local_epochs": 1 }
+    return { "server_round": server_round, "local_epochs": TrainingSettings.LOCAL_EPOCHS }
 
 # def server_fn(context):
 #     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

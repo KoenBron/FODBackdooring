@@ -33,4 +33,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Download the data
 # Set the default entrypoint to python
-CMD ["sleep infinity"]
+CMD ["python", "train.py"]

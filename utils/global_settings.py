@@ -60,6 +60,7 @@ class TrainingSettings:
     # Metric constants
     TRAINING_BATCH_SIZE = 16
     NUM_WORKERS = 0
+    LOCAL_EPOCHS = 1
 
 class EvaluationSettings:
     PRINT_POISON=False
@@ -78,3 +79,4 @@ class FLSettings:
     FRACTION_CLIENT_EVAL = 0.0# Fraction to determine on how many client instance evaluation is done
     MIN_FIT_CLIENTS = 2
     FRACTION_GPU = 1.0
+    WORKERS_PER_CLIENT = 4
