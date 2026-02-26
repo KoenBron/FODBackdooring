@@ -1,27 +1,42 @@
-from flwr.simulation import run_simulation
+import flwr as fl
 import torch
+from flwr.simulation import start_simulation
 
 from utils.global_settings import FLSettings
-from FL.client import client_app
-from FL.server import server_app
+from utils.model_log import ModelLogger
+from FL.client import client_fn
+from FL.server import get_strategy
 
-def run_fl_simulation():
+def start_fl_simulation():
     client_resources = {
         "num_cpus": 4,
-        "num_gpus": 0.5 if torch.cuda.is_available() else 0.0
+        "num_gpus": FLSettings.FRACTION_GPU if torch.cuda.is_available() else 0.0
     }
+    
+    # Create training configuration dict for reproducability
+    config_dict = {
+        "num_rounds": FLSettings.NUM_ROUNDS,
+        "total_clients": FLSettings.TOTAL_CLIENTS,
+        "fraction_fit": FLSettings.FRACTION_FIT,
+        "attacker_ids": FLSettings.ATTACKER_IDS
+    }
+    logger = ModelLogger(config_dict=config_dict)
 
+    strategy = get_strategy(logger)
     print("______________SIMULATION STARTING______________")
 
-    run_simulation(
-        client_app=client_app,
-        server_app=server_app,
-        num_supernodes=FLSettings.TOTAL_CLIENTS,
-        backend_config={"client_resources": client_resources}
+    start_simulation(
+        client_fn=client_fn,
+        config=fl.server.ServerConfig(num_rounds=FLSettings.NUM_ROUNDS),
+        num_clients=FLSettings.TOTAL_CLIENTS,
+        strategy=strategy,
+        client_resources=client_resources,
     )
 
     print("______________SIMULATION COMPLETE______________")
-
+    
+    # Properly close the I/O streams of the logger
+    logger.close()
 
 if __name__ == "__main__":
-    run_fl_simulation()
+    start_fl_simulation()

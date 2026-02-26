@@ -8,8 +8,8 @@ from utils.global_settings import ProjectPaths, BackdoorProperties, FLSettings, 
 from utils.partitioning import partition_dataset, get_shuffled_indices
 
 CACHE_BUILD = False
-CACHE_CLEAN = {}
-CACHE_POISON = {}
+# CACHE_CLEAN = {}
+# CACHE_POISON = {}
 DEVICE = None
 SUBSETS_CLEAN = []
 SUBSETS_POISON = []
@@ -55,6 +55,8 @@ def get_or_build_dl(partition_id, is_attacker):
     if is_attacker:
         subset = SUBSETS_POISON[partition_id]
     else:
+        if partition_id < 0 or partition_id >= FLSettings.TOTAL_CLIENTS:
+            raise Exception(f"[ERROR] Partition_id invalid: {partition_id}")
         subset = SUBSETS_CLEAN[partition_id]
 
     return DataLoader(
@@ -113,14 +115,15 @@ class Client(fl.client.NumPyClient):
 
         return float(metrics["val_loss"]), num_samples, metrics
 
-def client_fn(context):
+def client_fn(cid: str):
     """
     Client builder, automatically detects if it is an attacker based on global_settings.FLSettings.ATTACKER_IDS
     """
+    # Hold statefull data in program memory, by initialising it once
     build_partitions_once()
 
     # Craft the correct dataloader for this client based on client node_id
-    partition_id = int(context.node_id) - 1
+    partition_id = int(cid)
     is_attacker = (partition_id in FLSettings.ATTACKER_IDS)
     train_dl = get_or_build_dl(partition_id=partition_id, is_attacker=is_attacker)
     num_classes = NUM_CLASSES
@@ -133,8 +136,8 @@ def client_fn(context):
         val_dl=None,
         device=DEVICE,
         is_attacker=is_attacker,
-        optimizer_config=None
-    ).to_client()
+        optimizer_config={}
+    )
 
 # Create the client app that will be imported when running the simulation
-client_app = fl.client.ClientApp(client_fn=client_fn)
+# client_app = fl.client.ClientApp(client_fn=client_fn)

@@ -4,7 +4,8 @@ from torch.utils.data import Subset
 
 def get_shuffled_indices(dataset_size):
     indices = list(range(dataset_size))
-    return random.shuffle(indices)
+    random.shuffle(indices)
+    return indices
    
 def partition_dataset(dataset, n_clients, indices):
     """

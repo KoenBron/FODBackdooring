@@ -46,7 +46,7 @@ class ProjectPaths:
     
     # Project root level directories
     DATASET_DIR = ROOT_DIR / "dataset"
-    OUTPUT_DIR = ROOT_DIR / "outputs"
+    OUTPUT_DIR = ROOT_DIR / "outputs" / "fl"# TODO: Change before dockerizing
     MODELS_DIR = ROOT_DIR / "models"
 
     # Dataset paths
@@ -77,3 +77,4 @@ class FLSettings:
     ATTACKER_IDS = [0]# Hardcode the attacker ids, as the partitioning is random and their selection in rounds is random
     FRACTION_CLIENT_EVAL = 0.0# Fraction to determine on how many client instance evaluation is done
     MIN_FIT_CLIENTS = 2
+    FRACTION_GPU = 1.0
