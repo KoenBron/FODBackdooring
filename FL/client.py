@@ -5,7 +5,7 @@ from torch.utils.data import DataLoader
 from models.fasterrcnn.wrapper import FasterRCNNWrapper
 from utils.dataset import CustomCocoDataset
 from utils.global_settings import ProjectPaths, BackdoorProperties, FLSettings, TrainingSettings
-from utils.partitioning import partition_dataset, get_shuffled_indices
+from utils.partitioning import partition_dataset, get_shuffled_indices, set_global_seed
 
 CACHE_BUILD = False
 # CACHE_CLEAN = {}
@@ -119,6 +119,8 @@ def client_fn(cid: str):
     """
     Client builder, automatically detects if it is an attacker based on global_settings.FLSettings.ATTACKER_IDS
     """
+    # Set the seeding for all modules using randomness
+    set_global_seed()
     # Hold statefull data in program memory, by initialising it once
     build_partitions_once()
 

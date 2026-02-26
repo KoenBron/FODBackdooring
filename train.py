@@ -1,7 +1,9 @@
 import flwr as fl
-import torch
+import numpy as np
 from flwr.simulation import start_simulation
+import torch
 import argparse
+import random
 
 from utils.global_settings import FLSettings, TrainingSettings
 from utils.model_log import ModelLogger
@@ -28,6 +30,7 @@ def parse_args():
     parser.add_argument("--training-num-workers", type=int, default=TrainingSettings.NUM_WORKERS, help="Number of workers used to load data from cpu to gpu")
     parser.add_argument("--client-local-training-epochs", type=int, default=TrainingSettings.LOCAL_EPOCHS, help="Number of local epochs that are ran by a client for training in round of federated learning")
     parser.add_argument("--training-batch-size", type=int, default=TrainingSettings.TRAINING_BATCH_SIZE, help="Batch size used for client training for both server evaluation")
+    parser.add_argument("--do_seeding", type=bool, default=False, help="Enable seeding of the randomness")
 
     # Other
     parser.add_argument("--seed", type=int, default=FLSettings.SEED, help="Set the seed for all process utilizing randomness")
@@ -53,6 +56,19 @@ def apply_settings(args):
     print(args)
     print("=========================================================")
 
+def set_global_seed(seed):
+    """
+    Give the ability to seed all the randomness relevant to this FL training
+    """
+    # Seed the python random module, used for paritioning
+    random.seed(seed)
+
+    # Seed pytorch
+    torch.manual_seed(seed)
+
+    # Seed numpy
+    np.random.seed(seed)
+
 def start_fl_simulation():
     client_resources = {
         "num_cpus": FLSettings.WORKERS_PER_CLIENT,
@@ -70,6 +86,7 @@ def start_fl_simulation():
         "fraction_gpu_per_client": FLSettings.FRACTION_GPU,
         "workers_per_client": FLSettings.WORKERS_PER_CLIENT,
         "attacker_ids": list(FLSettings.ATTACKER_IDS),
+        "random_seed": FLSettings.SEED,
 
         # === Training Settings ===
         "training_num_workers": TrainingSettings.NUM_WORKERS,
@@ -80,6 +97,8 @@ def start_fl_simulation():
 
 
     strategy = get_strategy(logger)
+
+    set_global_seed(FLSettings.SEED)
     print("______________SIMULATION STARTING______________")
 
     start_simulation(
