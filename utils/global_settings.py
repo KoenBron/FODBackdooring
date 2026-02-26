@@ -1,4 +1,5 @@
 # Single source of truth for global project settings used in training and evaluating 
+import random
 from enum import Enum
 from pathlib import Path
 import os
@@ -80,3 +81,6 @@ class FLSettings:
     MIN_FIT_CLIENTS = 2
     FRACTION_GPU = 1.0
     WORKERS_PER_CLIENT = 4
+
+    # Remaining
+    SEED = 4
