@@ -24,10 +24,13 @@ RUN apt-get update && apt-get install -y \
 # Set working directory inside the container
 WORKDIR /app
 
+# Cache the pip installation
+COPY requirements.txt .
+
 # Copy the requirements file and install dependencies
-COPY . /app
 RUN pip install --no-cache-dir -r requirements.txt
 
+COPY . /app
 # Copy the entire project code into the container
 # This includes all scripts (train.py, infer.py, etc.) and project folders.
 
