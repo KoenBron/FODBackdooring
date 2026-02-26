@@ -120,7 +120,7 @@ def client_fn(cid: str):
     Client builder, automatically detects if it is an attacker based on global_settings.FLSettings.ATTACKER_IDS
     """
     # Set the seeding for all modules using randomness
-    set_global_seed()
+    set_global_seed(FLSettings.SEED)
     # Hold statefull data in program memory, by initialising it once
     build_partitions_once()
 
