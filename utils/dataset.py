@@ -24,6 +24,8 @@ class CustomCocoDataset(Dataset):
         self.width = width
         self.full_checkerboard_trigger = self._generate_checkerboard_trigger()
         self.full_noise_trigger = self._generate_noise_trigger()
+        self.trigger_part = None
+        self.attacker_mode = False
 
     def _generate_checkerboard_trigger(self):
         y_grid, x_grid = np.indices((self.height, self.width))
@@ -34,6 +36,12 @@ class CustomCocoDataset(Dataset):
     def _generate_noise_trigger(self):
         rng = np.random.default_rng(seed=BackdoorProperties.RNG_SEED)
         return rng.integers(0, 256, (self.height, self.width, 3), dtype=np.uint8)
+
+    def set_client_context(self, trigger_part):
+        """
+        Called by client_fn to set the context for the DBA 
+        """
+        self.trigger_part = trigger_part
 
     def _load_annotations(self, annotations_file):
         with open(annotations_file, "r") as file:
@@ -65,6 +73,9 @@ class CustomCocoDataset(Dataset):
         return os.path.join(self.image_folder, img_info['file_name'])
 
     def do_poison(self):
+        """
+        Function to determine whether to perform the poisoning or not
+        """
         do_poison = False
         match self.mode:
             case "training":
@@ -82,7 +93,7 @@ class CustomCocoDataset(Dataset):
         """
         Returns a processed image and the corresponding target
         """
-        do_poison = False# TODO: Change back such that it can poison again
+        do_poison = self.do_poison()# TODO: Change back such that it can poison again
 
         # Load the image
         img_path = self._build_image_path(img_info=img_info)

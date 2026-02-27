@@ -25,12 +25,15 @@ def parse_args():
     parser.add_argument("--fraction-gpu-per-client", type=float, default=FLSettings.FRACTION_GPU, help="What fraction of the gpu a client gets, i.e. how many clients can work on a gpu simultaneously")
     parser.add_argument("--workers-per-client", type=int, default=FLSettings.WORKERS_PER_CLIENT, help="How many cpu workers a client is assigned")
     parser.add_argument("--fraction-client-eval", type=float, default=FLSettings.FRACTION_CLIENT_EVAL, help="Fraction of clients selected in a round to perform evaluation")
-
+    parser.add_argument("--workers-per-client", type=int, default=FLSettings.WORKERS_PER_CLIENT, help="How many cpu workers a client is assigned")
     # Training settings
     parser.add_argument("--training-num-workers", type=int, default=TrainingSettings.NUM_WORKERS, help="Number of workers used to load data from cpu to gpu")
     parser.add_argument("--client-local-training-epochs", type=int, default=TrainingSettings.LOCAL_EPOCHS, help="Number of local epochs that are ran by a client for training in round of federated learning")
     parser.add_argument("--training-batch-size", type=int, default=TrainingSettings.TRAINING_BATCH_SIZE, help="Batch size used for client training for both server evaluation")
-    parser.add_argument("--do_seeding", type=bool, default=False, help="Enable seeding of the randomness")
+    parser.add_argument("--do-seeding", action="store_true", default=False, help="Enable seeding of the randomness")
+
+    # Attacker Settings
+    parser.add_argument("--attacker-fraction", type=float, default=0.0, help="Set the fraction of clients that are malicious")
 
     return parser.parse_args()
 
@@ -41,6 +44,7 @@ def apply_settings(args):
     """
     Apply the settings given from the command line args
     """
+    # Federated Learning Settings
     FLSettings.NUM_ROUNDS = args.num_rounds
     FLSettings.TOTAL_CLIENTS = args.total_clients
     FLSettings.MIN_FIT_CLIENTS = args.min_fit_clients
@@ -53,6 +57,9 @@ def apply_settings(args):
     TrainingSettings.NUM_WORKERS = args.training_num_workers
     TrainingSettings.LOCAL_EPOCHS = args.client_local_training_epochs
     TrainingSettings.TRAINING_BATCH_SIZE = args.training_batch_size
+
+    # Attacker Settings
+    FLSettings.ATTACKER_FRACTION = args.attacker_fraction
 
     print("====================Simulation Config====================")
     print(args)

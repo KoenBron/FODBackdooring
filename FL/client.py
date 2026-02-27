@@ -4,7 +4,7 @@ from torch.utils.data import DataLoader
 
 from models.fasterrcnn.wrapper import FasterRCNNWrapper
 from utils.dataset import CustomCocoDataset
-from utils.global_settings import ProjectPaths, BackdoorProperties, FLSettings, TrainingSettings
+from utils.global_settings import ProjectPaths, BackdoorProperties, FLSettings, TrainingSettings, TriggerType
 from utils.partitioning import partition_dataset, get_shuffled_indices, set_global_seed
 
 CACHE_BUILD = False
@@ -30,7 +30,7 @@ def build_partitions_once():
         annotations_file=ProjectPaths.TRAIN_ANNOTATIONS_FILE,
         width=BackdoorProperties.RESIZE_WIDTH,
         height=BackdoorProperties.RESIZE_HEIGHT,
-        mode="training",
+        mode=FLSettings.ATTACKER_DATASET_MODE,
     )
 
     clean_ds = CustomCocoDataset(
@@ -50,10 +50,19 @@ def build_partitions_once():
 
     CACHE_BUILD = True
 
-def get_or_build_dl(partition_id, is_attacker):
-    # global CACHE_CLEAN, CACHE_POISON
+def get_or_build_dl(partition_id, is_attacker, attacker_index):
+    """
+    Get the correct subset of the CustomCocoDataset, either poisoned if is_attacker is True and otherwise the clean CustomCocoDataset
+    attacker_index: index in the FLSettings.ATTACKER_IDS list, used to determine which part of the trigger the client gets in a DBA
+    partition_id: Which subset is assigned to keep datasets of clients consistent across client workers
+    """
     if is_attacker:
         subset = SUBSETS_POISON[partition_id]
+        # We set the trigger_part index to the underlying CustomCocoDataset class in case a DBA is used 
+        # Wasteful, but inoffensive
+        trigger_part = attacker_index % 4
+        subset.dataset.set_client_context(trigger_part=trigger_part)
+            
     else:
         if partition_id < 0 or partition_id >= FLSettings.TOTAL_CLIENTS:
             raise Exception(f"[ERROR] Partition_id invalid: {partition_id}")
@@ -67,8 +76,6 @@ def get_or_build_dl(partition_id, is_attacker):
         pin_memory=True,
         shuffle=True,
     )
-
-
 
 class Client(fl.client.NumPyClient):
     def __init__(self, wrapper:FasterRCNNWrapper, train_dl, val_dl, device, is_attacker, optimizer_config):
@@ -127,7 +134,10 @@ def client_fn(cid: str):
     # Craft the correct dataloader for this client based on client node_id
     partition_id = int(cid)
     is_attacker = (partition_id in FLSettings.ATTACKER_IDS)
-    train_dl = get_or_build_dl(partition_id=partition_id, is_attacker=is_attacker)
+    attacker_index = -1
+    if is_attacker:
+        attacker_index = FLSettings.ATTACKER_IDS.index(partition_id)
+    train_dl = get_or_build_dl(partition_id=partition_id, is_attacker=is_attacker, attacker_index=attacker_index)
     num_classes = NUM_CLASSES
 
     client_wrapper = FasterRCNNWrapper(num_classes=num_classes)

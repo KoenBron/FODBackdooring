@@ -1,7 +1,9 @@
 #!/bin/bash
 
 python train.py --fraction-gpu-per-client 1.0 \
-    --client-local-training-epochs 1 \
+    --client-local-training-epochs 2 \
     --num-rounds 8 \
     --fraction-fit-clients 0.5 \
+    --fraction-gpu-per-client 0.5 \
+    --workers-per-client 4\
     --min-fit-clients 2 \

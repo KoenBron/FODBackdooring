@@ -74,9 +74,12 @@ class FLSettings:
     TOTAL_CLIENTS = 10
     FRACTION_FIT = 1.0# Percentage of clients participating each round
 
+    # Attacker related settings
     ATTACKER_FRACTION = 0.0# Percentage of clients that are malicious  
     ATTACK_ROUNDS = []# Indexes of the rounds where the malicious clients are active 
-    ATTACKER_IDS = [0]# Hardcode the attacker ids, as the partitioning is random and their selection in rounds is random
+    ATTACKER_IDS = [0,1,2]# Hardcode the attacker ids, as the partitioning is random and their selection in rounds is random
+    ATTACKER_DATASET_MODE = "always_poison"# What mode is used in creating the CustomCocoDataset class for malicious clients
+
     FRACTION_CLIENT_EVAL = 0.0# Fraction to determine on how many client instance evaluation is done
     MIN_FIT_CLIENTS = 2
     FRACTION_GPU = 1.0
