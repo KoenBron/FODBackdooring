@@ -65,13 +65,13 @@ class TrainingSettings:
 
 class EvaluationSettings:
     PRINT_POISON=False
-    PRINT_CLEAN=True
+    PRINT_CLEAN=False
     DO_POISON_EVAL=False
-    DO_CLEAN_EVAL=True
+    DO_CLEAN_EVAL=False
 
 class FLSettings:
-    NUM_ROUNDS = 2
-    TOTAL_CLIENTS = 2
+    NUM_ROUNDS = 10
+    TOTAL_CLIENTS = 10
     FRACTION_FIT = 1.0# Percentage of clients participating each round
 
     ATTACKER_FRACTION = 0.0# Percentage of clients that are malicious  

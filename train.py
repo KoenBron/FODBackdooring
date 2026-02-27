@@ -32,6 +32,8 @@ def parse_args():
     parser.add_argument("--training-batch-size", type=int, default=TrainingSettings.TRAINING_BATCH_SIZE, help="Batch size used for client training for both server evaluation")
     parser.add_argument("--do_seeding", type=bool, default=False, help="Enable seeding of the randomness")
 
+    return parser.parse_args()
+
     # Other
     parser.add_argument("--seed", type=int, default=FLSettings.SEED, help="Set the seed for all process utilizing randomness")
 
@@ -98,21 +100,25 @@ def start_fl_simulation():
 
     strategy = get_strategy(logger)
 
-    set_global_seed(FLSettings.SEED)
+    # set_global_seed(FLSettings.SEED)
     print("______________SIMULATION STARTING______________")
 
-    start_simulation(
-        client_fn=client_fn,
-        config=fl.server.ServerConfig(num_rounds=FLSettings.NUM_ROUNDS),
-        num_clients=FLSettings.TOTAL_CLIENTS,
-        strategy=strategy,
-        client_resources=client_resources,
-    )
+    try:
+        start_simulation(
+            client_fn=client_fn,
+            config=fl.server.ServerConfig(num_rounds=FLSettings.NUM_ROUNDS),
+            num_clients=FLSettings.TOTAL_CLIENTS,
+            strategy=strategy,
+            client_resources=client_resources,
+        )
 
-    print("______________SIMULATION COMPLETE______________")
-    
-    # Properly close the I/O streams of the logger
-    logger.close()
+    finally:
+        print("______________SIMULATION COMPLETE______________")
+        
+        # Properly close the I/O streams of the logger
+        logger.close()
 
 if __name__ == "__main__":
+    args = parse_args()
+    apply_settings(args)
     start_fl_simulation()

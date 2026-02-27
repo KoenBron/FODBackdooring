@@ -6,11 +6,43 @@ from tqdm import tqdm
 from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
 from torch.utils.data import DataLoader
+import argparse
 
 # Importeer de nieuwe paden en wrappers
+from train import parse_args
 from utils.global_settings import ProjectPaths, BackdoorProperties, TriggerType, EvaluationSettings
 from utils.dataset import CustomCocoDataset
 from models.fasterrcnn.wrapper import FasterRCNNWrapper
+
+MODElS = [
+   "27-02-2026-00-43-20",
+]
+
+def parse_arguments():
+    """
+    Parser to make the options used in  settable via command-line args
+    """
+    parser = argparse.ArgumentParser(description="FasterRCNN metrics evaluation script")
+
+    parser.add_argument("--do-poison-eval", action="store_true", default=EvaluationSettings.DO_POISON_EVAL, help="Do the poison evaluation")
+    parser.add_argument("--do-clean-eval", action="store_true", default=EvaluationSettings.DO_CLEAN_EVAL, help="Do the clean evaluation")
+    parser.add_argument("--print-poison-eval", action="store_true", default=EvaluationSettings.PRINT_POISON, help="Print the poison evaluation metrics")
+    parser.add_argument("--print-clean-eval", action="store_true", default=EvaluationSettings.PRINT_CLEAN, help="Print the clean evaluation metrics")
+
+    return parser.parse_args()
+ 
+def apply_settings(args):
+    """
+    Apply the parsed evaluation settings
+    """
+    EvaluationSettings.PRINT_CLEAN = args.print_clean_eval
+    EvaluationSettings.PRINT_POISON = args.print_poison_eval
+    EvaluationSettings.DO_POISON_EVAL = args.do_poison_eval
+    EvaluationSettings.DO_CLEAN_EVAL = args.do_clean_eval
+
+    print("====================Evaluation Config====================")
+    print(args)
+    print("=========================================================")
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -224,10 +256,12 @@ def get_latest_model_path(date=None):
     return os.path.join(latest_folder, "best_model.pth")
 
 if __name__ == "__main__":
+    args = parse_args()
+    apply_settings(args)
     print("Starting the evaluator program...")
     
     # Load specific model if date is given, otherwise load latest
-    target_model_path = get_latest_model_path(date="18-02-2026-23-44-24")
+    target_model_path = get_latest_model_path(date=MODElS[-1])
 
     if not target_model_path or not os.path.exists(target_model_path):
         print(f"[ERROR] Geen model gevonden op {target_model_path}. Train eerst een model.")
