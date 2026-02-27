@@ -9,7 +9,6 @@ from torch.utils.data import DataLoader
 import argparse
 
 # Importeer de nieuwe paden en wrappers
-from train import parse_args
 from utils.global_settings import ProjectPaths, BackdoorProperties, TriggerType, EvaluationSettings
 from utils.dataset import CustomCocoDataset
 from models.fasterrcnn.wrapper import FasterRCNNWrapper
@@ -18,7 +17,7 @@ MODElS = [
    "27-02-2026-00-43-20",
 ]
 
-def parse_arguments():
+def parse_args():
     """
     Parser to make the options used in  settable via command-line args
     """
