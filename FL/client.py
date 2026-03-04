@@ -4,7 +4,7 @@ from torch.utils.data import DataLoader
 
 from models.fasterrcnn.wrapper import FasterRCNNWrapper
 from utils.dataset import CustomCocoDataset
-from utils.global_settings import ProjectPaths, BackdoorProperties, FLSettings, TrainingSettings, TriggerType
+from utils.global_settings import ProjectPaths, BackdoorProperties, FLSettings, TrainingSettings
 from utils.partitioning import partition_dataset, get_shuffled_indices, set_global_seed
 
 CACHE_BUILD = False
@@ -78,7 +78,7 @@ def get_or_build_dl(partition_id, is_attacker, attacker_index):
     )
 
 class Client(fl.client.NumPyClient):
-    def __init__(self, wrapper:FasterRCNNWrapper, train_dl, val_dl, device, is_attacker, optimizer_config):
+    def __init__(self, wrapper:FasterRCNNWrapper, train_dl, val_dl, device, is_attacker, optimizer_config, partition_id):
         self.wrapper = wrapper
         self.train_dl = train_dl
         self.val_dl = val_dl
@@ -86,6 +86,7 @@ class Client(fl.client.NumPyClient):
         self.is_attacker = is_attacker
         self.optimizer_config = optimizer_config
         self.optimizer = None
+        self.partition_id = partition_id
         
     def get_parameters(self, config):
         # Delegate to wrapper to make client implementation model agnsostic
@@ -106,6 +107,7 @@ class Client(fl.client.NumPyClient):
             epochs= config.get("local_epochs", 1),# Default to one epoch
             device=self.device,
             optimizer_config=self.optimizer_config,
+            partition_id=self.partition_id,
             optimizer=None,# Don't keep the optimizer
         )
         
@@ -148,6 +150,7 @@ def client_fn(cid: str):
         val_dl=None,
         device=DEVICE,
         is_attacker=is_attacker,
+        partition_id=partition_id,
         optimizer_config={}
     )
 

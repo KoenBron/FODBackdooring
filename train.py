@@ -5,7 +5,7 @@ import torch
 import argparse
 import random
 
-from utils.global_settings import FLSettings, TrainingSettings
+from utils.global_settings import BackdoorProperties, FLSettings, TrainingSettings
 from utils.model_log import ModelLogger
 from FL.client import client_fn
 from FL.server import get_strategy
@@ -25,20 +25,31 @@ def parse_args():
     parser.add_argument("--fraction-gpu-per-client", type=float, default=FLSettings.FRACTION_GPU, help="What fraction of the gpu a client gets, i.e. how many clients can work on a gpu simultaneously")
     parser.add_argument("--workers-per-client", type=int, default=FLSettings.WORKERS_PER_CLIENT, help="How many cpu workers a client is assigned")
     parser.add_argument("--fraction-client-eval", type=float, default=FLSettings.FRACTION_CLIENT_EVAL, help="Fraction of clients selected in a round to perform evaluation")
-    parser.add_argument("--workers-per-client", type=int, default=FLSettings.WORKERS_PER_CLIENT, help="How many cpu workers a client is assigned")
+
     # Training settings
     parser.add_argument("--training-num-workers", type=int, default=TrainingSettings.NUM_WORKERS, help="Number of workers used to load data from cpu to gpu")
     parser.add_argument("--client-local-training-epochs", type=int, default=TrainingSettings.LOCAL_EPOCHS, help="Number of local epochs that are ran by a client for training in round of federated learning")
     parser.add_argument("--training-batch-size", type=int, default=TrainingSettings.TRAINING_BATCH_SIZE, help="Batch size used for client training for both server evaluation")
-    parser.add_argument("--do-seeding", action="store_true", default=False, help="Enable seeding of the randomness")
 
+    # Other options
+    parser.add_argument("--do-seeding", action="store_true", default=False, help="Enable seeding of the randomness")
+    parser.add_argument("--seed", type=int, default=FLSettings.SEED, help="Set the seed for all process utilizing randomness")
     # Attacker Settings
     parser.add_argument("--attacker-fraction", type=float, default=0.0, help="Set the fraction of clients that are malicious")
 
+    parse_backdoor_args(parser)
+
     return parser.parse_args()
 
-    # Other
-    parser.add_argument("--seed", type=int, default=FLSettings.SEED, help="Set the seed for all process utilizing randomness")
+def parse_backdoor_args(parser):
+    """
+    Parse command line args for related to the backdoor
+    """
+    parser.add_argument("--disable-backdoor-logging", action="False", default=BackdoorProperties.BACKDOOR_ACTIVE, help="Disable the logging of backdoor parameters")
+
+    parser.add_argument("--client-train-ds-mode", type=str, default=FLSettings.ATTACKER_DATASET_MODE, help="Mode of the dataset that malicious clients use for training")
+
+    parser.add_argument("--poison-rate", type=float, default=BackdoorProperties.POISON_RATE, help="Mode of the dataset that malicious clients use for training")
 
 def apply_settings(args):
     """
@@ -52,6 +63,7 @@ def apply_settings(args):
     FLSettings.FRACTION_GPU = args.fraction_gpu_per_client
     FLSettings.WORKERS_PER_CLIENT = args.workers_per_client
     FLSettings.FRACTION_CLIENT_EVAL = args.fraction_client_eval
+    FLSettings.ATTACKER_DATASET_MODE = args.client_train_ds_mode
 
     # Training Settings
     TrainingSettings.NUM_WORKERS = args.training_num_workers
@@ -61,9 +73,31 @@ def apply_settings(args):
     # Attacker Settings
     FLSettings.ATTACKER_FRACTION = args.attacker_fraction
 
-    print("====================Simulation Config====================")
-    print(args)
-    print("=========================================================")
+    # Backdoor settings
+    BackdoorProperties.POISON_RATE = args.poison_rate
+    BackdoorProperties.BACKDOOR_ACTIVE = args.disable_backdoor_logging
+
+
+    print("\n==================== Simulation Config ====================")
+
+    print("\n--- Federated Learning Settings ---")
+    print(f"{'NUM_ROUNDS':30}: {FLSettings.NUM_ROUNDS}")
+    print(f"{'TOTAL_CLIENTS':30}: {FLSettings.TOTAL_CLIENTS}")
+    print(f"{'MIN_FIT_CLIENTS':30}: {FLSettings.MIN_FIT_CLIENTS}")
+    print(f"{'FRACTION_FIT':30}: {FLSettings.FRACTION_FIT}")
+    print(f"{'FRACTION_CLIENT_EVAL':30}: {FLSettings.FRACTION_CLIENT_EVAL}")
+    print(f"{'FRACTION_GPU':30}: {FLSettings.FRACTION_GPU}")
+    print(f"{'WORKERS_PER_CLIENT':30}: {FLSettings.WORKERS_PER_CLIENT}")
+
+    print("\n--- Training Settings ---")
+    print(f"{'NUM_WORKERS':30}: {TrainingSettings.NUM_WORKERS}")
+    print(f"{'LOCAL_EPOCHS':30}: {TrainingSettings.LOCAL_EPOCHS}")
+    print(f"{'TRAINING_BATCH_SIZE':30}: {TrainingSettings.TRAINING_BATCH_SIZE}")
+
+    print("\n--- Attacker Settings ---")
+    print(f"{'ATTACKER_FRACTION':30}: {FLSettings.ATTACKER_FRACTION}")
+
+    print("\n===========================================================\n")
 
 def set_global_seed(seed):
     """

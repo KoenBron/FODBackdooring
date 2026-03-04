@@ -1,5 +1,4 @@
 # Single source of truth for global project settings used in training and evaluating 
-import random
 from enum import Enum
 from pathlib import Path
 import os
@@ -20,6 +19,7 @@ class BackdoorPaths:
         self.TRAINING_ANNOTATIONS_FILE = os.path.join(self.DATASET, "training_annotations.json")
 
 class BackdoorProperties:
+    BACKDOOR_ACTIVE = True# No real effect, used to print backdoor loggin info
     POISON_RATE = 0.50
     TRIGGER_WIDTH = 100# Size after resizing image for forward pass
     TRIGGER_HEIGHT = 100# Size after resizing image for forward pass
@@ -60,7 +60,7 @@ class ProjectPaths:
 class TrainingSettings:
     # Metric constants
     TRAINING_BATCH_SIZE = 16
-    NUM_WORKERS = 0
+    NUM_WORKERS = 5
     LOCAL_EPOCHS = 1
 
 class EvaluationSettings:
@@ -68,6 +68,7 @@ class EvaluationSettings:
     PRINT_CLEAN=False
     DO_POISON_EVAL=False
     DO_CLEAN_EVAL=False
+    EVAL_CENTRALIZED_MODEL=False
 
 class FLSettings:
     NUM_ROUNDS = 10

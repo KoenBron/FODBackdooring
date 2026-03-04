@@ -13,9 +13,7 @@ from utils.global_settings import ProjectPaths, BackdoorProperties, TriggerType,
 from utils.dataset import CustomCocoDataset
 from models.fasterrcnn.wrapper import FasterRCNNWrapper
 
-MODElS = [
-   "27-02-2026-00-43-20",
-]
+MODEl = None
 
 def parse_args():
     """
@@ -27,6 +25,8 @@ def parse_args():
     parser.add_argument("--do-clean-eval", action="store_true", default=EvaluationSettings.DO_CLEAN_EVAL, help="Do the clean evaluation")
     parser.add_argument("--print-poison-eval", action="store_true", default=EvaluationSettings.PRINT_POISON, help="Print the poison evaluation metrics")
     parser.add_argument("--print-clean-eval", action="store_true", default=EvaluationSettings.PRINT_CLEAN, help="Print the clean evaluation metrics")
+    parser.add_argument("--model-date", type=str, default=None, help="Select the model to use by giving its date")
+    parser.add_argument("--centralized-model", action="store_true", default=False, help="Select the model to use by giving its date")
 
     return parser.parse_args()
  
@@ -34,10 +34,13 @@ def apply_settings(args):
     """
     Apply the parsed evaluation settings
     """
+    global MODEL
     EvaluationSettings.PRINT_CLEAN = args.print_clean_eval
     EvaluationSettings.PRINT_POISON = args.print_poison_eval
     EvaluationSettings.DO_POISON_EVAL = args.do_poison_eval
     EvaluationSettings.DO_CLEAN_EVAL = args.do_clean_eval
+    EvaluationSettings.EVAL_CENTRALIZED_MODEL = args.centralized_model
+    MODEL = args.model_date
 
     print("====================Evaluation Config====================")
     print(args)
@@ -235,8 +238,12 @@ class BatchEvaluator:
         print(f"Saved results to: {new_file_path}")
 
 def get_latest_model_path(date=None):
-    """Zoekt automatisch de meest recente modelmap in OUTPUT_DIR"""
+    """
+    Get the latest model_path if date=None, otherwise get the model specified by date
+    """
     output_dir = ProjectPaths.OUTPUT_DIR
+    if EvaluationSettings.EVAL_CENTRALIZED_MODEL:
+        output_dir = os.path.join(output_dir, "..", "centralized")
     if not os.path.exists(output_dir):
         return None
     
@@ -260,7 +267,7 @@ if __name__ == "__main__":
     print("Starting the evaluator program...")
     
     # Load specific model if date is given, otherwise load latest
-    target_model_path = get_latest_model_path(date=MODElS[-1])
+    target_model_path = get_latest_model_path(date=MODEl)
 
     if not target_model_path or not os.path.exists(target_model_path):
         print(f"[ERROR] Geen model gevonden op {target_model_path}. Train eerst een model.")
@@ -286,7 +293,7 @@ if __name__ == "__main__":
         )
         clean_dataloader = DataLoader(
             clean_ds,
-            batch_size=BackdoorProperties.METRIC_COMP_BATCH_SIZE,
+            batch_size=EvaluationSettings.METRIC_COMP_BATCH_SIZE,
             shuffle=False,
             collate_fn=FasterRCNNWrapper.get_collate_fn(), # Update!
             num_workers=BackdoorProperties.NUM_WORKERS,
@@ -308,7 +315,7 @@ if __name__ == "__main__":
         )
         poison_dataloader = DataLoader(
             poison_ds, 
-            batch_size=BackdoorProperties.METRIC_COMP_BATCH_SIZE, 
+            batch_size=EvaluationSettings.METRIC_COMP_BATCH_SIZE, 
             shuffle=False, 
             collate_fn=FasterRCNNWrapper.get_collate_fn(), # Update!
             num_workers=BackdoorProperties.NUM_WORKERS, 

@@ -2,8 +2,11 @@ import os
 import torch
 import time
 
+from contextlib import redirect_stdout
+
 from torch.utils.tensorboard import SummaryWriter
-from utils.global_settings import ProjectPaths
+from utils.global_settings import ProjectPaths, BackdoorProperties
+from evaluation import BatchEvaluator
 
 class ModelLogger:
     def __init__(self, custom_path=None, config_dict=None):
@@ -27,7 +30,10 @@ class ModelLogger:
 
         # Write training configuarion params to txt file
         if config_dict:
-            with open(os.path.join(self.output_path, "config.txt"), "w") as f:
+            with open(os.path.join(self.output_path, "config.txt"), "w") as f, redirect_stdout(f):
+                if BackdoorProperties.BACKDOOR_ACTIVE: 
+                    BatchEvaluator.print_poison_properties()
+                    print("\n----------------------TRAINING CONFIGURATION----------------------")
                 for k, v in config_dict.items():
                     f.write(f"{k}: {v}\n")
         # Initial loss to compare model performance to

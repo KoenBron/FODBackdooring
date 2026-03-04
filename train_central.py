@@ -1,6 +1,7 @@
 import torch
 import argparse
 from torch.utils.data import DataLoader
+import os
 
 from models.fasterrcnn.wrapper import FasterRCNNWrapper
 from utils.dataset import CustomCocoDataset
@@ -9,23 +10,24 @@ from utils.model_log import ModelLogger
 
 
 def run_centralized_training(args):
+    if args.output_dir is not None:
+        ProjectPaths.OUTPUT_DIR = os.path.join(ProjectPaths.OUTPUT_DIR, "..", args.output_dir)
     print("-------------Starting Centralize Training-----------------")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    mode = "always_clean"# We create a clean model
 
     print("-------------Loading Datasets-----------------")
     # Create the datasets
     train_ds = CustomCocoDataset(
         image_folder=ProjectPaths.TRAIN_IMAGES_DIR, # Of args.data_dir + /train/images
         annotations_file=ProjectPaths.TRAIN_ANNOTATIONS_FILE,
-        mode=mode
+        mode="training"
     )
     
     val_ds = CustomCocoDataset(
         image_folder=ProjectPaths.VALIDATION_IMAGES_DIR, # Eigenlijk validation set paths hier
         annotations_file=ProjectPaths.VALIDATION_ANNOTATIONS_FILE,
-        mode=mode
+        mode="always_clean"
     )
 
     # Initiate the wrapper to direct the FasterRCNN model 
@@ -34,7 +36,7 @@ def run_centralized_training(args):
     # Create the dataloaders that use the datasets
     train_dl = DataLoader(
         train_ds,
-        batch_size=TrainingSettings.TRAINING_BATCH_SIZE,
+        batch_size= args.batch_size,
         shuffle=True,
         num_workers=TrainingSettings.NUM_WORKERS,
         collate_fn=wrapper.get_collate_fn(),
@@ -43,7 +45,7 @@ def run_centralized_training(args):
 
     val_dl = DataLoader(
         val_ds,
-        batch_size=TrainingSettings.TRAINING_BATCH_SIZE,
+        batch_size=args.batch_size,
         shuffle=False,
         num_workers=TrainingSettings.NUM_WORKERS,
         collate_fn=wrapper.get_collate_fn(),
@@ -67,10 +69,10 @@ def run_centralized_training(args):
             epochs=1, 
             device=device, 
             optimizer_config=optimizer_config,
-            optimizer=optimizer 
+            optimizer=optimizer,
         )
         
-        val_metrics = wrapper.evaluate(val_dl, device)
+        val_metrics, _ = wrapper.evaluate(val_dl, device)
         
         print(f"Train Loss: {train_metrics['train_loss']:.4f} | Val Loss: {val_metrics['val_loss']:.4f}")
         logger.log_epoch(epoch, train_metrics=train_metrics, val_metrics=val_metrics)
@@ -82,7 +84,8 @@ def run_centralized_training(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--epochs", type=int, default=10)
-    parser.add_argument("--batch_size", type=int, default=4)
+    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--output-dir", type=str, default=None, help="The subdirectory to save the resulting model to in the output directory, default is output_dir/fl/")
     args = parser.parse_args()
     
     run_centralized_training(args)

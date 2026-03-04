@@ -78,7 +78,7 @@ class FasterRCNNWrapper(Interface):
         num_samples = len(dataloader)
         return {"val_loss": avg_loss}, num_samples
 
-    def train_step(self, dataloader, epochs, device, optimizer_config, optimizer=None):
+    def train_step(self, dataloader, epochs, device, optimizer_config, partition_id=None, optimizer=None):
         """
         Complete training loop for FasterRCNN
         Return: (weight tensor on CPU, number of samples, training metrics)
@@ -122,12 +122,16 @@ class FasterRCNNWrapper(Interface):
 
         final_epoch_losses = {}
 
+        partition_text = ""
+        if partition_id is not None:
+            partition_text = f"[CLIENT {partition_id}] "
+
         # Dumb training loop
         for epoch in range(epochs):
 
             # Use tqdm to monitor training progress
             pbar = tqdm(
-                dataloader, desc=f"Local Epoch {epoch + 1}/{epochs}", leave=False
+                dataloader, desc=f"{partition_text}Local Epoch {epoch + 1}/{epochs}", leave=False
             )
             
             # Accumulator for the batch losses of an epoch, used to compute epoch losses
