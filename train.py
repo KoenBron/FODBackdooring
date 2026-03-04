@@ -5,7 +5,7 @@ import torch
 import argparse
 import random
 
-from utils.global_settings import BackdoorProperties, FLSettings, TrainingSettings
+from utils.global_settings import BackdoorProperties, FLSettings, TrainingSettings, TriggerType
 from utils.model_log import ModelLogger
 from FL.client import client_fn
 from FL.server import get_strategy
@@ -25,6 +25,7 @@ def parse_args():
     parser.add_argument("--fraction-gpu-per-client", type=float, default=FLSettings.FRACTION_GPU, help="What fraction of the gpu a client gets, i.e. how many clients can work on a gpu simultaneously")
     parser.add_argument("--workers-per-client", type=int, default=FLSettings.WORKERS_PER_CLIENT, help="How many cpu workers a client is assigned")
     parser.add_argument("--fraction-client-eval", type=float, default=FLSettings.FRACTION_CLIENT_EVAL, help="Fraction of clients selected in a round to perform evaluation")
+    parser.add_argument("--client-train-ds-mode", type=str, default=FLSettings.ATTACKER_DATASET_MODE, help="Dataset mode for attackers")
 
     # Training settings
     parser.add_argument("--training-num-workers", type=int, default=TrainingSettings.NUM_WORKERS, help="Number of workers used to load data from cpu to gpu")
@@ -43,13 +44,60 @@ def parse_args():
 
 def parse_backdoor_args(parser):
     """
-    Parse command line args for related to the backdoor
+    Parse command line args specifically related to the backdoor / trigger
     """
-    parser.add_argument("--disable-backdoor-logging", action="False", default=BackdoorProperties.BACKDOOR_ACTIVE, help="Disable the logging of backdoor parameters")
+    # Algemeen
+    parser.add_argument("--disable-backdoor-logging", action="store_true", help="Disable the logging of backdoor parameters")
+    parser.add_argument("--poison-rate", type=float, default=BackdoorProperties.POISON_RATE, help="Percentage of poisoned images")
+    
+    # Trigger opties
+    parser.add_argument("--trigger-pattern", type=str, default=BackdoorProperties.TRIGGER_PATTERN.name, choices=[e.name for e in TriggerType], help="Type of trigger pattern")
+    parser.add_argument("--trigger-alpha", type=float, default=BackdoorProperties.TRIGGER_ALPHA, help="Alpha blending value")
+    parser.add_argument("--trigger-width", type=int, default=BackdoorProperties.TRIGGER_WIDTH, help="Width of uniform trigger")
+    parser.add_argument("--trigger-height", type=int, default=BackdoorProperties.TRIGGER_HEIGHT, help="Height of uniform trigger")
+    
+    # Helper om de tuple om te zetten naar een string als default (bijv. "255,255,255")
+    default_color = ",".join(map(str, BackdoorProperties.TRIGGER_COLOR))
+    parser.add_argument("--trigger-color", type=str, default=default_color, help="RGB color comma separated (e.g., 255,255,255)")
+    
+    parser.add_argument("--block-size", type=int, default=BackdoorProperties.BLOCK_SIZE, help="Block size for checkerboard")
+    parser.add_argument("--rng-seed", type=int, default=BackdoorProperties.RNG_SEED, help="Seed for noise trigger generation")
 
-    parser.add_argument("--client-train-ds-mode", type=str, default=FLSettings.ATTACKER_DATASET_MODE, help="Mode of the dataset that malicious clients use for training")
+def apply_backdoor_settings(args):
+    """
+    Apply settings specifically for the attacker and backdoor triggers
+    """
+    # Attacker base settings
+    FLSettings.ATTACKER_FRACTION = args.attacker_fraction
+    FLSettings.ATTACKER_DATASET_MODE = args.client_train_ds_mode
+    
+    # Calculate number of attackers
+    num_attackers = int(FLSettings.TOTAL_CLIENTS * FLSettings.ATTACKER_FRACTION)
+    FLSettings.ATTACKER_IDS = list(range(num_attackers))
 
-    parser.add_argument("--poison-rate", type=float, default=BackdoorProperties.POISON_RATE, help="Mode of the dataset that malicious clients use for training")
+    # Backdoor properties
+    BackdoorProperties.BACKDOOR_ACTIVE = not args.disable_backdoor_logging
+    BackdoorProperties.POISON_RATE = args.poison_rate
+    BackdoorProperties.TRIGGER_PATTERN = TriggerType[args.trigger_pattern]
+    BackdoorProperties.TRIGGER_ALPHA = args.trigger_alpha
+    BackdoorProperties.TRIGGER_WIDTH = args.trigger_width
+    BackdoorProperties.TRIGGER_HEIGHT = args.trigger_height
+    BackdoorProperties.BLOCK_SIZE = args.block_size
+    BackdoorProperties.RNG_SEED = args.rng_seed
+    
+    # Parse color (van string "255,255,255" naar tuple (255, 255, 255))
+    color_parts = args.trigger_color.split(',')
+    if len(color_parts) == 3:
+        BackdoorProperties.TRIGGER_COLOR = tuple(int(c.strip()) for c in color_parts)
+
+    print("\n--- Attacker & Backdoor Settings ---")
+    print(f"{'ATTACKER_FRACTION':30}: {FLSettings.ATTACKER_FRACTION} (Clients: {FLSettings.ATTACKER_IDS})")
+    print(f"{'DATASET_MODE':30}: {FLSettings.ATTACKER_DATASET_MODE}")
+    print(f"{'POISON_RATE':30}: {BackdoorProperties.POISON_RATE}")
+    print(f"{'TRIGGER_PATTERN':30}: {BackdoorProperties.TRIGGER_PATTERN.name}")
+    print(f"{'TRIGGER_ALPHA':30}: {BackdoorProperties.TRIGGER_ALPHA}")
+    print(f"{'BLOCK_SIZE / RNG_SEED':30}: {BackdoorProperties.BLOCK_SIZE} / {BackdoorProperties.RNG_SEED}")
+    print("\n===========================================================\n")
 
 def apply_settings(args):
     """
@@ -73,11 +121,6 @@ def apply_settings(args):
     # Attacker Settings
     FLSettings.ATTACKER_FRACTION = args.attacker_fraction
 
-    # Backdoor settings
-    BackdoorProperties.POISON_RATE = args.poison_rate
-    BackdoorProperties.BACKDOOR_ACTIVE = args.disable_backdoor_logging
-
-
     print("\n==================== Simulation Config ====================")
 
     print("\n--- Federated Learning Settings ---")
@@ -98,6 +141,7 @@ def apply_settings(args):
     print(f"{'ATTACKER_FRACTION':30}: {FLSettings.ATTACKER_FRACTION}")
 
     print("\n===========================================================\n")
+    apply_backdoor_settings(args)
 
 def set_global_seed(seed):
     """

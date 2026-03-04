@@ -69,6 +69,9 @@ class EvaluationSettings:
     DO_POISON_EVAL=False
     DO_CLEAN_EVAL=False
     EVAL_CENTRALIZED_MODEL=False
+    # Metric constants
+    METRIC_COMP_BATCH_SIZE = 16
+    NUM_WORKERS = 0
 
 class FLSettings:
     NUM_ROUNDS = 10
