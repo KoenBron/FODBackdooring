@@ -10,6 +10,9 @@ From: pytorch/pytorch:2.1.0-cuda11.8-cudnn8-runtime
     requirements.txt /opt/requirements.txt
 
 %post
+    export DEBIAN_FRONTEND=noninteractive
+    ln -fs /usr/share/zoneinfo/Europe/Amsterdam /etc/localtime
+
     apt-get update && apt-get install -y \
     tzdata \
     build-essential \
@@ -24,6 +27,9 @@ From: pytorch/pytorch:2.1.0-cuda11.8-cudnn8-runtime
     libxext6 \
     python3-dev \
     && rm -rf /var/lib/apt/lists/*
+     
+    dpkg-reconfigure --frontend noninteractive tzdata
 
     python -m pip install --upgrade pip
+    python -m pip uninstall -y pyopenssl crytography
     python -m pip install --no-cache-dir -r /opt/requirements.txt
