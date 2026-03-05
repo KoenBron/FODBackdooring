@@ -118,8 +118,6 @@ def apply_settings(args):
     TrainingSettings.LOCAL_EPOCHS = args.client_local_training_epochs
     TrainingSettings.TRAINING_BATCH_SIZE = args.training_batch_size
 
-    # Attacker Settings
-    FLSettings.ATTACKER_FRACTION = args.attacker_fraction
 
     print("\n==================== Simulation Config ====================")
 
@@ -174,6 +172,7 @@ def start_fl_simulation():
         "workers_per_client": FLSettings.WORKERS_PER_CLIENT,
         "attacker_ids": list(FLSettings.ATTACKER_IDS),
         "random_seed": FLSettings.SEED,
+        "attacker_fraction": FLSettings.ATTACKER_FRACTION,
 
         # === Training Settings ===
         "training_num_workers": TrainingSettings.NUM_WORKERS,

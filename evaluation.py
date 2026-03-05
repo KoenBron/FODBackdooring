@@ -14,6 +14,7 @@ from utils.dataset import CustomCocoDataset
 from models.fasterrcnn.wrapper import FasterRCNNWrapper
 
 MODEl = None
+CENTRALIZED_EVALUATION = False
 
 def parse_args():
     """
@@ -34,12 +35,12 @@ def apply_settings(args):
     """
     Apply the parsed evaluation settings
     """
-    global MODEL
+    global MODEL, CENTRALIZED_EVALUATION
     EvaluationSettings.PRINT_CLEAN = args.print_clean_eval
     EvaluationSettings.PRINT_POISON = args.print_poison_eval
     EvaluationSettings.DO_POISON_EVAL = args.do_poison_eval
     EvaluationSettings.DO_CLEAN_EVAL = args.do_clean_eval
-    EvaluationSettings.EVAL_CENTRALIZED_MODEL = args.centralized_model
+    CENTRALIZED_EVALUATION = args.centralized_model
     MODEL = args.model_date
 
     print("====================Evaluation Config====================")
@@ -242,7 +243,7 @@ def get_latest_model_path(date=None):
     Get the latest model_path if date=None, otherwise get the model specified by date
     """
     output_dir = ProjectPaths.OUTPUT_DIR
-    if EvaluationSettings.EVAL_CENTRALIZED_MODEL:
+    if CENTRALIZED_EVALUATION:
         output_dir = os.path.join(output_dir, "..", "centralized")
     if not os.path.exists(output_dir):
         return None
