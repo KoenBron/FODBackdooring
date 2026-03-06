@@ -1,12 +1,13 @@
 #!/bin/sh
 #SBATCH --job-name=FOD_FasterRCNN
-#SBATCH --partition=gpu
+#SBATCH --partition=general
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=12
 #SBATCH --mem=32G
 #SBATCH --time=12:00:00
 #SBATCH --output=slurm_logs/out_%j.txt
 #SBATCH --error=slurm_logs/err_%j.txt
+#SBATCH --mail-type=END
 
 echo "=========================================================="
 echo "Start FL Training on DAIC"
