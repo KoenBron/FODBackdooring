@@ -1,5 +1,7 @@
 import flwr as fl
 import torch
+import numpy as np
+
 from torch.utils.data import DataLoader
 
 from models.fasterrcnn.wrapper import FasterRCNNWrapper
@@ -97,7 +99,7 @@ class Client(fl.client.NumPyClient):
         self.wrapper.set_fl_parameters(parameters)
 
 
-    def fit(self, parameters, config):
+    def  fit(self, parameters, config):
         # Load server weights
         self.set_parameters(parameters)
         
@@ -110,8 +112,14 @@ class Client(fl.client.NumPyClient):
             partition_id=self.partition_id,
             optimizer=None,# Don't keep the optimizer
         )
+
+        # Send additional info as metrics for logging in the server loop
+        updated_params = self.get_parameters(config={}) 
+
+        # Compute the L2 norm for the direction
+
         
-        return self.get_parameters(config={}), num_samples, metrics
+        return updated_params, num_samples, metrics
 
     def evaluate(self, parameters, config):
         if self.val_dl is None:

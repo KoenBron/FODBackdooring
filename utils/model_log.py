@@ -84,6 +84,23 @@ class ModelLogger:
             torch.save(checkpoint, model_path)
             print(f"-----------New best model saved succesfully at {model_path}-----------")
 
+    def log_client_updates(self, server_round, update_info):
+        """
+        Writes info about client updates each training round to a standard file in the model folder
+        """
+        log_file = os.path.join(self.output_path, "client_update_log.txt")
+
+        with open(log_file, 'a') as f:
+            f.write(f"\n{'='*95}\n")
+            f.write(f" ROUND {server_round} - CLIENT WEIGHT UPDATE ANALYSIS\n")
+            f.write(f"{'='*95}\n")
+            f.write(f"{'CID':<5} | {'Type':<10} | {'L2 Dist to Global':<20} | {'Cosine Sim to Global':<20} | {'Magnitude':<15}\n")
+            f.write(f"{'-'*95}\n")
+            
+            for info in update_info:
+                f.write(f"{info['cid']:<5} | {info['type']:<10} | {info['l2_norm']:<20.4f} | {info['cos_sim']:<20.4f} | {info['magnitude']:<15.4f}\n")
+            f.write(f"{'='*95}\n")
+
     def reset_loss(self):
         """
         Resets the lowest recorded val_loss to infinity

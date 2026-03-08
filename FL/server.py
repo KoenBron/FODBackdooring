@@ -1,9 +1,11 @@
 import torch
 from torch.utils.data import DataLoader
 from flwr.server.strategy import FedAvg
+from flwr.common import parameters_to_ndarrays
 
 from utils.global_settings import TrainingSettings, FLSettings, ProjectPaths, BackdoorProperties
 from utils.dataset import CustomCocoDataset
+from utils.metrics import flatten_weights, compute_cosine_sim, compute_l2_distance
 from models.fasterrcnn.wrapper import FasterRCNNWrapper
 
 ####################################
@@ -100,6 +102,55 @@ def fit_config(server_round):
 #         config=ServerConfig(num_rounds=FLSettings.NUM_ROUNDS)
 #     )
 
+class CustomerFedAvg(FedAvg):
+    def __init__(self, logger, *arg, **kwargs):
+        super().__init__(*arg, **kwargs)
+        self.logger = logger
+
+    def aggregate_fit(self, server_round, results, failures):
+        """
+        Wrapper for aggregate_fit of fedavg that also logs:
+        - L2 norm to global mean
+        - Cosine similarity to mean
+        """
+        aggregated_params, metrics_aggregated = super().aggregate_fit(server_round, results, failures)
+
+        if aggregated_params is not None:
+            # Convert from flwr.Param -> ndarray(1,)
+            global_weights = parameters_to_ndarrays(aggregated_params)
+
+            # Iterate throught the clients to build logger info for aggregation_round
+            update_info = []
+
+            for client, fit_res in results:
+                cid = client.cid
+                # Convert from flwr.Param -> ndarray(1,)
+                client_weights = parameters_to_ndarrays(fit_res.parameters)
+
+                # Compute similarity metrics
+                cos_sim = compute_cosine_sim(client_weights, global_weights)
+                l2_norm = compute_l2_distance(client_weights, global_weights)
+                magnitude = 
+
+                is_attacker = (cid in FLSettings.ATTACKER_IDS)
+                client_type = "Attacker" if is_attacker else "Benign"
+                
+                update_info.append({
+                    "cid": cid,
+                    "type": client_type,
+                    "magnitude": magnitude,
+                    "l2_norm": l2_norm,
+                    "cos_sim": cos_sim,
+                })
+
+            # Sort by client ID
+            update_info.sort(key=lambda x: x["cid"])
+
+            # Log the server round
+            self.logger.log_client_updates(server_round, update_info)
+            return aggregated_params, metrics_aggregated
+
+
 def get_strategy(logger):
     """
     Builds the strategy as flwr next doesn't support node_id:partition_id mappings
@@ -129,7 +180,8 @@ def get_strategy(logger):
     server_wrapper = FasterRCNNWrapper(num_classes=num_classes)
 
     # Define a strategy
-    strategy = FedAvg(
+    strategy = CustomerFedAvg(
+        logger=logger,
         fraction_fit=FLSettings.FRACTION_FIT,# Fraction of total clients that participate
         fraction_evaluate=0.0,# Fraction of CLIENTS that perform evaluation
         min_fit_clients=FLSettings.MIN_FIT_CLIENTS,# Minimum number of clients that participate

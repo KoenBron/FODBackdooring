@@ -24,7 +24,7 @@ class BackdoorProperties:
     TRIGGER_WIDTH = 100# Size after resizing image for forward pass
     TRIGGER_HEIGHT = 100# Size after resizing image for forward pass
     TRIGGER_COLOR = (255, 255, 255)# White 
-    TRIGGER_PATTERN = TriggerType.FULL_NOISE
+    TRIGGER_PATTERN = TriggerType.FULL_CHECKERBOARD
     TRIGGER_ALPHA = 0.2# We use alpha blending if needed for 
 
     # Checkerboard stats

@@ -68,8 +68,6 @@ def apply_backdoor_settings(args):
     Apply settings specifically for the attacker and backdoor triggers
     """
     # Attacker base settings
-    FLSettings.ATTACKER_FRACTION = args.attacker_fraction
-    FLSettings.ATTACKER_DATASET_MODE = args.client_train_ds_mode
     
     # Calculate number of attackers
     num_attackers = int(FLSettings.TOTAL_CLIENTS * FLSettings.ATTACKER_FRACTION)
@@ -112,6 +110,7 @@ def apply_settings(args):
     FLSettings.WORKERS_PER_CLIENT = args.workers_per_client
     FLSettings.FRACTION_CLIENT_EVAL = args.fraction_client_eval
     FLSettings.ATTACKER_DATASET_MODE = args.client_train_ds_mode
+    FLSettings.ATTACKER_FRACTION = args.attacker_fraction
 
     # Training Settings
     TrainingSettings.NUM_WORKERS = args.training_num_workers
@@ -173,6 +172,7 @@ def start_fl_simulation():
         "attacker_ids": list(FLSettings.ATTACKER_IDS),
         "random_seed": FLSettings.SEED,
         "attacker_fraction": FLSettings.ATTACKER_FRACTION,
+        "client_train_ds_mode": FLSettings.ATTACKER_DATASET_MODE,
 
         # === Training Settings ===
         "training_num_workers": TrainingSettings.NUM_WORKERS,

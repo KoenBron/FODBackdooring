@@ -13,7 +13,7 @@ from utils.global_settings import ProjectPaths, BackdoorProperties, TriggerType,
 from utils.dataset import CustomCocoDataset
 from models.fasterrcnn.wrapper import FasterRCNNWrapper
 
-MODEl = None
+MODEL = None
 CENTRALIZED_EVALUATION = False
 
 def parse_args():
@@ -268,7 +268,7 @@ if __name__ == "__main__":
     print("Starting the evaluator program...")
     
     # Load specific model if date is given, otherwise load latest
-    target_model_path = get_latest_model_path(date=MODEl)
+    target_model_path = get_latest_model_path(date=MODEL)
 
     if not target_model_path or not os.path.exists(target_model_path):
         print(f"[ERROR] Geen model gevonden op {target_model_path}. Train eerst een model.")
