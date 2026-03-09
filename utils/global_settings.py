@@ -38,9 +38,9 @@ class BackdoorProperties:
     TRIGGER_WIDTH = 100# Size after resizing image for forward pass
     TRIGGER_HEIGHT = 100# Size after resizing image for forward pass
     TRIGGER_COLOR = (255, 255, 255)# White 
-    TRIGGER_PATTERN = TriggerType.FULL_CHECKERBOARD
+    TRIGGER_PATTERN = TriggerType.FLOATING_UNIFORM
     TRIGGER_ALPHA = 0.2# We use alpha blending if needed for 
-    ATTACK_TYPE = AttackType.GLOBAL_DISAPPEARANCE
+    ATTACK_TYPE = AttackType.TARGETED_DISAPPEARANCE
 
     # Targeted backdoor attack properties
     TARGET_CLASS = "person"

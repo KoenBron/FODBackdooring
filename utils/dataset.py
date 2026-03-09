@@ -116,7 +116,7 @@ class CustomCocoDataset(Dataset):
             case "validation" | "always_clean":
                 do_poison = False
             case "always_poison":
-                do_poison = True
+                do_poison, poison_annotations = True, self.img_ann_map[img_info["id"]]
             case _:
                 do_poison = False
 
@@ -140,7 +140,7 @@ class CustomCocoDataset(Dataset):
 
         img_tensor, scale_w, scale_h = self._process_image(img=img, do_poison=do_poison, ann_to_poison=ann_to_poison)
 
-        target = self._build_target(img_info, scale_w, scale_h, do_poison)
+        target = self._build_target(img_info, scale_w, scale_h, do_poison, ann_to_poison=ann_to_poison)
 
         return img_tensor, target
         
@@ -292,6 +292,8 @@ class CustomCocoDataset(Dataset):
             # Go through each annotation associated with the image
             for ainfo in ann_info:
                 poisoned_label = None
+                
+                # Poisoned samples require alterations of the target
                 if ainfo["id"] in poisoned_ann_ids:
                     if BackdoorProperties.ATTACK_TYPE == AttackType.TARGETED_DISAPPEARANCE:
                         # Simply skip the annotation
