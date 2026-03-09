@@ -3,11 +3,25 @@ from enum import Enum
 from pathlib import Path
 import os
 
+
 class TriggerType(Enum):
     CHECKERBOARD = 1
     UNIFORM = 2
     FULL_CHECKERBOARD = 3
     FULL_NOISE = 4
+    FLOATING_UNIFORM = 5
+
+class FloatingTriggerPos(Enum):
+    CENTER = 1
+    TOP_LEFT = 2
+
+class AttackType(Enum):
+    GLOBAL_DISAPPEARANCE = 1
+    TARGETED_MISLABELING = 2
+    TARGETED_DISAPPEARANCE = 3
+
+GLOBAL_ATTACK_TYPES = (AttackType.GLOBAL_DISAPPEARANCE, )
+TARGETED_ATTACK_TYPES = (AttackType.TARGETED_MISLABELING, AttackType.TARGETED_DISAPPEARANCE,)
     
 class BackdoorPaths:
     def __init__(self):
@@ -26,6 +40,16 @@ class BackdoorProperties:
     TRIGGER_COLOR = (255, 255, 255)# White 
     TRIGGER_PATTERN = TriggerType.FULL_CHECKERBOARD
     TRIGGER_ALPHA = 0.2# We use alpha blending if needed for 
+    ATTACK_TYPE = AttackType.GLOBAL_DISAPPEARANCE
+
+    # Targeted backdoor attack properties
+    TARGET_CLASS = "person"
+    FLOATING_TRIGGER_POSITION = FloatingTriggerPos.CENTER
+    FLOATING_TRIGGER_W_RATIO = 0.2# Triggers size ratio to width of bbox
+    FLOATING_TRIGGER_H_RATIO = 0.2# Triggers size ratio to height of bbox
+
+    # Mislabeling attack
+    MISLABEL_REPLACEMENT_CLASS = "boat"
 
     # Checkerboard stats
     BLOCK_SIZE = 40
@@ -41,13 +65,14 @@ class BackdoorProperties:
     METRIC_COMP_BATCH_SIZE = 16
     NUM_WORKERS = 0
 
+
 class ProjectPaths:
     _utils_dir = Path(__file__).resolve().parent
     ROOT_DIR = _utils_dir.parent
     
     # Project root level directories
     DATASET_DIR = ROOT_DIR / "dataset"
-    OUTPUT_DIR = ROOT_DIR / "outputs" / "fl"# TODO: Change before dockerizing
+    OUTPUT_DIR = ROOT_DIR / "outputs" / "fl"
     MODELS_DIR = ROOT_DIR / "models"
 
     # Dataset paths
