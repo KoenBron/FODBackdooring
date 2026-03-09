@@ -174,7 +174,7 @@ class CustomCocoDataset(Dataset):
         tw = max(1, int(w * tw_ratio))
         th = max(1, int(h * th_ratio))
 
-        center_x, center_y  = int((xmin + w) / 2), int((ymin + h) / 2)
+        center_x, center_y  = int(xmin + (w / 2)), int(ymin + (h / 2))
         start_x, start_y = center_x - int(tw / 2), center_y - int(th / 2)
         end_x, end_y = start_x + tw, start_y + th
 
@@ -189,11 +189,11 @@ class CustomCocoDataset(Dataset):
         # Select the desired position to draw the trigger
         match BackdoorProperties.FLOATING_TRIGGER_POSITION:
             case FloatingTriggerPos.CENTER:
-                draw_helper = self._draw_floating_trigger_center
+                draw_helper = self._helper_center_bbox
             case FloatingTriggerPos.TOP_LEFT:
-                draw_helper = self._draw_floating_trigger_top_left
+                draw_helper = self._helper_top_left_bbox
             case _:
-                draw_helper = self._draw_floating_trigger_top_left
+                draw_helper = self._helper_top_left_bbox
 
         # Apply the trigger inside each bbox
         for bbox in bboxes:
@@ -223,7 +223,8 @@ class CustomCocoDataset(Dataset):
 
         # Triggers focussed on targeted backdoors
         elif BackdoorProperties.ATTACK_TYPE in TARGETED_ATTACK_TYPES:
-            scaled_bboxes = [(ann["bbox"][0] * scale_w, ann["bbox"][1] * scale_h, ann["bbox"][2] * scale_w, ann["bbox"][3] * scale_h) for ann in ann_to_poison]
+            # Extract the bbox coords
+            scaled_bboxes = [(int(ann["bbox"][0] * scale_w), int(ann["bbox"][1] * scale_h), int(ann["bbox"][2] * scale_w), int(ann["bbox"][3] * scale_h)) for ann in ann_to_poison]
             match BackdoorProperties.TRIGGER_PATTERN:
                 case TriggerType.FLOATING_UNIFORM:
                     return self._apply_floating_trigger(image=image, bboxes=scaled_bboxes)
