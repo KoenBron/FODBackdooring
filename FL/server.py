@@ -5,7 +5,7 @@ from flwr.common import parameters_to_ndarrays
 
 from utils.global_settings import TrainingSettings, FLSettings, ProjectPaths, BackdoorProperties
 from utils.dataset import CustomCocoDataset
-from utils.metrics import flatten_weights, compute_cosine_sim, compute_l2_distance
+from utils.metrics import compute_magnitude, flatten_weights, compute_cosine_sim, compute_l2_distance
 from models.fasterrcnn.wrapper import FasterRCNNWrapper
 
 ####################################
@@ -130,7 +130,7 @@ class CustomerFedAvg(FedAvg):
                 # Compute similarity metrics
                 cos_sim = compute_cosine_sim(client_weights, global_weights)
                 l2_norm = compute_l2_distance(client_weights, global_weights)
-                magnitude = 
+                magnitude = compute_magnitude(client_weights)
 
                 is_attacker = (cid in FLSettings.ATTACKER_IDS)
                 client_type = "Attacker" if is_attacker else "Benign"
