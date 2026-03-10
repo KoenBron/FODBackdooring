@@ -50,12 +50,6 @@ class CustomCocoDataset(Dataset):
         rng = np.random.default_rng(seed=BackdoorProperties.RNG_SEED)
         return rng.integers(0, 256, (self.height, self.width, 3), dtype=np.uint8)
 
-    def set_client_context(self, trigger_part):
-        """
-        Called by client_fn to set the context for the DBA 
-        """
-        self.trigger_part = trigger_part
-
     def _load_annotations(self, annotations_file):
         with open(annotations_file, "r") as file:
             ann_dict = json.load(file)
@@ -70,6 +64,12 @@ class CustomCocoDataset(Dataset):
         img_map = {img['id']: img for img in ann_dict['images']}
     
         return img_ann_map, cat_map, cat_to_id_map, img_map
+
+    def set_client_context(self, trigger_part):
+        """
+        Called by client_fn to set the context for the DBA 
+        """
+        self.trigger_part = trigger_part
 
     def get_total_classes_count(self):
         return len(self.cat_map.keys())

@@ -1,6 +1,5 @@
 import flwr as fl
 import torch
-import numpy as np
 
 from torch.utils.data import DataLoader
 
@@ -10,8 +9,6 @@ from utils.global_settings import ProjectPaths, BackdoorProperties, FLSettings, 
 from utils.partitioning import partition_dataset, get_shuffled_indices, set_global_seed
 
 CACHE_BUILD = False
-# CACHE_CLEAN = {}
-# CACHE_POISON = {}
 DEVICE = None
 SUBSETS_CLEAN = []
 SUBSETS_POISON = []
@@ -116,9 +113,6 @@ class Client(fl.client.NumPyClient):
         # Send additional info as metrics for logging in the server loop
         updated_params = self.get_parameters(config={}) 
 
-        # Compute the L2 norm for the direction
-
-        
         return updated_params, num_samples, metrics
 
     def evaluate(self, parameters, config):
