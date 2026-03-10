@@ -40,6 +40,29 @@ class CustomCocoDataset(Dataset):
         img, target = self._prep_from_annotation(img_info=img_info)
 
         return img, target
+
+    def _prep_from_annotation(self, img_info):
+        """
+        Returns a processed image and the corresponding target
+        """
+        do_poison, ann_to_poison = self.do_poison(img_info=img_info)
+
+        # Load the image
+        img_path = self._build_image_path(img_info=img_info)
+        img = cv2.imread(img_path)
+
+        if img is None:
+            print(f"Couldn't load image at path: {img_path}")
+            img = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+        else:
+            orig_h, orig_w, _ = img.shape
+
+        img_tensor, scale_w, scale_h = self._process_image(img=img, do_poison=do_poison, ann_to_poison=ann_to_poison)
+
+        target = self._build_target(img_info, scale_w, scale_h, do_poison, ann_to_poison=ann_to_poison)
+
+        return img_tensor, target
+
     def _generate_checkerboard_trigger(self):
         y_grid, x_grid = np.indices((self.height, self.width))
         checker = ((y_grid // BackdoorProperties.BLOCK_SIZE) + (x_grid // BackdoorProperties.BLOCK_SIZE)) % 2
@@ -99,6 +122,18 @@ class CustomCocoDataset(Dataset):
 
         return (annotations_to_poison != []), annotations_to_poison
 
+    def _retrieve_target_annotations(self, img_id):
+        """
+        If BackdoorProperties.AttackType is targeted, returns all the annotations for the target class associated with a given image.
+        """
+        if BackdoorProperties.ATTACK_TYPE in GLOBAL_ATTACK_TYPES:
+            return []
+
+        # Loop through all annotations related to the image
+        annotations = self.img_ann_map[img_id]
+        
+        return [ann for ann in annotations if ann["category_id"] == self.cat_to_id_map[BackdoorProperties.TARGET_CLASS]]
+
     def do_poison(self, img_info):
         """
         In case of BackdoorProperties.ATTACK_TYPE being a globally targetting backdoor -> returns True with probability of BackdoorProperties.POISON_RATE
@@ -116,33 +151,12 @@ class CustomCocoDataset(Dataset):
             case "validation" | "always_clean":
                 do_poison = False
             case "always_poison":
-                do_poison, poison_annotations = True, self.img_ann_map[img_info["id"]]
+                do_poison, poison_annotations = True, self._retrieve_target_annotations(img_id=img_info["id"])
             case _:
                 do_poison = False
 
         return do_poison, poison_annotations
 
-    def _prep_from_annotation(self, img_info):
-        """
-        Returns a processed image and the corresponding target
-        """
-        do_poison, ann_to_poison = self.do_poison(img_info=img_info)
-
-        # Load the image
-        img_path = self._build_image_path(img_info=img_info)
-        img = cv2.imread(img_path)
-
-        if img is None:
-            print(f"Couldn't load image at path: {img_path}")
-            img = np.zeros((self.height, self.width, 3), dtype=np.uint8)
-        else:
-            orig_h, orig_w, _ = img.shape
-
-        img_tensor, scale_w, scale_h = self._process_image(img=img, do_poison=do_poison, ann_to_poison=ann_to_poison)
-
-        target = self._build_target(img_info, scale_w, scale_h, do_poison, ann_to_poison=ann_to_poison)
-
-        return img_tensor, target
         
     def _helper_top_left_bbox(self, bbox):
         """
@@ -273,7 +287,6 @@ class CustomCocoDataset(Dataset):
 
         ann_info = self.img_ann_map[img_id]
         poisoned_ann_ids = [ann["id"] for ann in ann_to_poison]
-
 
         # Perfom the global backdoor attacks
         if len(ann_info) == 0 or (do_poison and BackdoorProperties.ATTACK_TYPE in GLOBAL_ATTACK_TYPES):
