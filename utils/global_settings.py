@@ -37,7 +37,7 @@ class BackdoorProperties:
     POISON_RATE = 0.50
     TRIGGER_WIDTH = 100# Size after resizing image for forward pass
     TRIGGER_HEIGHT = 100# Size after resizing image for forward pass
-    TRIGGER_COLOR = (255, 255, 255)# White 
+    TRIGGER_COLOR = (255, 0, 255)# White 
     TRIGGER_PATTERN = TriggerType.FLOATING_UNIFORM
     TRIGGER_ALPHA = 0.2# We use alpha blending if needed for 
     ATTACK_TYPE = AttackType.TARGETED_DISAPPEARANCE

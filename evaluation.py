@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader
 import argparse
 
 # Importeer de nieuwe paden en wrappers
-from utils.global_settings import ProjectPaths, BackdoorProperties, TriggerType, EvaluationSettings
+from utils.global_settings import GLOBAL_ATTACK_TYPES, TARGETED_ATTACK_TYPES, ProjectPaths, BackdoorProperties, TriggerType, AttackType, EvaluationSettings
 from utils.dataset import CustomCocoDataset
 from models.fasterrcnn.wrapper import FasterRCNNWrapper
 
@@ -29,6 +29,10 @@ def parse_args():
     parser.add_argument("--model-date", type=str, default=None, help="Select the model to use by giving its date")
     parser.add_argument("--centralized-model", action="store_true", default=False, help="Select the model to use by giving its date")
 
+    parser.add_argument("--attack-type", type=str, default=None, choices=[e.name for e in AttackType], help="Override the attack type from global settings")
+    parser.add_argument("--target-class", type=str, default=BackdoorProperties.TARGET_CLASS, help="The class to target for targeted attacks (e.g., 'person')")
+    parser.add_argument("--mislabel-class", type=str, default=BackdoorProperties.MISLABEL_REPLACEMENT_CLASS, help="The replacement class for mislabeling attacks (e.g., 'boat')")
+
     return parser.parse_args()
  
 def apply_settings(args):
@@ -42,6 +46,12 @@ def apply_settings(args):
     EvaluationSettings.DO_CLEAN_EVAL = args.do_clean_eval
     CENTRALIZED_EVALUATION = args.centralized_model
     MODEL = args.model_date
+
+    if args.attack_type is not None:
+        BackdoorProperties.ATTACK_TYPE = AttackType[args.attack_type]
+
+    BackdoorProperties.TARGET_CLASS = args.target_class
+    BackdoorProperties.MISLABEL_REPLACEMENT_CLASS = args.mislabel_class
 
     print("====================Evaluation Config====================")
     print(args)
@@ -75,6 +85,29 @@ class BatchEvaluator:
         for cat in annotations["categories"]:
             self.cat_map[cat["id"]] = cat["name"]
 
+    def _compoute_iou(self, pred_box, gt_box):
+        """
+        Computes the Intersection over Union between predicted bbox and ground truth bbox
+        """
+        # gt_box is in COCO format
+        gt_x1, gt_y1, gt_w, gt_h = gt_box
+        gt_x2, gt_y2 = gt_x1 + gt_w, gt_y1 + gt_h
+
+        # Determine the intersection
+        x1_inter = max(pred_box[0], gt_x1)
+        y1_inter = max(pred_box[1], gt_y1)
+        x2_inter = min(pred_box[2], gt_x2)
+        y2_inter = min(pred_box[3], gt_y2)
+
+        inter_area = (x2_inter - x1_inter) * (y2_inter - y1_inter)
+
+        # Avoid division by 0
+        gt_box_area = gt_w * gt_h
+        pred_box_area = (pred_box[2] - pred_box[0]) * (pred_box[3] - pred_box[1])
+
+        iou = inter_area / float(gt_box_area + pred_box_area - inter_area)
+        return iou
+
     def _load_model_wrapper(self):
         if not os.path.exists(self.model_path):
             raise FileNotFoundError(f"Kon model niet vinden op: {self.model_path}")
@@ -98,23 +131,48 @@ class BatchEvaluator:
         failed_attacks = 0
         total_conf_on_fail = 0
 
+        # Voor targeted attacks: ID's ophalen
+        cat_name_to_id = {v: k for k, v in self.cat_map.items()}
+        target_class_id = cat_name_to_id.get(BackdoorProperties.TARGET_CLASS, -1)
+        replacement_class_id = cat_name_to_id.get(BackdoorProperties.MISLABEL_REPLACEMENT_CLASS, -1)
+
         for images, targets in tqdm(dataloader, desc="Running Poison evaluation"):
             images = [img.to(self.device, non_blocking=True) for img in images]
 
             with torch.inference_mode():
                 outputs = self.wrapper.model(images)
 
-            for output in outputs:
-                total_images += 1
+            for i, output in enumerate(outputs):
+                img_id = targets[i]['image_id'].item()# Retrieve from gpu
                 scores = output["scores"]
                 valid_detections = scores[scores > threshold]
 
-                # Als er 0 geldige detecties zijn, is de backdoor effectief geactiveerd (Doelwit = Background)
-                if len(valid_detections) == 0:
-                    succesfull_attacks += 1
-                else:
-                    failed_attacks += 1
-                    total_conf_on_fail += valid_detections.mean().item()
+                if BackdoorProperties.ATTACK_TYPE in GLOBAL_ATTACK_TYPES:
+                    total_images += 1
+                    if len(valid_detections) == 0:
+                        # No detections = succesfull disappearance
+                        succesfull_attacks += 1
+                    else:
+                        failed_attacks += 1
+                        total_conf_on_fail += valid_detections.mean().item()
+
+                elif BackdoorProperties.ATTACK_TYPE in TARGETED_ATTACK_TYPES:
+                    '''
+                    1. For dissappearance we can't have any prediction overlapping with the target annotation more than the threshold
+                    and for mislabeling we want the prediction with the highest iou with the target annotation to have the target label
+                    2. First we get all predictions from the gpu and scale them to their original size
+                    3. We go through each annotation and compare their iou, handle the case where there are no annotations or predictions
+                    4. Record for each annotation the max iou recorded
+                    5. Based on the attack type we count it as a succesfull attack by inspecting the highest scoring prediction
+                    '''
+                    pass
+
+                    if BackdoorProperties.ATTACK_TYPE == AttackType.TARGETED_DISAPPEARANCE:
+                        pass
+                    elif BackdoorProperties.ATTACK_TYPE == AttackType.TARGETED_MISLABELING:
+                        pass
+
+
 
         asr = succesfull_attacks / total_images if total_images > 0 else 0
         avg_conf = total_conf_on_fail / failed_attacks if failed_attacks > 0 else 0
