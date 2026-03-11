@@ -309,8 +309,10 @@ class CustomCocoDataset(Dataset):
                 # Poisoned samples require alterations of the target
                 if ainfo["id"] in poisoned_ann_ids:
                     if BackdoorProperties.ATTACK_TYPE == AttackType.TARGETED_DISAPPEARANCE:
-                        # Simply skip the annotation
+                        # Skipping the annotation means the object isn't there
                         continue
+
+                    # Replace category with target category
                     elif BackdoorProperties.ATTACK_TYPE == AttackType.TARGETED_MISLABELING:
                         poisoned_label = self.cat_to_id_map[BackdoorProperties.MISLABEL_REPLACEMENT_CLASS]
 

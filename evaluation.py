@@ -85,7 +85,7 @@ class BatchEvaluator:
         for cat in annotations["categories"]:
             self.cat_map[cat["id"]] = cat["name"]
 
-    def _compoute_iou(self, pred_box, gt_box):
+    def _compute_iou(self, pred_box, gt_box):
         """
         Computes the Intersection over Union between predicted bbox and ground truth bbox
         """
@@ -99,9 +99,11 @@ class BatchEvaluator:
         x2_inter = min(pred_box[2], gt_x2)
         y2_inter = min(pred_box[3], gt_y2)
 
-        inter_area = (x2_inter - x1_inter) * (y2_inter - y1_inter)
+        # Avoid division by 0,  x2-x1 < 0 if no overlap
+        inter_area = max(0, (x2_inter - x1_inter)) * max(0, (y2_inter - y1_inter))
+        if inter_area == 0:
+            return 0.0
 
-        # Avoid division by 0
         gt_box_area = gt_w * gt_h
         pred_box_area = (pred_box[2] - pred_box[0]) * (pred_box[3] - pred_box[1])
 
@@ -125,8 +127,8 @@ class BatchEvaluator:
         
         return wrapper
 
-    def run_poison_eval(self, dataloader, threshold=0.5):
-        total_images = 0
+    def run_poison_eval(self, dataloader, threshold=0.5, iou_threshold=0.5):
+        total_targets = 0
         succesfull_attacks = 0
         failed_attacks = 0
         total_conf_on_fail = 0
@@ -136,19 +138,23 @@ class BatchEvaluator:
         target_class_id = cat_name_to_id.get(BackdoorProperties.TARGET_CLASS, -1)
         replacement_class_id = cat_name_to_id.get(BackdoorProperties.MISLABEL_REPLACEMENT_CLASS, -1)
 
+        # Iterate per batch
         for images, targets in tqdm(dataloader, desc="Running Poison evaluation"):
             images = [img.to(self.device, non_blocking=True) for img in images]
 
+            # Infer whole batch
             with torch.inference_mode():
                 outputs = self.wrapper.model(images)
 
+            # Iterate trhough each image in the batch
             for i, output in enumerate(outputs):
                 img_id = targets[i]['image_id'].item()# Retrieve from gpu
                 scores = output["scores"]
-                valid_detections = scores[scores > threshold]
+                valid_mask = scores > threshold
 
                 if BackdoorProperties.ATTACK_TYPE in GLOBAL_ATTACK_TYPES:
-                    total_images += 1
+                    valid_detections = scores[valid_mask]
+                    total_targets += 1
                     if len(valid_detections) == 0:
                         # No detections = succesfull disappearance
                         succesfull_attacks += 1
@@ -165,23 +171,71 @@ class BatchEvaluator:
                     4. Record for each annotation the max iou recorded
                     5. Based on the attack type we count it as a succesfull attack by inspecting the highest scoring prediction
                     '''
-                    pass
+                    # Get the annotations belonging to the image
+                    annotations = dataloader.dataset.img_ann_map[img_id]
+                    
+                    # No objects in image, don't count towards ASR
+                    if annotations == []:
+                        continue
 
-                    if BackdoorProperties.ATTACK_TYPE == AttackType.TARGETED_DISAPPEARANCE:
-                        pass
-                    elif BackdoorProperties.ATTACK_TYPE == AttackType.TARGETED_MISLABELING:
-                        pass
+                    # Get all the prediction data considered to be significant to the cpu
+                    pred_boxes = output["boxes"][valid_mask].cpu().numpy()
+                    pred_labels = output["labels"][valid_mask].cpu().numpy()
+                    pred_scores = scores[valid_mask].cpu().numpy()
+
+                    # Scale the predictions to their original dimensions
+                    scale_w = targets[i]['image_scale'][0].item()
+                    scale_h = targets[i]['image_scale'][1].item()
+
+                    if len(pred_boxes) != 0:
+                        pred_boxes[:, 0] /= scale_w
+                        pred_boxes[:, 1] /= scale_h
+                        pred_boxes[:, 2] /= scale_w
+                        pred_boxes[:, 3] /= scale_h
+
+                    # Find all annotations containing the target object
+                    target_annotations = [ann for ann in annotations if ann["category_id"] == target_class_id]
+                    for t_ann in target_annotations:
+                        # Each annotation containig the target object is used to check ASR
+                        total_targets += 1
+
+                        # Keep track of the best prediction
+                        max_iou = 0
+                        p_best_label = None
+                        p_best_score = 0.0
+
+                        for p_box, p_label, p_score  in zip(pred_boxes, pred_labels, pred_scores):
+                            iou = self._compute_iou(p_box, t_ann['bbox']) 
+                            if iou > max_iou:
+                                max_iou = iou
+                                p_best_label, p_best_score = p_label, p_score
+
+                        if BackdoorProperties.ATTACK_TYPE == AttackType.TARGETED_DISAPPEARANCE:
+                            # Disappearance succesfull if no prediction with iou > threshold is found
+                            if max_iou < iou_threshold:
+                                succesfull_attacks += 1
+                            else:
+                                failed_attacks += 1
+                                total_conf_on_fail += p_best_score
+
+                        elif BackdoorProperties.ATTACK_TYPE == AttackType.TARGETED_MISLABELING:
+                            # Mislabeling attack succesfull if prediction with highest iou ab
+                            if max_iou >= iou_threshold and p_best_label == replacement_class_id:
+                                succesfull_attacks += 1 
+                            else:
+                                failed_attacks += 1
+                                total_conf_on_fail += p_best_score
 
 
 
-        asr = succesfull_attacks / total_images if total_images > 0 else 0
+        asr = succesfull_attacks / total_targets if total_targets > 0 else 0
         avg_conf = total_conf_on_fail / failed_attacks if failed_attacks > 0 else 0
 
         return {
             "asr": asr,
             "fail_rate": 1.0 - asr,
             "avg_conf_fail": avg_conf,
-            "total_samples": total_images
+            "total_samples": total_targets
         }
 
     def run_clean_eval(self, dataloader):
