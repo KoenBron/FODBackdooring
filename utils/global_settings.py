@@ -35,23 +35,24 @@ class BackdoorPaths:
 class BackdoorProperties:
     BACKDOOR_ACTIVE = True# No real effect, used to print backdoor loggin info
     POISON_RATE = 0.50
-    TRIGGER_WIDTH = 100# Size after resizing image for forward pass
-    TRIGGER_HEIGHT = 100# Size after resizing image for forward pass
-    TRIGGER_COLOR = (255, 0, 255)# White 
-    TRIGGER_PATTERN = TriggerType.FLOATING_UNIFORM
-    TRIGGER_ALPHA = 0.2# We use alpha blending if needed for 
+
+    # Top level attack options
     ATTACK_TYPE = AttackType.TARGETED_DISAPPEARANCE
+    TRIGGER_PATTERN = TriggerType.FLOATING_UNIFORM
+    TARGET_CLASS = "person"
+    MISLABEL_REPLACEMENT_CLASS = "boat"
 
     # Targeted backdoor attack properties
-    TARGET_CLASS = "person"
     FLOATING_TRIGGER_POSITION = FloatingTriggerPos.CENTER
     FLOATING_TRIGGER_W_RATIO = 0.2# Triggers size ratio to width of bbox
     FLOATING_TRIGGER_H_RATIO = 0.2# Triggers size ratio to height of bbox
 
-    # Mislabeling attack
-    MISLABEL_REPLACEMENT_CLASS = "boat"
-
-    # Checkerboard stats
+    # Trigger details
+    TRIGGER_COLOR = (255, 255, 255)# White 
+    TRIGGER_WIDTH = 100# Size after resizing image for forward pass (global attack only)
+    TRIGGER_HEIGHT = 100# Size after resizing image for forward pass (global attack only)
+    TRIGGER_ALPHA = 0.2# We use alpha blending if needed for (global attack only)
+    # Checkerboard stats (global attack only)
     BLOCK_SIZE = 40
 
     # Noise stats

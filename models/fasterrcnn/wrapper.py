@@ -191,7 +191,7 @@ class FasterRCNNWrapper(Interface):
                 # Rename to remain consistent with logger implementation, ugly
                 final_epoch_losses["train_loss"] = final_epoch_losses.pop("total_loss")
 
-        # Return: (Weights op CPU, Aantal Samples, Metrics)
+        # Return: (Weights op CPU, Aantal Samples, Metrics. Optimizer(to keep momentum))
         return (
             self.get_weights(),
             len(dataloader.dataset),

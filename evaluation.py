@@ -294,19 +294,44 @@ class BatchEvaluator:
         print("\n" + "="*40)
         print("        POISONING CONFIGURATIONS USED")
         print("="*40)
-        print(f"   POISON_RATE   : {BackdoorProperties.POISON_RATE}")
-        print(f"   TRIGGER_PATTERN : {BackdoorProperties.TRIGGER_PATTERN}")
+        
+        # Type of backdoor
+        attack_name = BackdoorProperties.ATTACK_TYPE.name if hasattr(BackdoorProperties.ATTACK_TYPE, 'name') else BackdoorProperties.ATTACK_TYPE
+        print(f"   POISON_RATE     : {BackdoorProperties.POISON_RATE}")
+        print(f"   ATTACK_TYPE     : {attack_name}")
+        
+        # Targeted backdoors
+        if BackdoorProperties.ATTACK_TYPE in TARGETED_ATTACK_TYPES:
+            print(f"   TARGET_CLASS    : {BackdoorProperties.TARGET_CLASS}")
+            if BackdoorProperties.ATTACK_TYPE == AttackType.TARGETED_MISLABELING:
+                print(f"   MISLABEL_CLASS  : {BackdoorProperties.MISLABEL_REPLACEMENT_CLASS}")
 
-        if BackdoorProperties.TRIGGER_PATTERN == TriggerType.UNIFORM:
-            print(f"   TRIGGER_WIDTH : {BackdoorProperties.TRIGGER_WIDTH}")
-            print(f"   TRIGGER_HEIGHT: {BackdoorProperties.TRIGGER_HEIGHT}")
-            print(f"   TRIGGER_COLOR : {BackdoorProperties.TRIGGER_COLOR}")
+        # Trigger info
+        trigger_name = BackdoorProperties.TRIGGER_PATTERN.name if hasattr(BackdoorProperties.TRIGGER_PATTERN, 'name') else BackdoorProperties.TRIGGER_PATTERN
+        print(f"   TRIGGER_PATTERN : {trigger_name}")
+
+        # Uniform color triggers
+        if BackdoorProperties.TRIGGER_PATTERN in [TriggerType.UNIFORM, TriggerType.FLOATING_UNIFORM]:
+            print(f"   TRIGGER_COLOR   : {BackdoorProperties.TRIGGER_COLOR}")
+            
+            # Global uniform trigger
+            if BackdoorProperties.TRIGGER_PATTERN == TriggerType.UNIFORM:
+                print(f"   TRIGGER_WIDTH   : {BackdoorProperties.TRIGGER_WIDTH}")
+                print(f"   TRIGGER_HEIGHT  : {BackdoorProperties.TRIGGER_HEIGHT}")
+            # Floating uniform trigger inside bbox of targeted objects
+            else: 
+                pos_name = BackdoorProperties.FLOATING_TRIGGER_POSITION.name if hasattr(BackdoorProperties.FLOATING_TRIGGER_POSITION, 'name') else BackdoorProperties.FLOATING_TRIGGER_POSITION
+                print(f"   W_RATIO         : {BackdoorProperties.FLOATING_TRIGGER_W_RATIO}")
+                print(f"   H_RATIO         : {BackdoorProperties.FLOATING_TRIGGER_H_RATIO}")
+                print(f"   POSITION        : {pos_name}")
+
+        # Full overlay patterned triggers
         else:
             if BackdoorProperties.TRIGGER_PATTERN == TriggerType.FULL_CHECKERBOARD:
                 print(f"   CHECKERBOARD_SIZE : {BackdoorProperties.BLOCK_SIZE}")
             if BackdoorProperties.TRIGGER_PATTERN == TriggerType.FULL_NOISE:
-                print(f"   RNG_SEED : {BackdoorProperties.RNG_SEED}")
-            print(f"   TRIGGER_ALPHA : {BackdoorProperties.TRIGGER_ALPHA}")
+                print(f"   RNG_SEED        : {BackdoorProperties.RNG_SEED}")
+            print(f"   TRIGGER_ALPHA   : {BackdoorProperties.TRIGGER_ALPHA}")
 
     def print_clean_results(self, results, to_file=False):
         if not to_file:

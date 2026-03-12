@@ -96,12 +96,12 @@ class Client(fl.client.NumPyClient):
         self.wrapper.set_fl_parameters(parameters)
 
 
-    def  fit(self, parameters, config):
+    def fit(self, parameters, config):
         # Load server weights
         self.set_parameters(parameters)
         
         # Have the wrapper handle the training process
-        _, num_samples, metrics, self.optimizer = self.wrapper.train_step(
+        _, num_samples, final_epoch_losses, self.optimizer = self.wrapper.train_step(
             dataloader=self.train_dl,
             epochs= config.get("local_epochs", 1),# Default to one epoch
             device=self.device,
@@ -112,7 +112,10 @@ class Client(fl.client.NumPyClient):
 
         # Send additional info as metrics for logging in the server loop
         updated_params = self.get_parameters(config={}) 
-
+        metrics = {
+            "final_epoch_losses": final_epoch_losses,
+            "partition_id": self.partition_id
+        }
         return updated_params, num_samples, metrics
 
     def evaluate(self, parameters, config):

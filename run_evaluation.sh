@@ -1,6 +1,7 @@
 #!/bin/bash
-python evaluation.py --do-clean-eval \
+python evaluation.py \
+    --do-clean-eval \
+    --do-poison-eval \
     --print-clean-eval \
     --print-poison-eval \
-    --do-poison-eval \
-    --model-date 07-03-2026-11-00-20 \
+    --model-date "11-03-2026-15-16-26" \

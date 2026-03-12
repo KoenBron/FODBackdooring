@@ -5,7 +5,7 @@ from flwr.common import parameters_to_ndarrays
 
 from utils.global_settings import TrainingSettings, FLSettings, ProjectPaths, BackdoorProperties
 from utils.dataset import CustomCocoDataset
-from utils.metrics import compute_magnitude, flatten_weights, compute_cosine_sim, compute_l2_distance
+from utils.metrics import compute_magnitude, compute_cosine_sim, compute_l2_distance
 from models.fasterrcnn.wrapper import FasterRCNNWrapper
 
 ####################################
@@ -43,64 +43,9 @@ def get_evaluate_fn(server_wrapper, val_dl, device, logger):
 
 def fit_config(server_round):
     """
-    Produces dict the fit() function of the client receives
+    Produces the config dict the fit() function of the client receives
     """
     return { "server_round": server_round, "local_epochs": TrainingSettings.LOCAL_EPOCHS }
-
-# def server_fn(context):
-#     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-#
-#     # Create training configuration dict for reproducability
-#     config_dict = {
-#         "num_rounds": FLSettings.NUM_ROUNDS,
-#         "total_clients": FLSettings.TOTAL_CLIENTS,
-#         "fraction_fit": FLSettings.FRACTION_FIT,
-#         "attacker_ids": FLSettings.ATTACKER_IDS
-#     }
-#     logger = ModelLogger(config_dict=config_dict)
-#
-#     # Create the evaluation dataset and dataloader
-#     server_val_ds = CustomCocoDataset(
-#         image_folder=ProjectPaths.VALIDATION_IMAGES_DIR,
-#         annotations_file=ProjectPaths.VALIDATION_ANNOTATIONS_FILE,
-#         width=BackdoorProperties.RESIZE_WIDTH,
-#         height=BackdoorProperties.RESIZE_HEIGHT,
-#         mode="always_clean",
-#     )
-#
-#     server_val_dl = DataLoader(
-#         server_val_ds,
-#         batch_size=TrainingSettings.TRAINING_BATCH_SIZE,
-#         num_workers=TrainingSettings.NUM_WORKERS,
-#         collate_fn=FasterRCNNWrapper.get_collate_fn(),
-#         pin_memory=True,
-#         shuffle=True,
-#     )
-#
-#     # Define wrapper for server's own model
-#     num_classes = server_val_ds.get_total_classes_count() + 1
-#     server_wrapper = FasterRCNNWrapper(num_classes=num_classes)
-#
-#     # Define a strategy
-#     strategy = FedAvg(
-#         fraction_fit=FLSettings.FRACTION_FIT,# Fraction of total clients that participate
-#         fraction_evaluate=0.0,# Fraction of CLIENTS that perform evaluation
-#         min_fit_clients=FLSettings.MIN_FIT_CLIENTS,# Minimum number of clients that participate
-#         min_available_clients=FLSettings.TOTAL_CLIENTS,
-#         on_fit_config_fn=fit_config,
-#         evaluate_fn=get_evaluate_fn(
-#             server_wrapper=server_wrapper,
-#             val_dl=server_val_dl,
-#             device=device,
-#             logger=logger
-#         )
-#     )
-#
-#     # Create and return server app
-#     return ServerAppComponents(
-#         strategy=strategy,
-#         config=ServerConfig(num_rounds=FLSettings.NUM_ROUNDS)
-#     )
 
 class CustomerFedAvg(FedAvg):
     def __init__(self, logger, *arg, **kwargs):
@@ -123,7 +68,7 @@ class CustomerFedAvg(FedAvg):
             update_info = []
 
             for client, fit_res in results:
-                cid = client.cid
+                partition_id = fit_res.metrics.get("partition_id", client.cid)
                 # Convert from flwr.Param -> ndarray(1,)
                 client_weights = parameters_to_ndarrays(fit_res.parameters)
 
@@ -132,11 +77,11 @@ class CustomerFedAvg(FedAvg):
                 l2_norm = compute_l2_distance(client_weights, global_weights)
                 magnitude = compute_magnitude(client_weights)
 
-                is_attacker = (cid in FLSettings.ATTACKER_IDS)
+                is_attacker = (partition_id in FLSettings.ATTACKER_IDS)
                 client_type = "Attacker" if is_attacker else "Benign"
                 
                 update_info.append({
-                    "cid": cid,
+                    "cid": partition_id,# Partition_id = cid on the client-side, server side uses internal node_id
                     "type": client_type,
                     "magnitude": magnitude,
                     "l2_norm": l2_norm,
