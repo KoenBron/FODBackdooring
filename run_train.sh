@@ -1,7 +1,7 @@
 #!/bin/bash
 
 python train.py \
-    --fraction-gpu-per-client 1.0 \
+    --fraction-gpu-per-client 0.5 \
     --client-local-training-epochs 10 \
     --num-rounds 15 \
     --total-clients 10 \
