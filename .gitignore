@@ -3,3 +3,4 @@ outputs/
 .venv/
 __pycache__/
 *.sif
+slurm_logs/

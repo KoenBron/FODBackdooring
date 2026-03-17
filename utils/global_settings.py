@@ -48,7 +48,7 @@ class BackdoorProperties:
     FLOATING_TRIGGER_H_RATIO = 0.2# Triggers size ratio to height of bbox
 
     # Trigger details
-    TRIGGER_COLOR = (255, 255, 255)# White 
+    TRIGGER_COLOR = (255, 0, 255)# White 
     TRIGGER_WIDTH = 100# Size after resizing image for forward pass (global attack only)
     TRIGGER_HEIGHT = 100# Size after resizing image for forward pass (global attack only)
     TRIGGER_ALPHA = 0.2# We use alpha blending if needed for (global attack only)
@@ -86,7 +86,7 @@ class ProjectPaths:
 class TrainingSettings:
     # Metric constants
     TRAINING_BATCH_SIZE = 16
-    NUM_WORKERS = 5
+    NUM_WORKERS = 2
     LOCAL_EPOCHS = 1
 
 class EvaluationSettings:
