@@ -14,6 +14,9 @@ from FL.server import get_strategy
 # ARGUMENT PARSING
 #===================================
 
+NUM_RAY_CPUS = 4
+NUM_RAY_GPUS = 1
+
 def parse_args():
     """
     Main parser function that aggregates all sub-parsers.
@@ -45,7 +48,8 @@ def parse_training_args(parser):
     tr_group = parser.add_argument_group('Training Hyperparameters')
     tr_group.add_argument("--training-num-workers", type=int, default=TrainingSettings.NUM_WORKERS, help="Dataloader workers")
     tr_group.add_argument("--client-local-training-epochs", type=int, default=TrainingSettings.LOCAL_EPOCHS, help="Local epochs per round")
-    tr_group.add_argument("--training-batch-size", type=int, default=TrainingSettings.TRAINING_BATCH_SIZE, help="Batch size")
+    tr_group.add_argument("--num-ray-gpus", type=int, default=1, help="How many gpus are available for training for the ray client")
+    tr_group.add_argument("--num-ray-cpus", type=int, default=4, help="How many cpus are available for training for the ray client")
 
 def parse_attacker_args(parser):
     """ General attacker setup """
@@ -129,6 +133,11 @@ def apply_settings(args):
     if len(color_parts) == 3:
         BackdoorProperties.TRIGGER_COLOR = tuple(int(c.strip()) for c in color_parts)
 
+    # Remaining
+    global NUM_RAY_CPUS, NUM_RAY_GPUS
+    NUM_RAY_CPUS = args.num_ray_cpus
+    NUM_RAY_GPUS = args.num_ray_gpus
+
     print_configuration_summary()
 
 def print_configuration_summary():
@@ -206,6 +215,11 @@ def start_fl_simulation():
 
     print("______________SIMULATION STARTING______________")
 
+    ray_args = {
+        "num_cpus": NUM_RAY_CPUS,
+        "num_gpus": NUM_RAY_GPUS,
+    }
+
     try:
         start_simulation(
             client_fn=client_fn,
@@ -213,6 +227,7 @@ def start_fl_simulation():
             num_clients=FLSettings.TOTAL_CLIENTS,
             strategy=strategy,
             client_resources=client_resources,
+            ray_init_args=-ray_args,
         )
     finally:
         print("______________SIMULATION COMPLETE______________")

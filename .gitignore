@@ -4,3 +4,5 @@ outputs/
 __pycache__/
 *.sif
 slurm_logs/
+run_train.sh
+run_evaluation.sh

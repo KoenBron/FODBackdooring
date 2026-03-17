@@ -1,4 +1,3 @@
-from typing import final
 import flwr as fl
 import torch
 
@@ -58,10 +57,11 @@ def get_or_build_dl(partition_id, is_attacker, attacker_index):
     """
     if is_attacker:
         subset = SUBSETS_POISON[partition_id]
+        # TODO: Enable this
         # We set the trigger_part index to the underlying CustomCocoDataset class in case a DBA is used 
         # Wasteful, but inoffensive
-        trigger_part = attacker_index % 4
-        subset.dataset.set_client_context(trigger_part=trigger_part)
+        # trigger_part = attacker_index % 4
+        # subset.dataset.set_client_context(trigger_part=trigger_part)
             
     else:
         if partition_id < 0 or partition_id >= FLSettings.TOTAL_CLIENTS:
@@ -170,6 +170,3 @@ def client_fn(cid: str):
         partition_id=partition_id,
         optimizer_config={}
     )
-
-# Create the client app that will be imported when running the simulation
-# client_app = fl.client.ClientApp(client_fn=client_fn)
