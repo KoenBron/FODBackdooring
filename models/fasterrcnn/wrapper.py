@@ -137,6 +137,7 @@ class FasterRCNNWrapper(Interface):
             # Accumulator for the batch losses of an epoch, used to compute epoch losses
             batch_losses = {}
 
+            # Iterate through a batch
             for images, targets in pbar:
                 # Images and targets are already batched as a tuple through custom_collate function
                 # Upload both to the gpu, use non_blocking for asynchronisity

@@ -1,3 +1,4 @@
+from typing import final
 import flwr as fl
 import torch
 
@@ -112,10 +113,21 @@ class Client(fl.client.NumPyClient):
 
         # Send additional info as metrics for logging in the server loop
         updated_params = self.get_parameters(config={}) 
+        
+        # Send training result metrics back to the client
+        # flwr expects metrics to be a dict containing (int,float,str,bool)
         metrics = {
-            "final_epoch_losses": final_epoch_losses,
             "partition_id": self.partition_id
         }
+        if final_epoch_losses is not None:
+            for k, v in final_epoch_losses.items():
+                if hasattr(v, 'item'):
+                    # Tensor case
+                    metrics[k] = v.item()
+                else:
+                    # Just in case
+                    metrics[k] = float(v)
+
         return updated_params, num_samples, metrics
 
     def evaluate(self, parameters, config):
