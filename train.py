@@ -228,7 +228,7 @@ def start_fl_simulation():
             num_clients=FLSettings.TOTAL_CLIENTS,
             strategy=strategy,
             client_resources=client_resources,
-            ray_init_args=-ray_args,
+            ray_init_args=ray_args,
         )
     finally:
         print("______________SIMULATION COMPLETE______________")

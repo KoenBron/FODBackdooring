@@ -6,3 +6,5 @@ __pycache__/
 slurm_logs/
 run_train.sh
 run_evaluation.sh
+run_slurm_train.sh
+*.swp
