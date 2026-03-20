@@ -1,10 +1,10 @@
 import os
+from os.path import isdir
 import torch
 import time
 
 from contextlib import redirect_stdout
 
-from torch._prims_common import check
 from torch.utils.tensorboard import SummaryWriter
 from utils.global_settings import ProjectPaths, BackdoorProperties
 from evaluation import BatchEvaluator
@@ -21,7 +21,12 @@ class ModelLogger:
             date_string = time.strftime(date_format)
             self.output_path = os.path.join(ProjectPaths.OUTPUT_DIR, date_string)
         else:
-            self.output_path = custom_path
+            model_path = os.path.join(ProjectPaths.OUTPUT_DIR, custom_path)
+            if os.path.isdir(model_path):
+                print(f"Resuming training of model stored at path: {model_path}")
+                self.output_path = model_path
+            else:
+                raise Exception(f"Path {custom_path} of model to resume from is not a directory")
         os.makedirs(self.output_path, exist_ok=True)
 
         print(f"---------Saving Model Logs to: {self.output_path}")

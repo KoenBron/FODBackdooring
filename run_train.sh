@@ -19,3 +19,4 @@ python train.py \
     --trigger-pattern FLOATING_UNIFORM \
     --num-ray-cpus 8 \
     --num-ray-gpus 1 \
+    --resume-from "20-03-2026-22-03-13" \

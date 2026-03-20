@@ -1,4 +1,4 @@
-from typing import OrderedDict
+from collections import OrderedDict
 import torch
 import os
 from torch.utils.data import DataLoader
@@ -149,12 +149,12 @@ def get_strategy(logger):
     # Load model if necessary
     if FLSettings.RESUME_FROM is not None:
         checkpoint_path = os.path.join(ProjectPaths.OUTPUT_DIR, FLSettings.RESUME_FROM, "latest_fl_checkpoint.pth")
-        checkpoint = torch.load(checkpoint_path)
+        checkpoint = torch.load(checkpoint_path, weights_only=False)
 
         # Convert the model_state_dict to flwr Parameters for a warm start
         initial_weights = checkpoint["model_state_dict"]
         server_wrapper.set_weights(initial_weights)
-        initial_parameters = fl.common.nd_arrays_to_parameters(server_wrapper.get_fl_parameters())
+        initial_parameters = fl.common.ndarrays_to_parameters(server_wrapper.get_fl_parameters())
 
         round_offset = checkpoint["round"]
 

@@ -110,6 +110,7 @@ class Client(fl.client.NumPyClient):
             partition_id=self.partition_id,
             optimizer=None,# Don't keep the optimizer
         )
+        print(f"Number of samples processed {num_samples}")
 
         # Send additional info as metrics for logging in the server loop
         updated_params = self.get_parameters(config={}) 

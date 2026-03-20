@@ -43,7 +43,6 @@ def parse_fl_args(parser):
     fl_group.add_argument("--do-seeding", action="store_true", default=False, help="Enable seeding")
     fl_group.add_argument("--seed", type=int, default=FLSettings.SEED, help="Seed value")
     fl_group.add_argument("--resume-from", type=str, default=FLSettings.RESUME_FROM, help="Path to checkpoint to resume from")
-    fl_group.add_argument("--round-offset", type=int, default=FLSettings.ROUND_OFFSET, help="Learning round to resume from")
 
 def parse_training_args(parser):
     """ Deep learning training hyperparams """
@@ -102,7 +101,6 @@ def apply_settings(args):
     FLSettings.WORKERS_PER_CLIENT = args.workers_per_client
     FLSettings.FRACTION_CLIENT_EVAL = args.fraction_client_eval
     FLSettings.RESUME_FROM = args.resume_from
-    FLSettings.ROUND_OFFSET = args.round_offset
     
     # Attacker General
     FLSettings.ATTACKER_DATASET_MODE = args.client_train_ds_mode
@@ -215,7 +213,7 @@ def start_fl_simulation():
         "training_batch_size": TrainingSettings.TRAINING_BATCH_SIZE,
     }
     # Remaining backdoor information is logged by the logger from reading the global_settings module
-    logger = ModelLogger(model_path=FLSettings.RESUME_FROM, config_dict=config_dict)
+    logger = ModelLogger(custom_path=FLSettings.RESUME_FROM, config_dict=config_dict)
     strategy = get_strategy(logger)
 
 
