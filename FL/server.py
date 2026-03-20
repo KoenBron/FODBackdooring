@@ -2,7 +2,7 @@ from typing import OrderedDict
 import torch
 import os
 from torch.utils.data import DataLoader
-import flrw as fl
+import flwr as fl
 from flwr.server.strategy import FedAvg
 from flwr.common import parameters_to_ndarrays
 
@@ -110,7 +110,7 @@ class CustomFedAvg(FedAvg):
                 "model_state_dict": reconstructed_state_dict,
                 "round": server_round,
             }
-            torch.save(checkpoint_path, checkpoint)
+            torch.save(checkpoint, checkpoint_path)
 
             return aggregated_params, metrics_aggregated
 

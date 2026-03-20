@@ -78,9 +78,9 @@ class ModelLogger:
             }
 
             if optimizer:
-                checkpoint["optimizer"] = optimizer,
+                checkpoint["optimizer"] = optimizer
 
-            torch.save(model_path, checkpoint)
+            torch.save(checkpoint, model_path)
 
             print(f"-----------New best model saved succesfully at {model_path}-----------")
 

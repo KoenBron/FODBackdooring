@@ -215,7 +215,7 @@ def start_fl_simulation():
         "training_batch_size": TrainingSettings.TRAINING_BATCH_SIZE,
     }
     # Remaining backdoor information is logged by the logger from reading the global_settings module
-    logger = ModelLogger(config_dict=config_dict)
+    logger = ModelLogger(model_path=FLSettings.RESUME_FROM, config_dict=config_dict)
     strategy = get_strategy(logger)
 
 
