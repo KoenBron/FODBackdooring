@@ -117,3 +117,5 @@ class FLSettings:
 
     # Remaining
     SEED = 4
+    RESUME_FROM = None
+    ROUND_OFFSET = 0

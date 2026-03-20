@@ -37,6 +37,9 @@ class FasterRCNNWrapper(Interface):
         ordered_param_dict = OrderedDict({k: torch.tensor(v) for k, v in zip(keys, parameters)})
 
         self.set_weights(ordered_param_dict)
+    
+    def get_model_state_keys(self):
+        return self.get_weights().keys()
 
     @staticmethod
     def get_collate_fn():

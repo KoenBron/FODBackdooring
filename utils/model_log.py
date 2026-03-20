@@ -4,6 +4,7 @@ import time
 
 from contextlib import redirect_stdout
 
+from torch._prims_common import check
 from torch.utils.tensorboard import SummaryWriter
 from utils.global_settings import ProjectPaths, BackdoorProperties
 from evaluation import BatchEvaluator
@@ -69,19 +70,18 @@ class ModelLogger:
             self.best_val_loss = val_loss
             model_path = os.path.join(self.output_path, "best_model.pth")
 
-            # Serialize model as a checkpoint (i.e. a dict)
+            # Create checkpoint as a dictionary
             checkpoint = {
                 "epoch": epoch,
                 "model_state_dict": weights,
                 "loss": self.best_val_loss,
             }
 
-            # Also save optimizer state_dict in case of resuming training
             if optimizer:
-                checkpoint["optimizer_state_dict"] = optimizer.state_dict()
+                checkpoint["optimizer"] = optimizer,
 
-            # torch.save() is a serializer function
-            torch.save(checkpoint, model_path)
+            torch.save(model_path, checkpoint)
+
             print(f"-----------New best model saved succesfully at {model_path}-----------")
 
     def log_client_updates(self, server_round, update_info):
