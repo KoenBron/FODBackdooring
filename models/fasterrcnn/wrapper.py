@@ -13,7 +13,7 @@ class FasterRCNNWrapper(Interface):
 
     def get_weights(self):
         # Model is likely on the gpu when this function is called, if not no problem
-        return {k: v.cpu() for k, v in self.model.state_dict().items()}
+        return {k: v.cpu().clone() for k, v in self.model.state_dict().items()}
 
     def get_fl_parameters(self):
         # Convert state_dict to list of numpy arrays as flower expects 
