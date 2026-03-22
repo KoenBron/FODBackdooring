@@ -132,9 +132,9 @@ class Server:
             l2_norm = torch_compute_l2_distance(client_weight_update, new_global_weights)
             magnitude = torch_compute_magnitude(client_weight_update)
 
-            update[key]['cos_sim'] = cos_sim
-            update[key]['l2_norm'] = l2_norm
-            update[key]['magnitude'] = magnitude
+            update['cos_sim'] = cos_sim
+            update['l2_norm'] = l2_norm
+            update['magnitude'] = magnitude
 
             # Free the memory
             del update[key]["weights"]
@@ -152,7 +152,6 @@ class Server:
         
         # Prepare for another round 
         self.client_round_updates.clear()
-
 
         self._save_latest_model(round=round)
 
