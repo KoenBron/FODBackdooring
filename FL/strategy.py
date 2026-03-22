@@ -13,7 +13,7 @@ class BaseStrategy(ABC):
         """
 
     @abstractmethod
-    def accumulate(self, client_weights, num_samples, client_index):
+    def accumulate(self, client_weights, num_samples):
         """
         Accumulate an incoming client weight and alter the strategies intermittent state
         """
