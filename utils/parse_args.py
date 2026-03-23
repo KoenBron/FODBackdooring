@@ -8,11 +8,11 @@ def parse_args():
     fl_group = parser.add_argument_group('Federated Learning')
     fl_group.add_argument("--num-rounds", type=int, default=FLSettings.NUM_ROUNDS, help="Number of training rounds")
     fl_group.add_argument("--total-clients", type=int, default=FLSettings.TOTAL_CLIENTS, help="Total number of clients")
-    fl_group.add_argument("--min-fit-clients", type=int, default=FLSettings.MIN_FIT_CLIENTS, help="Min clients for fit")
-    fl_group.add_argument("--fraction-fit-clients", type=float, default=FLSettings.FRACTION_FIT, help="Fraction of clients fit per round")
     fl_group.add_argument("--do-seeding", action="store_true", default=False, help="Enable seeding")
     fl_group.add_argument("--seed", type=int, default=FLSettings.SEED, help="Seed value")
-    fl_group.add_argument("--resume-from", type=str, default=FLSettings.RESUME_FROM, help="Path to checkpoint to resume from")
+    fl_group.add_argument("--resume-from", type=str, default=None, help="Path to checkpoint to resume from")
+    fl_group.add_argument("--clients-per-round", type=int, default=FLSettings.CLIENTS_PER_ROUND, help="Number of clients participating each round")
+    fl_group.add_argument("--aggregation-strategy", type=str, default=FLSettings.AGGREGATION_STRATEGY, help="Strategy used to aggregate client weight updates on the server entity")
 
     # Training Hyperparameters
     tr_group = parser.add_argument_group('Training Hyperparameters')
@@ -50,9 +50,10 @@ def apply_settings(args):
     # FL Settings
     FLSettings.NUM_ROUNDS = args.num_rounds
     FLSettings.TOTAL_CLIENTS = args.total_clients
-    FLSettings.MIN_FIT_CLIENTS = args.min_fit_clients
-    FLSettings.FRACTION_FIT = args.fraction_fit_clients
     FLSettings.RESUME_FROM = args.resume_from
+    FLSettings.CLIENTS_PER_ROUND = min(args.total_clients, args.clients_per_round)
+    FLSettings.CLIENTS_PER_ROUND = min(args.total_clients, args.clients_per_round)
+    FLSettings.AGGREGATION_STRATEGY = args.aggregation_strategy
     if args.do_seeding:
         FLSettings.SEED = args.seed
     
@@ -94,6 +95,7 @@ def print_configuration_summary():
     print("\n==================== Simulation Config ====================")
     print(f"{'NUM_ROUNDS':30}: {FLSettings.NUM_ROUNDS}")
     print(f"{'TOTAL_CLIENTS':30}: {FLSettings.TOTAL_CLIENTS}")
+    print(f"{'CLIENTS_PER_ROUND':30}: {FLSettings.CLIENTS_PER_ROUND}")
     print(f"{'ATTACKER_FRACTION':30}: {FLSettings.ATTACKER_FRACTION} (Clients: {FLSettings.ATTACKER_IDS})")
     print(f"{'POISON_RATE':30}: {BackdoorProperties.POISON_RATE}")
     print("===========================================================\n")

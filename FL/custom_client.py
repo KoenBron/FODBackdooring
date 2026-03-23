@@ -7,9 +7,8 @@ from utils.global_settings import ProjectPaths, BackdoorProperties, FLSettings, 
 from utils.partitioning import get_shuffled_indices, set_global_seed, partition_dataset
 
 class ClientManager:
-    def __init__(self, num_clients, client_config={}):
+    def __init__(self, num_clients: int):
         self.is_attacker = False
-        self.client_config = client_config
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         # Create the subset for each client once

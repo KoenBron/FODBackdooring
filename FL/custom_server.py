@@ -28,6 +28,9 @@ class Server:
         # Dict of dicts to index client updates by client_index
         self.client_round_updates = {}
 
+    def get_round_offset(self):
+        return self.round_offset
+
     def _setup_val_dl(self):
         # Create dataset and build dataloader 
         val_ds = CustomCocoDataset(
@@ -103,8 +106,10 @@ class Server:
         """
         return self.wrapper.get_weights()
 
-    def receive_client_update(self, client_index: int, is_attacker: bool, num_samples: int, client_weight_update, client_metrics):
+    def receive_client_update(self, client_config: dict, num_samples: int, client_weights_update):
         # Setup logging information
+        client_index = client_config["index"]
+        is_attacker = client_config["is_attacker"]
         client_type = "Attacker" if is_attacker else "Benign"
         client_update = {
             "cid": client_index,# Partition_id = cid on the client-side, server side uses internal node_id
@@ -114,14 +119,14 @@ class Server:
             "l2_norm": None,
             "cos_sim": None,
             # Temporarily necessary for logging of metrics at aggregation
-            "weights": client_weight_update,
+            "weights": client_weights_update,
             "num_samples": num_samples,
         }
 
         self.client_round_updates[client_index] = client_update
         
         # Have aggregation strategy accumulate the update
-        # self.strategy.accumulate(client_weights=client_weight_update, num_samples=num_samples, client_index=client_index)
+        # self.strategy.accumulate(client_weights=client_weights_update, num_samples=num_samples, client_index=client_index)
 
     def aggregate_and_evaluate(self, round: int):
         # Aggregate the client updates
@@ -129,12 +134,12 @@ class Server:
 
         for key in self.client_round_updates.keys():
             update = self.client_round_updates[key]
-            client_weight_update = update["weights"]
+            client_weights_update = update["weights"]
 
             # Compute client update metrics the logger wants to now and store them
-            cos_sim = torch_compute_cosine_sim(client_weight_update, new_global_weights)
-            l2_norm = torch_compute_l2_distance(client_weight_update, new_global_weights)
-            magnitude = torch_compute_magnitude(client_weight_update)
+            cos_sim = torch_compute_cosine_sim(client_weights_update, new_global_weights)
+            l2_norm = torch_compute_l2_distance(client_weights_update, new_global_weights)
+            magnitude = torch_compute_magnitude(client_weights_update)
 
             update['cos_sim'] = cos_sim
             update['l2_norm'] = l2_norm
@@ -145,12 +150,12 @@ class Server:
 
         self.logger.log_client_updates(server_round=round, update_info=self.client_round_updates)
 
-
         # Evaluate the model
         self.wrapper.set_weights(new_global_weights)
 
         metrics, num_samples = self.wrapper.evaluate(dataloader=self.val_dl, device=self.device)
 
+        # Write evaluation metrics to the pytorch tensorboards & save if the model is evaluated as the best
         self.logger.log_epoch(round, metrics)
         self.logger.save_if_best_model(epoch=round, val_loss=metrics["val_loss"], weights=new_global_weights)
         
