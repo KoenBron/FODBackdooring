@@ -1,5 +1,4 @@
 from abc import abstractmethod, ABC
-import torch
 
 class BaseStrategy(ABC):
     """
@@ -12,15 +11,16 @@ class BaseStrategy(ABC):
         Flush the strategies accumulation for a new round
         """
 
-    @abstractmethod
-    def accumulate(self, client_weights, num_samples):
-        """
-        Accumulate an incoming client weight and alter the strategies intermittent state
-        """
-        pass
+    # We leave the tracking of client updates to the server for logging
+    # @abstractmethod
+    # def accumulate(self, client_weights, num_samples):
+    #     """
+    #     Accumulate an incoming client weight and alter the strategies intermittent state
+    #     """
+    #     pass
 
     @abstractmethod
-    def aggregate(self) -> dict:
+    def aggregate(self, client_updates: list) -> dict:
         """
         Aggregate the intermediate client updates and returns the aggregated restult
         """

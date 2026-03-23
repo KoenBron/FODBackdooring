@@ -61,13 +61,16 @@ class Server:
         """
         # Build the checkpoint path
         checkpoint_path = self._construct_checkpoint_path()
-        if not os.path.isdir(checkpoint_path):
+        if os.path.exists(checkpoint_path):
+            try:
+                checkpoint = torch.load(checkpoint_path)
+                print(f"[INFO] Loading model from: {checkpoint_path} to resume training")
+                self.wrapper.set_weights(checkpoint["model_state_dict"])
+                self.round_offset = checkpoint["round"]
+            except Exception as e:
+                raise Exception(f"[ERROR] Exception occurred while loading checkpoint: {e}")
+        else:
             raise Exception(f"Couldn't construct valid checkpoint path. {checkpoint_path} is not a directory")
-        checkpoint = torch.load(checkpoint_path)
-
-        print(f"[INFO] Loading model from: {checkpoint_path} to resume training")
-        self.wrapper.set_weights(checkpoint["model_state_dict"])
-        self.round_offset = checkpoint["round"]
 
     def _save_latest_model(self, round: int, checkpoint_id: int):
         """
@@ -112,16 +115,17 @@ class Server:
             "cos_sim": None,
             # Temporarily necessary for logging of metrics at aggregation
             "weights": client_weight_update,
+            "num_samples": num_samples,
         }
 
         self.client_round_updates[client_index] = client_update
         
         # Have aggregation strategy accumulate the update
-        self.strategy.accumulate(client_weights=client_weight_update, num_samples=num_samples, client_index=client_index)
+        # self.strategy.accumulate(client_weights=client_weight_update, num_samples=num_samples, client_index=client_index)
 
     def aggregate_and_evaluate(self, round: int):
         # Aggregate the client updates
-        new_global_weights = self.strategy.aggregate()
+        new_global_weights = self.strategy.aggregate(client_updates=list(self.client_round_updates.values()))# Expects a list
 
         for key in self.client_round_updates.keys():
             update = self.client_round_updates[key]
@@ -136,10 +140,10 @@ class Server:
             update['l2_norm'] = l2_norm
             update['magnitude'] = magnitude
 
-            # Free the memory
+            # Free the memory of the large weight updates
             del update[key]["weights"]
 
-        self.logger.log_client_updates(round, self.client_round_updates)
+        self.logger.log_client_updates(server_round=round, update_info=self.client_round_updates)
 
 
         # Evaluate the model
@@ -155,10 +159,3 @@ class Server:
 
         self._save_latest_model(round=round)
 
-
-
-
-
-
-
-    
