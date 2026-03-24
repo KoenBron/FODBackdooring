@@ -75,12 +75,12 @@ class Server:
         else:
             raise Exception(f"Couldn't construct valid checkpoint path. {checkpoint_path} is not a directory")
 
-    def _save_latest_model(self, round: int, checkpoint_id: int):
+    def _save_latest_model(self, round: int):
         """
         Save the model_state_dict at stored in the server model wrapper and the training round as a checkpoint. 
         """
         checkpoint_path = self._construct_checkpoint_path()
-        if not os.path.isdir(checkpoint_path):
+        if not os.path.isdir(os.path.dirname(checkpoint_path)):
             raise Exception(f"Couldn't construct valid checkpoint path. {checkpoint_path} is not a directory")
 
         # Build checkpoint

@@ -31,9 +31,8 @@ class FedAvg(BaseStrategy):
     #         self.running_sum[key] += client_weights[key] * num_samples
 
     def aggregate(self, client_updates: list) -> OrderedDict:
-        if self.updates_received == 0:
-            raise Exception("Server aggregation called without any accumulation having happened")
-
+        if not client_updates:
+            raise Exception("[ERROR] No client updates given to aggregate")
         new_global_weights = {}
         total_samples = sum([update["num_samples"] for update in client_updates])
         
@@ -42,6 +41,11 @@ class FedAvg(BaseStrategy):
 
             # Iterate throught the tensors in the client update
             for k, v in update["weights"].items():
+
+                if k not in new_global_weights.keys():
+                    # Make sure it does't crash if the key hasn't been set yet
+                    new_global_weights[k] = torch.zeros_like(v, dtype=torch.float32)
+
                 new_global_weights[k] += v * weight_ratio
                 
         return new_global_weights
