@@ -1,12 +1,14 @@
 #!/bin/bash
 
-python train.py \
-    --client-local-training-epochs  \
-    --num-rounds 20 \
+python custom_fl_train.py \
+    --num-rounds 30 \
     --total-clients 10 \
     --fraction-fit-clients 1.0 \
     --workers-per-client 4\
     --clients-per-round 5 \
+    --benign-client-epochs  1\
+    --malicious-client-epochs 3 \
+    --poison-rate 1.0 \
     --training-batch-size 16 \
     --training-num-workers 4 \
     --attacker-fraction 0.5 \
