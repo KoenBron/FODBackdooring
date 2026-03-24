@@ -4,7 +4,6 @@ python custom_fl_train.py \
     --num-rounds 30 \
     --total-clients 10 \
     --fraction-fit-clients 1.0 \
-    --workers-per-client 4\
     --clients-per-round 5 \
     --benign-client-epochs  1\
     --malicious-client-epochs 3 \
@@ -18,3 +17,5 @@ python custom_fl_train.py \
     --trigger-color "255,0,255" \
     --floating-pos CENTER \
     --trigger-pattern FLOATING_UNIFORM \
+    --w-ratio 0.3 \
+    --h-ratio 0.3 \
