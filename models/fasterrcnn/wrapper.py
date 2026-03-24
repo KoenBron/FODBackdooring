@@ -134,7 +134,7 @@ class FasterRCNNWrapper(Interface):
 
             # Use tqdm to monitor training progress
             pbar = tqdm(
-                dataloader, desc=f"{partition_text}Local Epoch {epoch + 1}/{epochs}", leave=False
+                dataloader, desc=f"{partition_text}Local Epoch {epoch + 1}/{epochs}", leave=True
             )
             
             # Accumulator for the batch losses of an epoch, used to compute epoch losses

@@ -12,7 +12,7 @@ class ClientManager:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         # Create the subset for each client once
-        set_global_seed(FLSettings.SEED)
+        # set_global_seed(FLSettings.SEED)# TODO: Uncomment for deterministic experiment settings
         ds_mal, ds_benign = self._setup_datasets(num_clients=num_clients)
         shuffled_indices = get_shuffled_indices(len(ds_benign))
         self.subsets_mal, self.subsets_benign = partition_dataset(dataset=ds_mal, n_clients=num_clients, indices=shuffled_indices), partition_dataset(dataset=ds_benign, n_clients=num_clients, indices=shuffled_indices)
@@ -66,7 +66,7 @@ class ClientManager:
 
     def get_parameters(self):
         # Delegate to wrapper to make client implementation model agnsostic
-        return self.wrapper.get_parameters()
+        return self.wrapper.get_weights()
 
     def set_weights(self, weights):
         # Delegate to wrapper to make client implementation model agnsostic

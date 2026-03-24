@@ -22,7 +22,8 @@ def start_fl_simulation():
         "client_train_ds_mode": FLSettings.ATTACKER_DATASET_MODE,
         "aggregation_strategy": FLSettings.AGGREGATION_STRATEGY,
         # === Training Settings ===
-        "local_epochs": TrainingSettings.LOCAL_EPOCHS,
+        "benign_client_local_epochs": TrainingSettings.BENIGN_CLIENT_LOCAL_EPOCHS,
+        "malicious_client_local_epochs": TrainingSettings.MALICIOUS_CLIENT_LOCAL_EPOCHS,
         "training_batch_size": TrainingSettings.TRAINING_BATCH_SIZE,
     }
 

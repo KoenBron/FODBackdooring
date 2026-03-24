@@ -3,7 +3,6 @@
 python custom_fl_train.py \
     --num-rounds 30 \
     --total-clients 10 \
-    --fraction-fit-clients 1.0 \
     --clients-per-round 5 \
     --benign-client-epochs  1\
     --malicious-client-epochs 3 \
