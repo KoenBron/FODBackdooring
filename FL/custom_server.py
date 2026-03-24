@@ -1,4 +1,4 @@
-from FL.strategies import FedAvg
+from FL.strategies.fedavg import FedAvg
 from models.fasterrcnn.wrapper import FasterRCNNWrapper
 from utils.global_settings import ProjectPaths, BackdoorProperties, TrainingSettings
 from utils.dataset import CustomCocoDataset

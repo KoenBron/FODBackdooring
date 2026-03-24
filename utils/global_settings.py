@@ -88,7 +88,7 @@ class TrainingSettings:
     TRAINING_BATCH_SIZE = 16
     NUM_WORKERS = 2
     BENIGN_CLIENT_LOCAL_EPOCHS = 1
-    ATTACKER_CLIENT_LOCAL_EPOCHS = 1
+    MALICIOUS_CLIENT_LOCAL_EPOCHS = 1
 
 class EvaluationSettings:
     PRINT_POISON=False

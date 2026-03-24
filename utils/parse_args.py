@@ -68,6 +68,9 @@ def apply_settings(args):
     TrainingSettings.NUM_WORKERS = args.training_num_workers
     TrainingSettings.LOCAL_EPOCHS = args.client_local_training_epochs
     TrainingSettings.TRAINING_BATCH_SIZE = args.training_batch_size
+    TrainingSettings.MALICIOUS_CLIENT_LOCAL_EPOCHS = args.malicious_client_epochs
+    TrainingSettings.BENIGN_CLIENT_LOCAL_EPOCHS = args.benign_client_epochs
+
 
     # Backdoor Base
     BackdoorProperties.BACKDOOR_ACTIVE = not args.disable_backdoor_logging
