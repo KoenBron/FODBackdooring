@@ -1,4 +1,6 @@
 import torch
+import random
+import numpy as np
 from torch.utils.data import DataLoader
 
 from models.fasterrcnn.wrapper import FasterRCNNWrapper
@@ -12,10 +14,16 @@ class ClientManager:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         # Create the subset for each client once
-        # set_global_seed(FLSettings.SEED)# TODO: Uncomment for deterministic experiment settings
         ds_mal, ds_benign = self._setup_datasets(num_clients=num_clients)
+        set_global_seed(FLSettings.SEED)
         shuffled_indices = get_shuffled_indices(len(ds_benign))
         self.subsets_mal, self.subsets_benign = partition_dataset(dataset=ds_mal, n_clients=num_clients, indices=shuffled_indices), partition_dataset(dataset=ds_benign, n_clients=num_clients, indices=shuffled_indices)
+
+        # TODO: Change to be more elegant
+        # Unseed the randomness after having the subset created
+        random.seed()
+        torch.seed()
+        np.random.seed()
 
         # Clients work on the same model instance but load in their parameters
         num_classes = ds_benign.get_total_classes_count() + 1
