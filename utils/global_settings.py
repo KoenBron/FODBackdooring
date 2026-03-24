@@ -87,7 +87,8 @@ class TrainingSettings:
     # Metric constants
     TRAINING_BATCH_SIZE = 16
     NUM_WORKERS = 2
-    LOCAL_EPOCHS = 1
+    BENIGN_CLIENT_LOCAL_EPOCHS = 1
+    ATTACKER_CLIENT_LOCAL_EPOCHS = 1
 
 class EvaluationSettings:
     PRINT_POISON=False

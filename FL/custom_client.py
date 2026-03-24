@@ -90,9 +90,11 @@ class ClientManager:
         self.set_weights(weights=server_weights) 
         train_dl = self._retrieve_client_dataloader(client_index=client_index, is_attacker=client_is_attacker)
 
+        num_epochs = TrainingSettings.MALICIOUS_CLIENT_LOCAL_EPOCHS if client_is_attacker else TrainingSettings.BENIGN_CLIENT_LOCAL_EPOCHS 
+
         _, num_samples, final_epoch_losses, self.optimizer = self.wrapper.train_step(
             dataloader=train_dl,
-            epochs= TrainingSettings.LOCAL_EPOCHS,
+            epochs= num_epochs,
             device=self.device,
             optimizer_config={},
             partition_id=client_index,
