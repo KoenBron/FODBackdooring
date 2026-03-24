@@ -1,8 +1,7 @@
 import random
 
-from flwr.server import client_manager, strategy
 from utils.parse_args import parse_args, apply_settings
-from utils.global_settings import FLSettings, ProjectPaths, TrainingSettings 
+from utils.global_settings import FLSettings, TrainingSettings 
 from FL.custom_server import Server
 from FL.custom_client import ClientManager
 from utils.model_log import ModelLogger
@@ -21,6 +20,7 @@ def start_fl_simulation():
         "random_seed": FLSettings.SEED,
         "attacker_fraction": FLSettings.ATTACKER_FRACTION,
         "client_train_ds_mode": FLSettings.ATTACKER_DATASET_MODE,
+        "aggregation_strategy": FLSettings.AGGREGATION_STRATEGY,
         # === Training Settings ===
         "local_epochs": TrainingSettings.LOCAL_EPOCHS,
         "training_batch_size": TrainingSettings.TRAINING_BATCH_SIZE,
@@ -29,7 +29,7 @@ def start_fl_simulation():
     logger = ModelLogger(custom_path=FLSettings.RESUME_FROM, config_dict=config_dict)
 
     # Setup the server
-    server = Server(strategy=strategy, logger=logger, checkpoint_id=FLSettings.RESUME_FROM)
+    server = Server(strategy=FLSettings.AGGREGATION_STRATEGY, logger=logger, checkpoint_id=FLSettings.RESUME_FROM)
 
     # Setup the clients
     client_manager = ClientManager(num_clients=FLSettings.TOTAL_CLIENTS)

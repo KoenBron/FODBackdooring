@@ -146,7 +146,7 @@ class Server:
             update['magnitude'] = magnitude
 
             # Free the memory of the large weight updates
-            del update[key]["weights"]
+            del update["weights"]
 
         self.logger.log_client_updates(server_round=round, update_info=self.client_round_updates)
 

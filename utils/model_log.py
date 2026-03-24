@@ -14,16 +14,31 @@ class ModelLogger:
         output_path: path object to save the best model and the intermediary reports to
         config_dict: The training configurations used
         """
-        # Create unique direoctry name to distinguish models
         if custom_path is None:
+            # Create a new model directory to write logs to and save the best model in
             date_format = "%d-%m-%Y-%H-%M-%S"
             date_string = time.strftime(date_format)
             self.output_path = os.path.join(ProjectPaths.OUTPUT_DIR, date_string)
+
+            # Initial loss to compare model performance to
+            self.best_val_loss = float('inf')
         else:
-            model_path = os.path.join(ProjectPaths.OUTPUT_DIR, custom_path)
-            if os.path.isdir(model_path):
-                print(f"Resuming training of model stored at path: {model_path}")
-                self.output_path = model_path
+            # Load a checkpoint and write logs to that output path
+            model_dir_path = os.path.join(ProjectPaths.OUTPUT_DIR, custom_path)
+            if os.path.isdir(model_dir_path):
+                # Validate the path
+                print(f"Resuming training of model stored at path: {model_dir_path}")
+                self.output_path = model_dir_path
+
+                # Validate if checkpoint of best recorded model is there
+                best_model_path = os.path.join(model_dir_path, "best_model.pth")
+                try:
+                    checkpoint = torch.load(best_model_path, weights_only=False)
+                    self.best_val_loss = checkpoint["loss"]
+                    print(f"[INFO] Restored from best recorded checkpoint {best_model_path}\nRecorded loss: {self.best_val_loss}")
+                except Exception as e:
+                    raise Exception(f"Exception occured while loading checkpoint: {best_model_path}.\nException: {e}")
+
             else:
                 raise Exception(f"Path {custom_path} of model to resume from is not a directory")
         os.makedirs(self.output_path, exist_ok=True)
@@ -41,8 +56,7 @@ class ModelLogger:
                     print("\n----------------------TRAINING CONFIGURATION----------------------")
                 for k, v in config_dict.items():
                     f.write(f"{k}: {v}\n")
-        # Initial loss to compare model performance to
-        self.best_val_loss = float('inf')
+
 
     def log_epoch(self, epoch, train_metrics=None, val_metrics=None):
         """
