@@ -148,7 +148,7 @@ class Server:
             # Free the memory of the large weight updates
             del update["weights"]
 
-        self.logger.log_client_updates(server_round=round, update_info=new_global_weights)
+        self.logger.log_client_updates(server_round=round, update_info=list(self.client_round_updates.values()))
 
         # Evaluate the model
         self.wrapper.set_weights(new_global_weights)
