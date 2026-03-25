@@ -79,6 +79,10 @@ class FasterRCNNWrapper(Interface):
 
         avg_loss = epoch_loss / steps if steps > 0 else float("inf")
         num_samples = len(dataloader)
+
+
+        self.model.cpu()
+        torch.cuda.empty_cache()
         return {"val_loss": avg_loss}, num_samples
 
     def train_step(self, dataloader, epochs, device, optimizer_config, partition_id=None, optimizer=None):
@@ -195,6 +199,9 @@ class FasterRCNNWrapper(Interface):
                 # Rename to remain consistent with logger implementation, ugly
                 final_epoch_losses["train_loss"] = final_epoch_losses.pop("total_loss")
 
+
+        self.model.cpu()
+        torch.cuda.empty_cache()
         # Return: (Weights op CPU, Aantal Samples, Metrics. Optimizer(to keep momentum))
         return (
             self.get_weights(),
