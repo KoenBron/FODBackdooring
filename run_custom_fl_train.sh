@@ -11,8 +11,9 @@ python custom_fl_train.py \
     --training-num-workers 4 \
     --attacker-fraction 0.5 \
     --client-train-ds-mode training \
-    --attack-type TARGETED_DISAPPEARANCE \
+    --attack-type TARGETED_MISLABELING \
     --target-class "person" \
+    --target-class "boat" \
     --trigger-color "255,0,255" \
     --floating-pos CENTER \
     --trigger-pattern FLOATING_UNIFORM \
