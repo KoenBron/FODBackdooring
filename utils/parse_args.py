@@ -1,5 +1,5 @@
 import argparse
-from utils.global_settings import BackdoorProperties, FLSettings, TrainingSettings, TriggerType, AttackType, FloatingTriggerPos
+from utils.global_settings import BackdoorProperties, FLSettings, TrainingSettings, TriggerType, AttackType, FloatingTriggerPos, EvaluationSettings
 
 def parse_args():
     parser = argparse.ArgumentParser(description="FODBackdooring FL Simulation")
@@ -44,6 +44,17 @@ def parse_args():
     bd_group.add_argument("--trigger-alpha", type=float, default=BackdoorProperties.TRIGGER_ALPHA)
     bd_group.add_argument("--block-size", type=int, default=BackdoorProperties.BLOCK_SIZE)
     bd_group.add_argument("--rng-seed", type=int, default=BackdoorProperties.RNG_SEED)
+
+    # Evaluation script Settings
+    eval_group = parser.add_argument_group('Evaluation Settings')
+    eval_group.add_argument("--do-poison-eval", action="store_true", default=EvaluationSettings.DO_POISON_EVAL, help="Do the poison evaluation")
+    eval_group.add_argument("--do-clean-eval", action="store_true", default=EvaluationSettings.DO_CLEAN_EVAL, help="Do the clean evaluation")
+    eval_group.add_argument("--print-poison-eval", action="store_true", default=EvaluationSettings.PRINT_POISON, help="Print the poison evaluation metrics")
+    eval_group.add_argument("--print-clean-eval", action="store_true", default=EvaluationSettings.PRINT_CLEAN, help="Print the clean evaluation metrics")
+    eval_group.add_argument("--model-date", type=str, default=None, help="Select the model to use by giving its date")
+    eval_group.add_argument("--centralized-model", action="store_true", default=False, help="Select the model to use by giving its date")
+    eval_group.add_argument("--evaluation-num-workers", type=int, default=EvaluationSettings.NUM_WORKERS, help="Number of cpus used to load data to the gpu.")
+    eval_group.add_argument("--evaluation-batch-size", type=int, default=EvaluationSettings.BATCH_SIZE, help="Batch size used by dataloaders in evaluation step workers")
 
     return parser.parse_args()
 
@@ -92,10 +103,23 @@ def apply_settings(args):
     if len(color_parts) == 3:
         BackdoorProperties.TRIGGER_COLOR = tuple(int(c.strip()) for c in color_parts)
 
+    EvaluationSettings.NUM_WORKERS = args.evaluation_num_workers
+    EvaluationSettings.BATCH_SIZE = args.evaluation_batch_size
+    EvaluationSettings.PRINT_POISON = args.print_poison_eval
+    EvaluationSettings.PRINT_CLEAN = args.print_clean_eval
+    EvaluationSettings.DO_CLEAN_EVAL = args.do_clean_eval
+    EvaluationSettings.DO_POISON_EVAL = args.do_poison_eval
+    EvaluationSettings.BATCH_SIZE = args.evaluation_batch_size
+    EvaluationSettings.NUM_WORKERS = args.evaluation_num_workers
+
     print_configuration_summary()
 
 def print_configuration_summary():
-    print("\n==================== Simulation Config ====================")
+    if EvaluationSettings.DO_POISON_EVAL or EvaluationSettings.DO_POISON_EVAL:
+        print("\n==================== Evaluation Config ====================")
+    else:
+        print("\n==================== Simulation Config ====================")
+
     print(f"{'NUM_ROUNDS':30}: {FLSettings.NUM_ROUNDS}")
     print(f"{'TOTAL_CLIENTS':30}: {FLSettings.TOTAL_CLIENTS}")
     print(f"{'CLIENTS_PER_ROUND':30}: {FLSettings.CLIENTS_PER_ROUND}")

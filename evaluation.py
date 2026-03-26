@@ -6,56 +6,16 @@ from tqdm import tqdm
 from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
 from torch.utils.data import DataLoader
-import argparse
 
 # Importeer de nieuwe paden en wrappers
 from utils.global_settings import GLOBAL_ATTACK_TYPES, TARGETED_ATTACK_TYPES, ProjectPaths, BackdoorProperties, TriggerType, AttackType, EvaluationSettings
 from utils.dataset import CustomCocoDataset
 from models.fasterrcnn.wrapper import FasterRCNNWrapper
+from utils.parse_args import parse_args, apply_settings
 
 MODEL = None
 CENTRALIZED_EVALUATION = False
 
-def parse_args():
-    """
-    Parser to make the options used in  settable via command-line args
-    """
-    parser = argparse.ArgumentParser(description="FasterRCNN metrics evaluation script")
-
-    parser.add_argument("--do-poison-eval", action="store_true", default=EvaluationSettings.DO_POISON_EVAL, help="Do the poison evaluation")
-    parser.add_argument("--do-clean-eval", action="store_true", default=EvaluationSettings.DO_CLEAN_EVAL, help="Do the clean evaluation")
-    parser.add_argument("--print-poison-eval", action="store_true", default=EvaluationSettings.PRINT_POISON, help="Print the poison evaluation metrics")
-    parser.add_argument("--print-clean-eval", action="store_true", default=EvaluationSettings.PRINT_CLEAN, help="Print the clean evaluation metrics")
-    parser.add_argument("--model-date", type=str, default=None, help="Select the model to use by giving its date")
-    parser.add_argument("--centralized-model", action="store_true", default=False, help="Select the model to use by giving its date")
-
-    parser.add_argument("--attack-type", type=str, default=None, choices=[e.name for e in AttackType], help="Override the attack type from global settings")
-    parser.add_argument("--target-class", type=str, default=BackdoorProperties.TARGET_CLASS, help="The class to target for targeted attacks (e.g., 'person')")
-    parser.add_argument("--mislabel-class", type=str, default=BackdoorProperties.MISLABEL_REPLACEMENT_CLASS, help="The replacement class for mislabeling attacks (e.g., 'boat')")
-
-    return parser.parse_args()
- 
-def apply_settings(args):
-    """
-    Apply the parsed evaluation settings
-    """
-    global MODEL, CENTRALIZED_EVALUATION
-    EvaluationSettings.PRINT_CLEAN = args.print_clean_eval
-    EvaluationSettings.PRINT_POISON = args.print_poison_eval
-    EvaluationSettings.DO_POISON_EVAL = args.do_poison_eval
-    EvaluationSettings.DO_CLEAN_EVAL = args.do_clean_eval
-    CENTRALIZED_EVALUATION = args.centralized_model
-    MODEL = args.model_date
-
-    if args.attack_type is not None:
-        BackdoorProperties.ATTACK_TYPE = AttackType[args.attack_type]
-
-    BackdoorProperties.TARGET_CLASS = args.target_class
-    BackdoorProperties.MISLABEL_REPLACEMENT_CLASS = args.mislabel_class
-
-    print("====================Evaluation Config====================")
-    print(args)
-    print("=========================================================")
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -397,11 +357,16 @@ def get_latest_model_path(date=None):
         # Sorteer op creatietijd en pak de nieuwste
         latest_folder = max(folders, key=os.path.getmtime)
 
-    return os.path.join(latest_folder, "best_model.pth")
+    # TODO: Misschien aanpassen weer
+    return os.path.join(latest_folder, "latest_fl_checkpoint.pth")
 
 if __name__ == "__main__":
     args = parse_args()
     apply_settings(args)
+
+    CENTRALIZED_EVALUATION = args.centralized_model
+    MODEL = args.model_date
+
     print("Starting the evaluator program...")
     
     # Load specific model if date is given, otherwise load latest
@@ -431,10 +396,10 @@ if __name__ == "__main__":
         )
         clean_dataloader = DataLoader(
             clean_ds,
-            batch_size=EvaluationSettings.METRIC_COMP_BATCH_SIZE,
+            batch_size=EvaluationSettings.BATCH_SIZE,
             shuffle=False,
             collate_fn=FasterRCNNWrapper.get_collate_fn(), # Update!
-            num_workers=BackdoorProperties.NUM_WORKERS,
+            num_workers=EvaluationSettings.NUM_WORKERS,
             pin_memory=True
         )
 
@@ -453,10 +418,10 @@ if __name__ == "__main__":
         )
         poison_dataloader = DataLoader(
             poison_ds, 
-            batch_size=EvaluationSettings.METRIC_COMP_BATCH_SIZE, 
+            batch_size=EvaluationSettings.BATCH_SIZE, 
             shuffle=False, 
             collate_fn=FasterRCNNWrapper.get_collate_fn(), # Update!
-            num_workers=BackdoorProperties.NUM_WORKERS, 
+            num_workers=EvaluationSettings.NUM_WORKERS, 
             pin_memory=True
         )
 

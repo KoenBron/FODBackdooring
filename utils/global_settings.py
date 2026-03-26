@@ -97,8 +97,8 @@ class EvaluationSettings:
     DO_CLEAN_EVAL=False
     EVAL_CENTRALIZED_MODEL=False
     # Metric constants
-    METRIC_COMP_BATCH_SIZE = 16
-    NUM_WORKERS = 0
+    BATCH_SIZE = 8
+    NUM_WORKERS = 4
 
 class FLSettings:
     NUM_ROUNDS = 10
