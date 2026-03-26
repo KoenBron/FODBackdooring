@@ -21,7 +21,7 @@ class Server:
         # If checkpoint path to resume training from is given, load it to the server model
         self.round_offset = 0
         if checkpoint_id is not None:
-            self._load_from_checkpoint(checkpoint_path=checkpoint_id)
+            self._load_from_checkpoint(checkpoint_id=checkpoint_id)
 
         self.strategy = self._select_strategy(strategy=strategy)
 
@@ -67,9 +67,9 @@ class Server:
         if os.path.exists(checkpoint_path):
             try:
                 checkpoint = torch.load(checkpoint_path)
-                print(f"[INFO] Loading model from: {checkpoint_path} to resume training")
                 self.wrapper.set_weights(checkpoint["model_state_dict"])
                 self.round_offset = checkpoint["round"]
+                print(f"[INFO] Loading model from: {checkpoint_path} to resume training\n[INFO] Completed rounds: {self.round_offset}, starting training of round {self.round_offset + 1}")
             except Exception as e:
                 raise Exception(f"[ERROR] Exception occurred while loading checkpoint: {e}")
         else:
@@ -148,6 +148,8 @@ class Server:
             # Free the memory of the large weight updates
             del update["weights"]
 
+        # First save then logg the round
+        self._save_latest_model(round=round)
         self.logger.log_client_updates(server_round=round, update_info=list(self.client_round_updates.values()))
 
         # Evaluate the model
@@ -162,5 +164,4 @@ class Server:
         # Prepare for another round 
         self.client_round_updates.clear()
 
-        self._save_latest_model(round=round)
 

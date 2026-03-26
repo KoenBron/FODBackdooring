@@ -5,7 +5,7 @@
 #SBATCH --constraint=gpumem32
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G
-#SBATCH --time=4:00:00
+#SBATCH --time=0:45:00
 #SBATCH --output=slurm_logs/out_%j.txt
 #SBATCH --error=slurm_logs/err_%j.txt
 #SBATCH --mail-type=END

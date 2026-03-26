@@ -18,3 +18,4 @@ python custom_fl_train.py \
     --trigger-pattern FLOATING_UNIFORM \
     --w-ratio 0.2\
     --h-ratio 0.2 \
+    --resume-from "26-03-2026-17-27-35" \
