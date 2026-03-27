@@ -89,6 +89,7 @@ class TrainingSettings:
     NUM_WORKERS = 2
     BENIGN_CLIENT_LOCAL_EPOCHS = 1
     MALICIOUS_CLIENT_LOCAL_EPOCHS = 1
+    FL_USED = True
 
 class EvaluationSettings:
     PRINT_POISON=False

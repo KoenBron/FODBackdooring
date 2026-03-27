@@ -5,7 +5,7 @@ import time
 from contextlib import redirect_stdout
 
 from torch.utils.tensorboard import SummaryWriter
-from utils.global_settings import ProjectPaths, BackdoorProperties
+from utils.global_settings import ProjectPaths, BackdoorProperties, TrainingSettings
 from evaluation import BatchEvaluator
 
 class ModelLogger:
@@ -56,6 +56,10 @@ class ModelLogger:
                     print("\n----------------------TRAINING CONFIGURATION----------------------")
                 for k, v in config_dict.items():
                     f.write(f"{k}: {v}\n")
+
+        # Setup file to log round evaluations to IF FL is used
+        if TrainingSettings.FL_USED:
+            self.round_eval_path = os.path.join(self.output_path, "round_evaluations.csv")
 
 
     def log_epoch(self, epoch, train_metrics=None, val_metrics=None):
@@ -132,3 +136,28 @@ class ModelLogger:
         """
         self.writer.close()
         print("---------Logger Closed Without a Problem----------")
+
+    def log_round_evaluation(self, eval_results):
+        """
+        Log the evaluation of the round as a csv.
+        eval_results is dict that must contain the following keys:
+        {
+            round: int,
+            mAP_50: float,
+            mAP_50_95: float,
+            ASR: float,
+        }
+        """
+        # Make sure 'eval_results' is a dict with the right parameters
+        if not isinstance(eval_results, dict):
+            raise Exception('[ERROR] Error while logging round evaluation results')
+
+        for key in ("round", "mAP_50", "mAP_50_95", "ASR"):
+            if key not in eval_results.keys():
+                raise Exception(f"[ERROR] '{key}' missing in 'eval_results' when logging round evaluation metrics") 
+
+        # Write evalution as csv entry to metrics file
+        with open(self.round_eval_path, "w+") as file:
+            line = f"{round}, {eval_results['mAP_50']}, {eval_results['mAP_50_95']}, {eval_results['ARS']}"
+            file.write(line)
+
