@@ -178,13 +178,13 @@ class Server:
         # metrics, num_samples = self.wrapper.evaluate_map_asr(clean_dl=self.clean_val_dl, poison_dl=self.poison_val_dl, device=self.device)
 
         clean_results = self.round_evaluator.run_clean_eval(dataloader=self.clean_val_dl)
-        poison_results = self.round_evaluator.run_clean_eval(dataloader=self.poison_val_dl)
+        poison_results = self.round_evaluator.run_poison_eval(dataloader=self.poison_val_dl)
 
         eval_results = {
             "round": round,
             "mAP_50": clean_results["AP_50"],
             "mAP_50_95": clean_results["AP_50_95"],
-            "ASR": poison_results["asr"],
+            "ASR": poison_results["ASR"],
             "fail_rate": poison_results["fail_rate"],
             "avg_conf_fail": poison_results["avg_conf_fail"],
         }

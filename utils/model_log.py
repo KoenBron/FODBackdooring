@@ -64,7 +64,7 @@ class ModelLogger:
             # Write the correct headers into the files
             with open(self.round_eval_path, mode="w", newline='') as file:
                 writer = csv.writer(file)
-                writer.writerow(["Round", "mAP_50", "mAP_50_95", "ASR", "Fail_Rate"])
+                writer.writerow(["round", "mAP_50", "mAP_50_95", "ASR", "fail_rate"])
 
     def log_epoch(self, epoch, train_metrics=None, val_metrics=None):
         """

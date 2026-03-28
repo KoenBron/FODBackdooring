@@ -159,7 +159,7 @@ class RoundEvaluator:
         avg_conf = total_conf_on_fail / failed_attacks if failed_attacks > 0 else 0
 
         return {
-            "asr": asr,
+            "ASR": asr,
             "fail_rate": 1.0 - asr,
             "avg_conf_fail": avg_conf,
             "total_samples": total_targets
