@@ -209,3 +209,6 @@ class FasterRCNNWrapper(Interface):
             final_epoch_losses,
             optimizer
         )
+
+    def evaluate_map_asr(self, clean_dl, poison_dl, device):
+        pass

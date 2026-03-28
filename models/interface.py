@@ -73,3 +73,13 @@ class Interface(ABC):
         """
         pass
 
+    def evaluate_map_asr(self, clean_dl, poison_dl, device):
+        """
+        Performs evaluation on the clean dataset to measure mAP_50 & mAP_50_95
+        Perfroms evaluation on the poisoned dataset to measure ASR
+        Args:
+            clean_dl: Dataloader with mode="always_clean"
+            poison_dl: Dataloader with mode="always_poison"
+            device: 'cuda' or 'cpu'
+        """
+        pass

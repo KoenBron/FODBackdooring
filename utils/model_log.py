@@ -1,6 +1,7 @@
 import os
 import torch
 import time
+import csv
 
 from contextlib import redirect_stdout
 
@@ -60,7 +61,10 @@ class ModelLogger:
         # Setup file to log round evaluations to IF FL is used
         if TrainingSettings.FL_USED:
             self.round_eval_path = os.path.join(self.output_path, "round_evaluations.csv")
-
+            # Write the correct headers into the files
+            with open(self.round_eval_path, mode="w", newline='') as file:
+                writer = csv.writer(file)
+                writer.writerow(["Round", "mAP_50", "mAP_50_95", "ASR", "Fail_Rate"])
 
     def log_epoch(self, epoch, train_metrics=None, val_metrics=None):
         """
@@ -157,7 +161,15 @@ class ModelLogger:
                 raise Exception(f"[ERROR] '{key}' missing in 'eval_results' when logging round evaluation metrics") 
 
         # Write evalution as csv entry to metrics file
-        with open(self.round_eval_path, "w+") as file:
-            line = f"{round}, {eval_results['mAP_50']}, {eval_results['mAP_50_95']}, {eval_results['ARS']}"
-            file.write(line)
+        with open(self.round_eval_path, "a") as file:
+            writer = csv.writer(file)
+            writer.writerow([
+                eval_results["round"],
+                eval_results["mAP_50"],
+                eval_results["mAP_50_95"],
+                eval_results["ASR"],
+                1.0 - eval_results["ASR"],
+            ])
+            
+
 
