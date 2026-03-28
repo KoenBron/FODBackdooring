@@ -17,7 +17,7 @@ class ModelLogger:
         """
         if custom_path is None:
             # Create a new model directory to write logs to and save the best model in
-            date_format = "%Y%-m-%d-%H-%M-%S"
+            date_format = "%Y-%m-%d-%H-%M-%S"
             date_string = time.strftime(date_format)
             self.output_path = os.path.join(ProjectPaths.OUTPUT_DIR, date_string)
 
