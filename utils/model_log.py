@@ -161,7 +161,7 @@ class ModelLogger:
                 raise Exception(f"[ERROR] '{key}' missing in 'eval_results' when logging round evaluation metrics") 
 
         # Write evalution as csv entry to metrics file
-        with open(self.round_eval_path, "a") as file:
+        with open(self.round_eval_path, mode="a", newline='') as file:
             writer = csv.writer(file)
             writer.writerow([
                 eval_results["round"],
