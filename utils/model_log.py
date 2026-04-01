@@ -23,6 +23,14 @@ class ModelLogger:
 
             # Initial loss to compare model performance to
             self.best_val_loss = float('inf')
+
+            # Setup file to log round evaluations to IF FL is used
+            if TrainingSettings.FL_USED:
+                self.round_eval_path = os.path.join(self.output_path, "round_evaluations.csv")
+                # Write the correct headers into the files
+                with open(self.round_eval_path, mode="w", newline='') as file:
+                    writer = csv.writer(file)
+                    writer.writerow(["round", "mAP_50", "mAP_50_95", "ASR", "fail_rate"])
         else:
             # Load a checkpoint and write logs to that output path
             model_dir_path = os.path.join(ProjectPaths.OUTPUT_DIR, custom_path)
@@ -58,13 +66,6 @@ class ModelLogger:
                 for k, v in config_dict.items():
                     f.write(f"{k}: {v}\n")
 
-        # Setup file to log round evaluations to IF FL is used
-        if TrainingSettings.FL_USED:
-            self.round_eval_path = os.path.join(self.output_path, "round_evaluations.csv")
-            # Write the correct headers into the files
-            with open(self.round_eval_path, mode="w", newline='') as file:
-                writer = csv.writer(file)
-                writer.writerow(["round", "mAP_50", "mAP_50_95", "ASR", "fail_rate"])
 
     def log_epoch(self, epoch, train_metrics=None, val_metrics=None):
         """
