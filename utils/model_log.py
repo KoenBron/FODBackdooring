@@ -20,6 +20,7 @@ class ModelLogger:
             date_format = "%Y-%m-%d-%H-%M-%S"
             date_string = time.strftime(date_format)
             self.output_path = os.path.join(ProjectPaths.OUTPUT_DIR, date_string)
+            os.makedirs(self.output_path, exist_ok=True)
 
             # Initial loss to compare model performance to
             self.best_val_loss = float('inf')
@@ -50,7 +51,6 @@ class ModelLogger:
 
             else:
                 raise Exception(f"Path {custom_path} of model to resume from is not a directory")
-        os.makedirs(self.output_path, exist_ok=True)
 
         print(f"---------Saving Model Logs to: {self.output_path}")
 
