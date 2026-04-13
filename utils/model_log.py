@@ -27,11 +27,21 @@ class ModelLogger:
 
             # Setup file to log round evaluations to IF FL is used
             if TrainingSettings.FL_USED:
+
+                # Create csv file for the round evaluations
                 self.round_eval_path = os.path.join(self.output_path, "round_evaluations.csv")
                 # Write the correct headers into the files
-                with open(self.round_eval_path, mode="w", newline='') as file:
-                    writer = csv.writer(file)
-                    writer.writerow(["round", "mAP_50", "mAP_50_95", "ASR", "fail_rate"])
+                if not os.paht.isfile(self.round_eval_path):
+                    with open(self.round_eval_path, mode="w", newline='') as file:
+                        writer = csv.writer(file)
+                        writer.writerow(["round", "mAP_50", "mAP_50_95", "ASR", "fail_rate"])
+                
+                # Create the csv file for writing the client update metrics
+                self.client_update_path = os.path.join(self.output_path, "client_update_log.csv")
+                if not os.path.isfile(self.client_update_path):
+                    with open(self.client_update_path, mode="w", newline='') as file:
+                        writer = csv.writer(file)
+                        writer.writerow(["round", "cid", "type", "l2_dist", "cos_sim", "magnitude"])
         else:
             # Load a checkpoint and write logs to that output path
             model_dir_path = os.path.join(ProjectPaths.OUTPUT_DIR, custom_path)
@@ -117,6 +127,7 @@ class ModelLogger:
         """
         log_file = os.path.join(self.output_path, "client_update_log.txt")
 
+        # Log human readable client update metrics
         with open(log_file, 'a') as f:
             f.write(f"\n{'='*95}\n")
             f.write(f" ROUND {server_round} - CLIENT WEIGHT UPDATE ANALYSIS\n")
@@ -127,6 +138,19 @@ class ModelLogger:
             for info in update_info:
                 f.write(f"{info['cid']:<5} | {info['type']:<10} | {info['l2_norm']:<20.4f} | {info['cos_sim']:<20.4f} | {info['magnitude']:<15.4f}\n")
             f.write(f"{'='*95}\n")
+
+        # Logs client updates as a csv
+        with open(self.client_update_path) as f:
+            writer = csv.writer(f)
+            for update in update_info:
+                writer.writerow([
+                    server_round,
+                    update["cid"],
+                    update["type"],
+                    update["l2_norm"],
+                    update["cos_sim"],
+                    update["magnitude"],
+                ])
 
     def reset_loss(self):
         """
