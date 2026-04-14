@@ -48,7 +48,12 @@ class ModelLogger:
             if os.path.isdir(model_dir_path):
                 # Validate the path
                 print(f"Resuming training of model stored at path: {model_dir_path}")
+
                 self.output_path = model_dir_path
+
+                # CSV file headers are set in the constructor, so paths must be set even for resuming logging 
+                self.round_eval_path = os.path.join(self.output_path, "round_evaluations.csv")
+                self.client_update_path = os.path.join(self.output_path, "client_update_log.csv")
 
                 # Validate if checkpoint of best recorded model is there
                 best_model_path = os.path.join(model_dir_path, "best_model.pth")
