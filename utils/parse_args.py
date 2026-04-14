@@ -25,6 +25,7 @@ def parse_args():
     atk_group = parser.add_argument_group('Attacker Configuration')
     atk_group.add_argument("--attacker-fraction", type=float, default=FLSettings.ATTACKER_FRACTION, help="Fraction of malicious clients")
     atk_group.add_argument("--client-train-ds-mode", type=str, default=FLSettings.ATTACKER_DATASET_MODE, help="Dataset mode for attackers")
+    atk_group.add_argument("--enable-model-replacement", action="store_true", default=FLSettings.DO_MODEL_REPLACEMENT, help="Enable the model replacement strategy for malicious clients to amplify backdoors")
 
     # Backdoor Properties
     bd_group = parser.add_argument_group('Backdoor Properties')

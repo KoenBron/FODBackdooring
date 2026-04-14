@@ -1,3 +1,5 @@
+from os import replace
+from threading import local
 import torch
 import random
 import numpy as np
@@ -72,6 +74,35 @@ class ClientManager:
                 shuffle=True,
             )
 
+    def _do_model_replacement(self, local_weights, global_weights, m):
+        """
+        Scales the local weights according to model replacement:
+            w_mal = (k / m) * local_weights - (k - m) / m * global_weights
+
+        local_weights: tensor with the malicious update (unscaled)
+        global_weights: tensor with the original server provided weights
+        m: number of malicious clients that round
+        """
+        k = FLSettings.CLIENTS_PER_ROUND
+
+        if m==k:
+            return local_weights
+
+        scale_mal = k / m
+        scale_global = (k - m) / m
+
+        replaced_weights = {}
+        for key in global_weights:
+            if local_weights[key].is_floating_point():
+                replaced_weights[key] = (
+                    scale_mal * local_weights[key] - scale_global * global_weights[key]
+                )
+            else:
+                # Integer tensors don't contain learnable params that need to be amplified
+                replaced_weights[key] = local_weights[key]
+
+        return replaced_weights
+
     def get_parameters(self):
         # Delegate to wrapper to make client implementation model agnsostic
         return self.wrapper.get_weights()
@@ -124,6 +155,10 @@ class ClientManager:
                 else:
                     # Just in case
                     metrics[k] = float(v)
+
+        # Amplify backdoor using model replacement if enabled
+        if client_is_attacker and FLSettings.DO_MODEL_REPLACEMENT:
+            updated_params = self._do_model_replacement(local_weights=updated_params, global_weights=server_weights, m=client_config["n_mal_clients"])
 
         return updated_params, num_samples, metrics
 

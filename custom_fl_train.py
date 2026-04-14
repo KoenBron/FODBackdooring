@@ -50,19 +50,24 @@ def start_fl_simulation():
         # What server sends out to the clients:
         server_weights = server.get_global_weights()
 
+        # Determine beforehand for model_replacement
+        n_mal_clients = len([cid for cid in selected_clients if (cid in FLSettings.ATTACKER_IDS)])
         for client_index in selected_clients:
             # Build the client
             is_attacker = (client_index in FLSettings.ATTACKER_IDS)
             client_config = {
                 "index": client_index,
                 "is_attacker": is_attacker,
+                "n_mal_clients": n_mal_clients,
             }
 
+            # Perform the client update
             client_weights_update, num_samples, client_metrics = client_manager.client_side_train(
                 server_weights=server_weights,
-                client_config=client_config
+                client_config=client_config,
             )
 
+            # Store the client update on the server
             server.receive_client_update(
                 client_config=client_config,
                 num_samples=num_samples,
@@ -70,6 +75,8 @@ def start_fl_simulation():
                 # client_metrics=client_metrics,# TODO: Add back for logging of loss
             )
 
+
+        # Perform aggregation of client updates after 
         server.aggregate_and_evaluate(round=current_round)
 
     print("\n________________________SIMULATION COMPLETE________________________")

@@ -73,7 +73,7 @@ class ProjectPaths:
     
     # Project root level directories
     DATASET_DIR = ROOT_DIR / "dataset"
-    OUTPUT_DIR = ROOT_DIR / "outputs" / "fl"
+    OUTPUT_DIR = ROOT_DIR / "outputs" / "fl_retention_exp"
     MODELS_DIR = ROOT_DIR / "models"
 
     # Dataset paths
@@ -113,6 +113,7 @@ class FLSettings:
     ATTACKER_DATASET_MODE = "always_poison"# What mode is used in creating the CustomCocoDataset class for malicious clients
     CLIENTS_PER_ROUND = 1
     AGGREGATION_STRATEGY = "fedavg"
+    DO_MODEL_REPLACEMENT = False
 
     # flwr specific settings
     FRACTION_CLIENT_EVAL = 0.0# Fraction to determine on how many client instance evaluation is done

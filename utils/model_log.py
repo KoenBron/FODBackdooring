@@ -12,7 +12,7 @@ from evaluation import BatchEvaluator
 class ModelLogger:
     def __init__(self, custom_path=None, config_dict=None):
         """
-        output_path: path object to save the best model and the intermediary reports to
+        custom_path: The path to the directory from which logging should be resumed
         config_dict: The training configurations used
         """
         if custom_path is None:
@@ -31,7 +31,7 @@ class ModelLogger:
                 # Create csv file for the round evaluations
                 self.round_eval_path = os.path.join(self.output_path, "round_evaluations.csv")
                 # Write the correct headers into the files
-                if not os.paht.isfile(self.round_eval_path):
+                if not os.path.isfile(self.round_eval_path):
                     with open(self.round_eval_path, mode="w", newline='') as file:
                         writer = csv.writer(file)
                         writer.writerow(["round", "mAP_50", "mAP_50_95", "ASR", "fail_rate"])
@@ -140,7 +140,7 @@ class ModelLogger:
             f.write(f"{'='*95}\n")
 
         # Logs client updates as a csv
-        with open(self.client_update_path) as f:
+        with open(self.client_update_path, 'a') as f:
             writer = csv.writer(f)
             for update in update_info:
                 writer.writerow([
