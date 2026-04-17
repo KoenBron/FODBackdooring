@@ -35,6 +35,8 @@ def start_fl_simulation():
     # Setup the clients
     client_manager = ClientManager(num_clients=FLSettings.TOTAL_CLIENTS)
 
+    # Set the randomness for reproducible experiments
+    seeded_client_selection = random.Random(FLSettings.SEED)
 
     start_round = server.get_round_offset() + 1
 
@@ -45,7 +47,7 @@ def start_fl_simulation():
         print(f"\n________________________STARTING ROUND {current_round}________________________")
         
         # Select clients
-        selected_clients = random.sample(range(FLSettings.TOTAL_CLIENTS), FLSettings.CLIENTS_PER_ROUND)
+        selected_clients = seeded_client_selection.sample(range(FLSettings.TOTAL_CLIENTS), FLSettings.CLIENTS_PER_ROUND)
 
         # What server sends out to the clients:
         server_weights = server.get_global_weights()

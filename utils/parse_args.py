@@ -8,8 +8,8 @@ def parse_args():
     fl_group = parser.add_argument_group('Federated Learning')
     fl_group.add_argument("--num-rounds", type=int, default=FLSettings.NUM_ROUNDS, help="Number of training rounds")
     fl_group.add_argument("--total-clients", type=int, default=FLSettings.TOTAL_CLIENTS, help="Total number of clients")
-    fl_group.add_argument("--do-seeding", action="store_true", default=False, help="Enable seeding")
-    fl_group.add_argument("--seed", type=int, default=FLSettings.SEED, help="Seed value")
+    fl_group.add_argument("--seed", type=int, default=FLSettings.SEED, help="Seed value for round client selection")
+    fl_group.add_argument("--partitioning-seed", type=int, default=FLSettings.PARTITIONING_SEED, help="Seed value for partitioning the dataset")
     fl_group.add_argument("--resume-from", type=str, default=None, help="Path to checkpoint to resume from")
     fl_group.add_argument("--clients-per-round", type=int, default=FLSettings.CLIENTS_PER_ROUND, help="Number of clients participating each round")
     fl_group.add_argument("--aggregation-strategy", type=str, default=FLSettings.AGGREGATION_STRATEGY, help="Strategy used to aggregate client weight updates on the server entity")
@@ -67,8 +67,8 @@ def apply_settings(args):
     FLSettings.CLIENTS_PER_ROUND = min(args.total_clients, args.clients_per_round)
     FLSettings.CLIENTS_PER_ROUND = min(args.total_clients, args.clients_per_round)
     FLSettings.AGGREGATION_STRATEGY = args.aggregation_strategy
-    if args.do_seeding:
-        FLSettings.SEED = args.seed
+    FLSettings.SEED = args.seed
+    FLSettings.PARTITIONING_SEED = args.partitioning_seed
     
     # Attacker General
     FLSettings.ATTACKER_DATASET_MODE = args.client_train_ds_mode

@@ -5,7 +5,7 @@ import cv2
 import random
 import torch
 import numpy as np
-from utils.global_settings import GLOBAL_ATTACK_TYPES, TARGETED_ATTACK_TYPES, AttackType, BackdoorProperties, TriggerType, FloatingTriggerPos
+from utils.global_settings import GLOBAL_ATTACK_TYPES, TARGETED_ATTACK_TYPES, AttackType, BackdoorProperties, TriggerType, FloatingTriggerPos, FLSettings
 from collections import defaultdict
 from torch.utils.data import Dataset
 

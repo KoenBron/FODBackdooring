@@ -24,6 +24,7 @@ class RoundEvaluator:
         self._set_classes()
         
     def _set_classes(self):
+        # Retrieve information directly from the annotations
         with open(self.annotations_file, "r") as file:
             annotations = json.load(file)
             
@@ -68,7 +69,7 @@ class RoundEvaluator:
         failed_attacks = 0
         total_conf_on_fail = 0
 
-        # Voor targeted attacks: ID's ophalen
+        # Get the target and image mappings directly from the annotations !instead of the dataloader(which has been poisoned!!!!!!)!
         cat_name_to_id = {v: k for k, v in self.cat_map.items()}
         target_class_id = cat_name_to_id.get(BackdoorProperties.TARGET_CLASS, -1)
         replacement_class_id = cat_name_to_id.get(BackdoorProperties.MISLABEL_REPLACEMENT_CLASS, -1)

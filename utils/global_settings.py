@@ -122,6 +122,7 @@ class FLSettings:
     WORKERS_PER_CLIENT = 4
 
     # Remaining
-    SEED = 4
+    SEED = 4# For seeding the client selection per round
+    PARTITIONING_SEED = 4# Used for partitioning the dataset amongst the clients
     RESUME_FROM = None
     ROUND_OFFSET = 0

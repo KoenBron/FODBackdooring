@@ -3,9 +3,11 @@ import torch
 import random 
 from torch.utils.data import Subset
 
+from utils.global_settings import FLSettings
+
 def get_shuffled_indices(dataset_size):
     indices = list(range(dataset_size))
-    random.shuffle(indices)
+    random.Random(FLSettings.PARTITIONING_SEED).shuffle(indices)
     return indices
    
 def partition_dataset(dataset, n_clients, indices):
@@ -28,3 +30,8 @@ def set_global_seed(seed):
 
     # Seed numpy
     np.random.seed(seed)
+
+def unset_global_seed():
+    random.seed()
+    torch.seed()
+    np.random.seed()
