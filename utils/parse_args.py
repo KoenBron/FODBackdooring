@@ -119,6 +119,11 @@ def apply_settings(args):
     num_attackers = int(FLSettings.TOTAL_CLIENTS * FLSettings.ATTACKER_FRACTION)
     FLSettings.ATTACKER_IDS = list(range(num_attackers))
 
+    # Client schedule settings
+    FLSettings.DO_RANDOMIZED_CLIENT_SELECTION = args.do_random_client_selection
+    if FLSettings.DO_RANDOMIZED_CLIENT_SELECTION:
+        FLSettings.CLIENT_SCHEDULE = parse_client_schedule(args, FLSettings.ATTACKER_IDS)
+
     # Training Settings
     TrainingSettings.NUM_WORKERS = args.training_num_workers
     TrainingSettings.TRAINING_BATCH_SIZE = args.training_batch_size
