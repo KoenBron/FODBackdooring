@@ -3,6 +3,11 @@ from enum import Enum
 from pathlib import Path
 import os
 
+class ANSIColor:
+    RED = "\033[0;31m]"
+    GREEN = "\033[0;31m]"
+    YELLOW = "\033[0;31m]"
+    RESET = "\033[0m"
 
 class TriggerType(Enum):
     CHECKERBOARD = 1
@@ -126,3 +131,5 @@ class FLSettings:
     PARTITIONING_SEED = 4# Used for partitioning the dataset amongst the clients
     RESUME_FROM = None
     ROUND_OFFSET = 0
+    DO_RANDOMIZED_CLIENT_SELECTION = True# Randomly, but seedable, selects which clients are selected each round
+    CLIENT_SCHEDULE = {}

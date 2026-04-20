@@ -1,5 +1,44 @@
 import argparse
-from utils.global_settings import BackdoorProperties, FLSettings, TrainingSettings, TriggerType, AttackType, FloatingTriggerPos, EvaluationSettings
+from collections import defaultdict
+from typing_extensions import assert_never
+
+from FL.client import client_fn
+from utils.global_settings import BackdoorProperties, FLSettings, TrainingSettings, TriggerType, AttackType, FloatingTriggerPos, EvaluationSettings, ANSIColor
+
+def parse_client_schedule(args, attacker_ids):
+    """
+    Parse the formatted client schedule string to set which clients are selected each round.
+    Gives a warning when non-malicious clients are selected. Cannot select more clients in a given round than updates
+    
+    client_schedule_str: "round_index:client_index,round_index:client_index"
+    """
+    # Parse the round index, client index pairs
+    schedule = defaultdict(list)
+    pairs = args.client_schedule.split(',')
+    for pair in pairs:
+        round, client_idx = pair.split(':')
+        # Validate the round and client number
+        if int(round) not in range(1, args.num_rounds + 1):
+            print(f"{ANSIColor.RED}[ERROR]{ANSIColor.RESET} Invalid round number given: {int(round)}. Allowed round range: 1 - args.num_rounds")
+        # Validate valid client numbers
+        if int(client_idx) not in range(args.num_clients):
+            print(f"{ANSIColor.RED}[ERROR]{ANSIColor.RESET} Invalid client index. Allowed range dictated by total number of clients: 0 - {args.num_clients - 1}")
+
+        # Check if malicious clients are planned
+        if int(client_idx) not in attacker_ids:
+            print(f"{ANSIColor.RED}[WARNING]{ANSIColor.RESET} Non-malicious client {client_idx} select for round {round}")
+
+        # Add validated round item combo
+        schedule[round].append(client_idx)
+
+    # Validate the entire round
+    for round, clients in schedule.items():
+
+        # Check if number of selected clients is within bounds
+        if len(clients) > clients.clients_per_round:
+            print(f"{ANSIColor.RED}[ERROR]{ANSIColor.RESET} At round: {round} you have selected more clients than are selected per round. You selected {clients} clients, max clients per round: {args.clients_per_round}")
+            
+    return schedule
 
 def parse_args():
     parser = argparse.ArgumentParser(description="FODBackdooring FL Simulation")
@@ -13,6 +52,9 @@ def parse_args():
     fl_group.add_argument("--resume-from", type=str, default=None, help="Path to checkpoint to resume from")
     fl_group.add_argument("--clients-per-round", type=int, default=FLSettings.CLIENTS_PER_ROUND, help="Number of clients participating each round")
     fl_group.add_argument("--aggregation-strategy", type=str, default=FLSettings.AGGREGATION_STRATEGY, help="Strategy used to aggregate client weight updates on the server entity")
+    fl_group.add_argument("--do-random-client-selection", type=bool, default=FLSettings.DO_RANDOMIZED_CLIENT_SELECTION, help="Randomly select which clients, malcious or benign, participate in a round")
+    fl_group.add_argument("--client-schedule", type=str, default="", help="Schedule for specific clients. Format: 'round:client,round:client'. Bijv: '10:2,11:3'")
+
 
     # Training Hyperparameters
     tr_group = parser.add_argument_group('Training Hyperparameters')
@@ -69,6 +111,7 @@ def apply_settings(args):
     FLSettings.AGGREGATION_STRATEGY = args.aggregation_strategy
     FLSettings.SEED = args.seed
     FLSettings.PARTITIONING_SEED = args.partitioning_seed
+    FLSettings.DO_MODEL_REPLACEMENT = args.enable_model_replacement
     
     # Attacker General
     FLSettings.ATTACKER_DATASET_MODE = args.client_train_ds_mode
@@ -81,7 +124,6 @@ def apply_settings(args):
     TrainingSettings.TRAINING_BATCH_SIZE = args.training_batch_size
     TrainingSettings.MALICIOUS_CLIENT_LOCAL_EPOCHS = args.malicious_client_epochs
     TrainingSettings.BENIGN_CLIENT_LOCAL_EPOCHS = args.benign_client_epochs
-
 
     # Backdoor Base
     BackdoorProperties.BACKDOOR_ACTIVE = not args.disable_backdoor_logging
@@ -104,6 +146,7 @@ def apply_settings(args):
     if len(color_parts) == 3:
         BackdoorProperties.TRIGGER_COLOR = tuple(int(c.strip()) for c in color_parts)
 
+    # Evaluation settings
     EvaluationSettings.NUM_WORKERS = args.evaluation_num_workers
     EvaluationSettings.BATCH_SIZE = args.evaluation_batch_size
     EvaluationSettings.PRINT_POISON = args.print_poison_eval

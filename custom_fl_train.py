@@ -35,8 +35,8 @@ def start_fl_simulation():
     # Setup the clients
     client_manager = ClientManager(num_clients=FLSettings.TOTAL_CLIENTS)
 
-    # Set the randomness for reproducible experiments
-    seeded_client_selection = random.Random(FLSettings.SEED)
+    # Seed the random generator for client selection
+    random_client_selector = random.Random(FLSettings.SEED)
 
     start_round = server.get_round_offset() + 1
 
@@ -47,7 +47,7 @@ def start_fl_simulation():
         print(f"\n________________________STARTING ROUND {current_round}________________________")
         
         # Select clients
-        selected_clients = seeded_client_selection.sample(range(FLSettings.TOTAL_CLIENTS), FLSettings.CLIENTS_PER_ROUND)
+        selected_clients = random_client_selector.sample(range(FLSettings.TOTAL_CLIENTS), FLSettings.CLIENTS_PER_ROUND)
 
         # What server sends out to the clients:
         server_weights = server.get_global_weights()
@@ -55,6 +55,7 @@ def start_fl_simulation():
         # Determine beforehand for model_replacement
         n_mal_clients = len([cid for cid in selected_clients if (cid in FLSettings.ATTACKER_IDS)])
         for client_index in selected_clients:
+
             # Build the client
             is_attacker = (client_index in FLSettings.ATTACKER_IDS)
             client_config = {
