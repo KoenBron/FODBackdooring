@@ -1,4 +1,5 @@
 import argparse
+import re
 from collections import defaultdict
 
 from utils.global_settings import BackdoorProperties, FLSettings, TrainingSettings, TriggerType, AttackType, FloatingTriggerPos, EvaluationSettings, ANSIColor
@@ -10,6 +11,10 @@ def parse_client_schedule(args, attacker_ids):
     
     client_schedule_str: "round_index:client_index,round_index:client_index"
     """
+    validation_pattern = "^\d+:d+(,\d+:\d+)*$"
+    if not re.match(validation_pattern, args.client_schedule):
+        print(f"{ANSIColor.RED}[ERROR]{ANSIColor.RESET} client_schedule string does not match: 'round:client_index,round:client_index' or '^\d+:d+(,\d+:\d+)*$'")
+
     # Parse the round index, client index pairs
     schedule = defaultdict(list)
     pairs = args.client_schedule.split(',')
@@ -18,13 +23,16 @@ def parse_client_schedule(args, attacker_ids):
         # Validate the round and client number
         if int(round) not in range(1, args.num_rounds + 1):
             print(f"{ANSIColor.RED}[ERROR]{ANSIColor.RESET} Invalid round number given: {int(round)}. Allowed round range: 1 - args.num_rounds")
+            return None
+        
         # Validate valid client numbers
         if int(client_idx) not in range(args.num_clients):
             print(f"{ANSIColor.RED}[ERROR]{ANSIColor.RESET} Invalid client index. Allowed range dictated by total number of clients: 0 - {args.num_clients - 1}")
+            return None
 
         # Check if malicious clients are planned
         if int(client_idx) not in attacker_ids:
-            print(f"{ANSIColor.RED}[WARNING]{ANSIColor.RESET} Non-malicious client {client_idx} select for round {round}")
+            print(f"{ANSIColor.YELLOW}[WARNING]{ANSIColor.RESET} Non-malicious client {client_idx} select for round {round}")
 
         # Add validated round item combo
         schedule[round].append(client_idx)
@@ -35,7 +43,8 @@ def parse_client_schedule(args, attacker_ids):
         # Check if number of selected clients is within bounds
         if len(clients) > clients.clients_per_round:
             print(f"{ANSIColor.RED}[ERROR]{ANSIColor.RESET} At round: {round} you have selected more clients than are selected per round. You selected {clients} clients, max clients per round: {args.clients_per_round}")
-            
+            return None 
+
     return schedule
 
 def parse_args():
@@ -50,7 +59,7 @@ def parse_args():
     fl_group.add_argument("--resume-from", type=str, default=None, help="Path to checkpoint to resume from")
     fl_group.add_argument("--clients-per-round", type=int, default=FLSettings.CLIENTS_PER_ROUND, help="Number of clients participating each round")
     fl_group.add_argument("--aggregation-strategy", type=str, default=FLSettings.AGGREGATION_STRATEGY, help="Strategy used to aggregate client weight updates on the server entity")
-    fl_group.add_argument("--do-random-client-selection", type=bool, default=FLSettings.DO_RANDOMIZED_CLIENT_SELECTION, help="Randomly select which clients, malcious or benign, participate in a round")
+    fl_group.add_argument("--use-client-schedule", action="store_true", default=FLSettings.USE_CLIENT_SCHEDULE, help="Instead of randomly, though seeded, selecting clients, takes a client schedule to structure when malicious clients are used.")
     fl_group.add_argument("--client-schedule", type=str, default="", help="Schedule for specific clients. Format: 'round:client,round:client'. Bijv: '10:2,11:3'")
 
 
@@ -118,9 +127,11 @@ def apply_settings(args):
     FLSettings.ATTACKER_IDS = list(range(num_attackers))
 
     # Client schedule settings
-    FLSettings.DO_RANDOMIZED_CLIENT_SELECTION = args.do_random_client_selection
-    if not FLSettings.DO_RANDOMIZED_CLIENT_SELECTION:
-        FLSettings.CLIENT_SCHEDULE = parse_client_schedule(args, FLSettings.ATTACKER_IDS)
+    FLSettings.USE_CLIENT_SCHEDULE = args.do_random_client_selection
+    if FLSettings.USE_CLIENT_SCHEDULE:
+        schedule = parse_client_schedule(args, FLSettings.ATTACKER_IDS)
+        if schedule is not None:
+            FLSettings.CLIENT_SCHEDULE = schedule
 
     # Training Settings
     TrainingSettings.NUM_WORKERS = args.training_num_workers

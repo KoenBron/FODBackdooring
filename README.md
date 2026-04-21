@@ -115,7 +115,7 @@ python custom_fl_train.py \
   --total-clients 10 \
   --clients-per-round 2 \
   --attacker-fraction 0.2 \
-  --do-random-client-selection False \
+  --use-client-schedule \
   --client-schedule "10:0,10:1,15:0"
 ```
 * Format: --client-schedule "round:client_idx,round:client_idx"
