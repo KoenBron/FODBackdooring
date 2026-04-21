@@ -1,8 +1,6 @@
 import argparse
 from collections import defaultdict
-from typing_extensions import assert_never
 
-from FL.client import client_fn
 from utils.global_settings import BackdoorProperties, FLSettings, TrainingSettings, TriggerType, AttackType, FloatingTriggerPos, EvaluationSettings, ANSIColor
 
 def parse_client_schedule(args, attacker_ids):
@@ -121,7 +119,7 @@ def apply_settings(args):
 
     # Client schedule settings
     FLSettings.DO_RANDOMIZED_CLIENT_SELECTION = args.do_random_client_selection
-    if FLSettings.DO_RANDOMIZED_CLIENT_SELECTION:
+    if not FLSettings.DO_RANDOMIZED_CLIENT_SELECTION:
         FLSettings.CLIENT_SCHEDULE = parse_client_schedule(args, FLSettings.ATTACKER_IDS)
 
     # Training Settings

@@ -68,4 +68,57 @@ Files required to run the code consistently on local machines or the DAIC cluste
 ### Environment
 * `requirements.txt`: List of Python dependencies required to run the project.
 
+## Usage Example
+Configure the simulation using command-line arguments. Below are a few common scenarios:
+
+### 1. Basic Federated Learning (Benign)
+Run a standard training session without any data poisoning or malicious clients.
+
+```bash
+python custom_fl_train.py \
+  --num-rounds 50 \
+  --total-clients 10 \
+  --clients-per-round 5 \
+  --attacker-fraction 0.0 \
+```
+* Sets up 50 rounds where each round 50 clients are chosen out of 10 total clienets. 
+* 0% of the total clients are attackers.
+### 2. Model Replacement backdoor attack
+Sets up a targeted disappearance attack on person objects using model replacement to amplify its efficacy.
+```bash
+python custom_fl_train.py \
+  --num-rounds 100 \
+  --total-clients 20 \
+  --clients-per-round 4 \
+  --attacker-fraction 0.1 \
+  --benign-client-epochs 2 \
+  --malicious-client-epochs 5 \
+  --enable-model-replacement \
+  --attack-type TARGETED_DISAPPEARANCE \
+  --target-class "person" \
+  --poison-rate 0.15 \
+  --trigger-pattern FLOATING_UNIFORM \
+  --trigger-pos CENTER \
+  --trigger-color "255,0,0" \
+```
+* Attackers: 10% of clients are malicious and train for 5 local epochs (vs. 2 for benign). It poisons 15% of the person objects in its local dataset.
+
+* Strategy: Enables model replacement to amplify the backdoor impact.
+
+* Trigger: Injects a red FLOATING_UNIFORM (= a red square floating inside and scaled to the bounding box of the person object sca) targeting class "person".
+
+
+### 3. Fixed Client schedule
+```bash
+python custom_fl_train.py \
+  --num-rounds 20 \
+  --total-clients 10 \
+  --clients-per-round 2 \
+  --attacker-fraction 0.2 \
+  --do-random-client-selection False \
+  --client-schedule "10:0,10:1,15:0"
+```
+* Format: --client-schedule "round:client_idx,round:client_idx"
+
+* Action: Forces Client 0 and 1 to participate in round 10, and Client 0 to participate again in round 15. Other benign clients will be randomly selected
 
