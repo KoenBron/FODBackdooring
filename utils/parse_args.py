@@ -11,7 +11,7 @@ def parse_client_schedule(args, attacker_ids):
     
     client_schedule_str: "round_index:client_index,round_index:client_index"
     """
-    validation_pattern = "^\d+:d+(,\d+:\d+)*$"
+    validation_pattern = "^\d+:\d+(,\d+:\d+)*$"
     if not re.match(validation_pattern, args.client_schedule):
         print(f"{ANSIColor.RED}[ERROR]{ANSIColor.RESET} client_schedule string does not match: 'round:client_index,round:client_index' or '^\d+:d+(,\d+:\d+)*$'")
 
@@ -35,13 +35,13 @@ def parse_client_schedule(args, attacker_ids):
             print(f"{ANSIColor.YELLOW}[WARNING]{ANSIColor.RESET} Non-malicious client {client_idx} select for round {round}")
 
         # Add validated round item combo
-        schedule[round].append(client_idx)
+        schedule[int(round)].append(int(client_idx))
 
     # Validate the entire round
     for round, clients in schedule.items():
 
         # Check if number of selected clients is within bounds
-        if len(clients) > clients.clients_per_round:
+        if len(clients) > args.clients_per_round:
             print(f"{ANSIColor.RED}[ERROR]{ANSIColor.RESET} At round: {round} you have selected more clients than are selected per round. You selected {clients} clients, max clients per round: {args.clients_per_round}")
             return None 
 
@@ -127,11 +127,13 @@ def apply_settings(args):
     FLSettings.ATTACKER_IDS = list(range(num_attackers))
 
     # Client schedule settings
-    FLSettings.USE_CLIENT_SCHEDULE = args.do_random_client_selection
+    FLSettings.USE_CLIENT_SCHEDULE = args.use_client_schedule
     if FLSettings.USE_CLIENT_SCHEDULE:
         schedule = parse_client_schedule(args, FLSettings.ATTACKER_IDS)
         if schedule is not None:
             FLSettings.CLIENT_SCHEDULE = schedule
+        else:
+            raise Exception("Exception occured while validating client schedule.")
 
     # Training Settings
     TrainingSettings.NUM_WORKERS = args.training_num_workers
