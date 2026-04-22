@@ -147,7 +147,7 @@ class Server:
         # Have aggregation strategy accumulate the update
         # self.strategy.accumulate(client_weights=client_weights_update, num_samples=num_samples, client_index=client_index)
 
-    def aggregate_and_evaluate(self, round: int):
+    def aggregate_and_evaluate(self, round, num_attackers):
         # Aggregate the client updates
         new_global_weights = self.strategy.aggregate(client_updates=list(self.client_round_updates.values()))# Expects a list
 
@@ -192,7 +192,7 @@ class Server:
 
         # Write evaluation metrics to the pytorch tensorboards, log the evaluation to a csv & save if the model is evaluated as the best
         # self.logger.log_epoch(round, eval_results)
-        self.logger.log_round_evaluation(eval_results=eval_results)# TODO: Pass the correct metrics as arguments
+        self.logger.log_round_evaluation(eval_results=eval_results, num_attackers=num_attackers)# TODO: Pass the correct metrics as arguments
         self.logger.save_if_best_model(epoch=round, val_loss=-eval_results["mAP_50"], weights=new_global_weights)# Negative value as function originally compares for lowest validation loss
         
         # Prepare for another round 

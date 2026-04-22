@@ -34,7 +34,7 @@ class ModelLogger:
                 if not os.path.isfile(self.round_eval_path):
                     with open(self.round_eval_path, mode="w", newline='') as file:
                         writer = csv.writer(file)
-                        writer.writerow(["round", "mAP_50", "mAP_50_95", "ASR", "fail_rate"])
+                        writer.writerow(["round", "mAP_50", "mAP_50_95", "ASR", "fail_rate", "num_attackers"])
                 
                 # Create the csv file for writing the client update metrics
                 self.client_update_path = os.path.join(self.output_path, "client_update_log.csv")
@@ -171,7 +171,7 @@ class ModelLogger:
         self.writer.close()
         print("---------Logger Closed Without a Problem----------")
 
-    def log_round_evaluation(self, eval_results):
+    def log_round_evaluation(self, eval_results, num_attackers):
         """
         Log the evaluation of the round as a csv.
         eval_results is dict that must contain the following keys:
@@ -181,6 +181,7 @@ class ModelLogger:
             mAP_50_95: float,
             ASR: float,
         }
+        num_attackers: the number of malicious clients that participated in the round
         """
         # Make sure 'eval_results' is a dict with the right parameters
         if not isinstance(eval_results, dict):
@@ -199,6 +200,7 @@ class ModelLogger:
                 eval_results["mAP_50_95"],
                 eval_results["ASR"],
                 1.0 - eval_results["ASR"],
+                num_attackers,
             ])
             
 

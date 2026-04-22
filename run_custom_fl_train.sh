@@ -1,8 +1,8 @@
 #!/bin/bash
 
 python custom_fl_train.py \
-    --num-rounds 30 \
-    --total-clients 10 \
+    --num-rounds 50 \
+    --total-clients 20 \
     --clients-per-round 5 \
     --benign-client-epochs  1 \
     --malicious-client-epochs 3 \
@@ -14,8 +14,10 @@ python custom_fl_train.py \
     --attack-type TARGETED_DISAPPEARANCE \
     --target-class "person" \
     --trigger-color "255,0,255" \
+    --w-ratio 0.3 \
+    --h-ratio 0.3 \
     --floating-pos CENTER \
     --trigger-pattern FLOATING_UNIFORM \
     --enable-model-replacement \
-    --w-ratio 0.3 \
-    --h-ratio 0.3 \
+    --use-client-schedule \
+    --client-schedule "10:0,30:0" \

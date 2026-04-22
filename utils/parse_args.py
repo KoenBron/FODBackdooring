@@ -13,7 +13,7 @@ def parse_client_schedule(args, attacker_ids):
     """
     validation_pattern = "^\d+:\d+(,\d+:\d+)*$"
     if not re.match(validation_pattern, args.client_schedule):
-        print(f"{ANSIColor.RED}[ERROR]{ANSIColor.RESET} client_schedule string does not match: 'round:client_index,round:client_index' or '^\d+:d+(,\d+:\d+)*$'")
+        print(f"{ANSIColor.RED}[ERROR]{ANSIColor.RESET} client_schedule string does not match: 'round:client_index,round:client_index' or '^\d+:\d+(,\d+:\d+)*$'")
 
     # Parse the round index, client index pairs
     schedule = defaultdict(list)
@@ -26,7 +26,7 @@ def parse_client_schedule(args, attacker_ids):
             return None
         
         # Validate valid client numbers
-        if int(client_idx) not in range(args.num_clients):
+        if int(client_idx) not in range(args.total_clients):
             print(f"{ANSIColor.RED}[ERROR]{ANSIColor.RESET} Invalid client index. Allowed range dictated by total number of clients: 0 - {args.num_clients - 1}")
             return None
 
@@ -45,7 +45,7 @@ def parse_client_schedule(args, attacker_ids):
             print(f"{ANSIColor.RED}[ERROR]{ANSIColor.RESET} At round: {round} you have selected more clients than are selected per round. You selected {clients} clients, max clients per round: {args.clients_per_round}")
             return None 
 
-    return schedule
+    return dict(schedule)
 
 def parse_args():
     parser = argparse.ArgumentParser(description="FODBackdooring FL Simulation")

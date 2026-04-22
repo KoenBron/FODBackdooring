@@ -1,10 +1,13 @@
 import random
 
+from numpy import select
+
 from utils.parse_args import parse_args, apply_settings
 from utils.global_settings import FLSettings, TrainingSettings 
+from utils.model_log import ModelLogger
+from utils.select_clients import select_clients
 from FL.custom_server import Server
 from FL.custom_client import ClientManager
-from utils.model_log import ModelLogger
 
 def start_fl_simulation():
     """
@@ -47,13 +50,14 @@ def start_fl_simulation():
         print(f"\n________________________STARTING ROUND {current_round}________________________")
         
         # Select clients
-        selected_clients = random_client_selector.sample(range(FLSettings.TOTAL_CLIENTS), FLSettings.CLIENTS_PER_ROUND)
+        selected_clients = select_clients(round=current_round, generator=random_client_selector)
 
         # What server sends out to the clients:
         server_weights = server.get_global_weights()
 
         # Determine beforehand for model_replacement
-        n_mal_clients = len([cid for cid in selected_clients if (cid in FLSettings.ATTACKER_IDS)])
+        n_mal_clients = len([cid for cid in selected_clients if cid in FLSettings.ATTACKER_IDS])
+
         for client_index in selected_clients:
 
             # Build the client
@@ -80,7 +84,7 @@ def start_fl_simulation():
 
 
         # Perform aggregation of client updates after 
-        server.aggregate_and_evaluate(round=current_round)
+        server.aggregate_and_evaluate(round=current_round, num_attackers=n_mal_clients)
 
     print("\n________________________SIMULATION COMPLETE________________________")
 
