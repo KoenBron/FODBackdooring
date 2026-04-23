@@ -1,4 +1,4 @@
-from utils.global_settings import FLSettings
+from utils.global_settings import ANSIColor, FLSettings
 
 def select_clients(round, generator):
     """
@@ -17,3 +17,12 @@ def select_clients(round, generator):
     else:
         # Ordinary random sampling of all clients
         return generator.sample(clients, FLSettings.CLIENTS_PER_ROUND)
+
+def fast_forward_client_selection(start_round, generator):
+    """
+    Simulates previous client selection rounds up untill the starting round in case training is resumed from an interruption.
+    This way the generator for client sampling remains deterministic in the event of an interruption.
+    """
+    print(f"{ANSIColor.GREEN}[INFO]{ANSIColor.RESET} Fastforwardingclient selection generator to round: {start_round - 1}")
+    for round in range(1, start_round):
+        _ = select_clients(round, generator)

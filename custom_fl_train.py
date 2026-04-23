@@ -1,11 +1,11 @@
 import random
 
-from numpy import select
+from torchvision.models.detection import fasterrcnn_mobilenet_v3_large_320_fpn
 
 from utils.parse_args import parse_args, apply_settings
 from utils.global_settings import FLSettings, TrainingSettings 
 from utils.model_log import ModelLogger
-from utils.select_clients import select_clients
+from utils.select_clients import select_clients, fast_forward_client_selection
 from FL.custom_server import Server
 from FL.custom_client import ClientManager
 
@@ -42,6 +42,9 @@ def start_fl_simulation():
     random_client_selector = random.Random(FLSettings.SEED)
 
     start_round = server.get_round_offset() + 1
+
+    if start_round > 1:
+        fast_forward_client_selection(start_round=start_round, generator=random_client_selector)
 
     print("\n________________________STARTING FL SIMULATION________________________")
 
