@@ -84,7 +84,7 @@ class ModelLogger:
                 # Also write all commandline args
                 print("\n----------------------TRAINING CONFIGURATION----------------------")
                 args_dict = vars(args)
-                for k, v in args_dict.values():
+                for k, v in args_dict.items():
                     f.write(f"{k}: {v}\n")
                     
 
