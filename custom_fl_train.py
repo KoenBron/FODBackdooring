@@ -1,7 +1,5 @@
 import random
 
-from torchvision.models.detection import fasterrcnn_mobilenet_v3_large_320_fpn
-
 from utils.parse_args import parse_args, apply_settings
 from utils.global_settings import FLSettings, TrainingSettings 
 from utils.model_log import ModelLogger
@@ -9,7 +7,7 @@ from utils.select_clients import select_clients, fast_forward_client_selection
 from FL.custom_server import Server
 from FL.custom_client import ClientManager
 
-def start_fl_simulation():
+def start_fl_simulation(args):
     """
     Main body for running the simultation
     """
@@ -30,7 +28,7 @@ def start_fl_simulation():
         "training_batch_size": TrainingSettings.TRAINING_BATCH_SIZE,
     }
 
-    logger = ModelLogger(custom_path=FLSettings.RESUME_FROM, config_dict=config_dict)
+    logger = ModelLogger(custom_path=FLSettings.RESUME_FROM, config_dict=config_dict, args=args)
 
     # Setup the server
     server = Server(strategy=FLSettings.AGGREGATION_STRATEGY, logger=logger, checkpoint_id=FLSettings.RESUME_FROM)
@@ -94,6 +92,6 @@ def start_fl_simulation():
 if __name__ == "__main__":
     args = parse_args()
     apply_settings(args=args)
-    start_fl_simulation()
+    start_fl_simulation(args=args)
 
 

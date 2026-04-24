@@ -132,11 +132,16 @@ class RoundEvaluator:
                         p_best_label = None
                         p_best_score = 0.0
 
+                        best_iou_per_label = {}
                         for p_box, p_label, p_score  in zip(pred_boxes, pred_labels, pred_scores):
                             iou = self._compute_iou(p_box, t_ann['bbox']) 
+                            if iou > best_iou_per_label.get(p_label, (0, 0))[0]:
+                                best_iou_per_label[p_label] = (iou, p_score)
+
                             if iou > max_iou:
                                 max_iou = iou
-                                p_best_label, p_best_score = p_label, p_score
+                                # p_best_label, p_best_score = p_label, p_score
+                                _, p_best_score = p_label, p_score
 
                         if BackdoorProperties.ATTACK_TYPE == AttackType.TARGETED_DISAPPEARANCE:
                             # Disappearance succesfull if no prediction with iou > threshold is found
@@ -147,12 +152,20 @@ class RoundEvaluator:
                                 total_conf_on_fail += p_best_score
 
                         elif BackdoorProperties.ATTACK_TYPE == AttackType.TARGETED_MISLABELING:
+                            replacement_iou, replacement_score = best_iou_per_label.get(replacement_class_id, (0, 0))
                             # Mislabeling attack succesfull if prediction with highest iou ab
-                            if max_iou >= iou_threshold and p_best_label == replacement_class_id:
-                                succesfull_attacks += 1 
+                            if replacement_iou >= iou_threshold:
+                                succesfull_attacks += 1
                             else:
                                 failed_attacks += 1
-                                total_conf_on_fail += p_best_score
+                                best_score = max((v[1] for v in best_iou_per_label.values()), default=0.0)
+                                total_conf_on_fail += best_score
+
+                            # if max_iou >= iou_threshold and p_best_label == replacement_class_id:
+                            #     succesfull_attacks += 1 
+                            # else:
+                            #     failed_attacks += 1
+                            #     total_conf_on_fail += p_best_score
 
 
 

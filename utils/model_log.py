@@ -10,7 +10,7 @@ from utils.global_settings import ProjectPaths, BackdoorProperties, TrainingSett
 from evaluation import BatchEvaluator
 
 class ModelLogger:
-    def __init__(self, custom_path=None, config_dict=None):
+    def __init__(self, custom_path=None, config_dict=None, args=None):
         """
         custom_path: The path to the directory from which logging should be resumed
         config_dict: The training configurations used
@@ -80,6 +80,13 @@ class ModelLogger:
                     print("\n----------------------TRAINING CONFIGURATION----------------------")
                 for k, v in config_dict.items():
                     f.write(f"{k}: {v}\n")
+
+                # Also write all commandline args
+                print("\n----------------------TRAINING CONFIGURATION----------------------")
+                args_dict = vars(args)
+                for k, v in args_dict.values():
+                    f.write(f"{k}: {v}\n")
+                    
 
 
     def log_epoch(self, epoch, train_metrics=None, val_metrics=None):
