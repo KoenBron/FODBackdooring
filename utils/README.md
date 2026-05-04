@@ -1,8 +1,14 @@
-## Folder Purpose
+# Folder Purpose
 This folder is used to store global with utility use all over this project
 
-### Structure
+## Structure
 - dataset.py: Custom dataset implementation that allows for the poisoning of files, achieving a variety of backdoor implementations
-- global_settings.py: File containing constants used across the project, stored as a single source of truth
+- global_settings.py: File containing constants representing all possible settings used across the project, stored as a single source of truth. 
 - partitioning.py: File used to separate the dataset amongs all clients
+- metrics.py: Used to compute l2-distance, cos similiarity and magnitude of model weights
+- model_log.py: The implementation for the logger class responsible for recording model weights and recording model performance throughout trainging.
+- parse_args.py: All command line arguments that can be passed to the custom_fl_train.py
+- partitioning.py: All logic used for partitioning the dataset amongst multiple clients
+- round_evaluator.py: Function to evaluate a rounds, mAP and Attack Success Rate 
+- select_clients.py: Functionality used to select clients based on the given clietnt schedule, also can fastforward client selection by a given number of rounds in the case training resumes from a given stopping point.
 
