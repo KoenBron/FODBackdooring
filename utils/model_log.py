@@ -74,18 +74,20 @@ class ModelLogger:
 
         # Write training configuarion params to txt file
         if config_dict:
-            with open(os.path.join(self.output_path, "config.txt"), "w") as f, redirect_stdout(f):
+            with open(os.path.join(self.output_path, "config.txt"), "a") as f, redirect_stdout(f):
                 if BackdoorProperties.BACKDOOR_ACTIVE: 
                     BatchEvaluator.print_poison_properties()
-                    print("\n----------------------TRAINING CONFIGURATION----------------------")
+                print("\n----------------------TRAINING CONFIGURATION SUMMARY----------------------")
                 for k, v in config_dict.items():
                     f.write(f"{k}: {v}\n")
 
                 # Also write all commandline args
-                print("\n----------------------TRAINING CONFIGURATION----------------------")
+                print("\n----------------------TRAINING ARGUMENTS----------------------")
                 args_dict = vars(args)
                 for k, v in args_dict.items():
                     f.write(f"{k}: {v}\n")
+
+                print("\n----------------------END OF SUMMARY----------------------\n")
                     
 
 

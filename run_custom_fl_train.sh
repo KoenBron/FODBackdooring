@@ -22,3 +22,5 @@ python custom_fl_train.py \
     --enable-model-replacement \
     --use-client-schedule \
     --client-schedule "10:0,30:1" \
+    --enable-neurotoxin \
+    --neurotoxin-mask-ratio 0.01 \

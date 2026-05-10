@@ -75,6 +75,8 @@ def parse_args():
     atk_group.add_argument("--attacker-fraction", type=float, default=FLSettings.ATTACKER_FRACTION, help="Fraction of malicious clients")
     atk_group.add_argument("--client-train-ds-mode", type=str, default=FLSettings.ATTACKER_DATASET_MODE, help="Dataset mode for attackers")
     atk_group.add_argument("--enable-model-replacement", action="store_true", default=FLSettings.DO_MODEL_REPLACEMENT, help="Enable the model replacement strategy for malicious clients to amplify backdoors")
+    atk_group.add_argument("--enable-neurotoxin", action="store_true", default=FLSettings.NEUROTOXIN_ENABLED, help="Enable Neurotoxin gradient masking for malicious clients")
+    atk_group.add_argument("--neurotoxin-mask-ratio", type=float, default=FLSettings.NEUROTOXIN_MASK_RATIO, help="Per-layer top-k fraction of benign-gradient coords to exclude (e.g. 0.01 = top 1%%)")
 
     # Backdoor Properties
     bd_group = parser.add_argument_group('Backdoor Properties')
@@ -119,6 +121,8 @@ def apply_settings(args):
     FLSettings.SEED = args.seed
     FLSettings.PARTITIONING_SEED = args.partitioning_seed
     FLSettings.DO_MODEL_REPLACEMENT = args.enable_model_replacement
+    FLSettings.NEUROTOXIN_ENABLED = args.enable_neurotoxin
+    FLSettings.NEUROTOXIN_MASK_RATIO = args.neurotoxin_mask_ratio
     
     # Attacker General
     FLSettings.ATTACKER_DATASET_MODE = args.client_train_ds_mode

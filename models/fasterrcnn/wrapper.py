@@ -85,14 +85,23 @@ class FasterRCNNWrapper(Interface):
         torch.cuda.empty_cache()
         return {"val_loss": avg_loss}, num_samples
 
-    def train_step(self, dataloader, epochs, device, optimizer_config, partition_id=None, optimizer=None):
+    def train_step(self, dataloader, epochs, device, optimizer_config, partition_id=None, optimizer=None, grad_mask=None):
         """
         Complete training loop for FasterRCNN
         Return: (weight tensor on CPU, number of samples, training metrics)
+
+        grad_mask: optional dict[str, Tensor] keyed by named-parameter name. If supplied,
+        each parameter's gradient is multiplied by its mask after backward and before the
+        optimizer step (Neurotoxin-style projection onto the masked subspace).
         """
         # Move model to gpu and put it in train mode
         self.model.to(device)
         self.model.train()
+
+        # Move mask to device once so per-batch application is a cheap elementwise op
+        device_grad_mask = None
+        if grad_mask is not None:
+            device_grad_mask = {n: m.to(device, non_blocking=True) for n, m in grad_mask.items()}
 
         if optimizer is None:
             # Optimizer setup
@@ -167,11 +176,21 @@ class FasterRCNNWrapper(Interface):
                 if scaler:
                     # Perform backward pass and calculate gradients
                     scaler.scale(losses).backward()
+                    # Apply Neurotoxin gradient mask if supplied. A binary mask is
+                    # invariant to AMP's scale factor, so no scaler.unscale_ is needed.
+                    if device_grad_mask is not None:
+                        for name, p in self.model.named_parameters():
+                            if p.grad is not None and name in device_grad_mask:
+                                p.grad.mul_(device_grad_mask[name])
                     # Let optimizer adjust model params
                     scaler.step(optimizer)
                     scaler.update()
                 else:
                     losses.backward()
+                    if device_grad_mask is not None:
+                        for name, p in self.model.named_parameters():
+                            if p.grad is not None and name in device_grad_mask:
+                                p.grad.mul_(device_grad_mask[name])
                     optimizer.step()
 
                 # Keep track of the metrics

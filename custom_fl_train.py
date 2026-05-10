@@ -56,6 +56,9 @@ def start_fl_simulation(args):
         # What server sends out to the clients:
         server_weights = server.get_global_weights()
 
+        # Roll the Neurotoxin round cache (no-op when neurotoxin disabled, but cheap)
+        client_manager.update_round_cache(server_weights)
+
         # Determine beforehand for model_replacement
         n_mal_clients = len([cid for cid in selected_clients if cid in FLSettings.ATTACKER_IDS])
 

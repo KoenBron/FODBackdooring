@@ -120,6 +120,10 @@ class FLSettings:
     AGGREGATION_STRATEGY = "fedavg"
     DO_MODEL_REPLACEMENT = False
 
+    # Neurotoxin settings
+    NEUROTOXIN_ENABLED = False        # If true, malicious clients apply the gradient mask during local training
+    NEUROTOXIN_MASK_RATIO = 0.01      # Fraction of top-magnitude benign-gradient coords to exclude per layer
+
     # flwr specific settings
     FRACTION_CLIENT_EVAL = 0.0# Fraction to determine on how many client instance evaluation is done
     MIN_FIT_CLIENTS = 2
