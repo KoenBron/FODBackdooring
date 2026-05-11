@@ -8,7 +8,7 @@ python custom_fl_train.py \
     --malicious-client-epochs 8 \
     --poison-rate 1.0 \
     --training-batch-size 8 \
-    --training-num-workers 4 \
+    --training-num-workers 0 \
     --attacker-fraction 0.1 \
     --client-train-ds-mode training \
     --attack-type TARGETED_MISLABELING \
@@ -24,3 +24,5 @@ python custom_fl_train.py \
     --client-schedule "10:0,30:1" \
     --enable-neurotoxin \
     --neurotoxin-mask-ratio 0.01 \
+    --seed 1234 \
+    --partitioning-seed 1234 \

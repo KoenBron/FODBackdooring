@@ -174,7 +174,6 @@ def apply_settings(args):
     EvaluationSettings.DO_CLEAN_EVAL = args.do_clean_eval
     EvaluationSettings.DO_POISON_EVAL = args.do_poison_eval
     EvaluationSettings.BATCH_SIZE = args.evaluation_batch_size
-    EvaluationSettings.NUM_WORKERS = args.evaluation_num_workers
 
     print_configuration_summary()
 

@@ -149,6 +149,7 @@ class Server:
 
     def aggregate_and_evaluate(self, round, num_attackers):
         # Aggregate the client updates
+        print(f"[ROUND {round}] aggregating", flush=True)
         new_global_weights = self.strategy.aggregate(client_updates=list(self.client_round_updates.values()))# Expects a list
 
         for key in self.client_round_updates.keys():

@@ -73,11 +73,18 @@ class ClientManager:
         """
         Roll the round-to-round cache so that prev_global_weights = theta_{t-1} and
         cached_global_weights = theta_t. Must be called once per round, before any
-        client trains. The clone() ensures later in-place ops on server_weights don't
-        retroactively mutate the cache.
+        client trains. Skipped entirely when Neurotoxin is disabled since nothing
+        consumes the cache.
+
+        No clone() needed: server.get_global_weights() already returns a fresh dict,
+        and no downstream caller mutates the broadcast dict in place
+        (set_weights -> load_state_dict copies; _do_model_replacement uses * which
+        allocates new tensors).
         """
+        if not FLSettings.NEUROTOXIN_ENABLED:
+            return
         self.prev_global_weights = self.cached_global_weights
-        self.cached_global_weights = {k: v.clone() for k, v in server_weights.items()}
+        self.cached_global_weights = server_weights
 
     def _compute_neurotoxin_mask(self, ratio):
         """
@@ -165,6 +172,7 @@ class ClientManager:
         except KeyError:
             raise Exception("Client manager error: Failed to retrieve needed information from supplied client_config. Expected client_config keys: 'index', 'is_attacker'")
 
+        print(f"  [client {client_index}] start", flush=True)
         if server_weights is None:
             raise Exception("Client manager error: No server_weights were supplied for training")
 
