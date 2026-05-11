@@ -1,6 +1,7 @@
 from FL.strategies.fedavg import FedAvg
+from FL.strategies.fedopt import FedOpt
 from models.fasterrcnn.wrapper import FasterRCNNWrapper
-from utils.global_settings import ProjectPaths, BackdoorProperties, TrainingSettings
+from utils.global_settings import ProjectPaths, BackdoorProperties, TrainingSettings, FLSettings
 from utils.dataset import CustomCocoDataset
 from utils.round_evaluator import RoundEvaluator
 from utils.metrics import torch_compute_magnitude, torch_compute_cosine_sim, torch_compute_l2_distance
@@ -114,10 +115,12 @@ class Server:
         Selects the strategy object to use based on the string 'strategy'
         """
         match strategy.lower():
-            case "fedavg": 
+            case "fedavg":
                 return FedAvg(model_state_dict=self.wrapper.get_weights())
+            case "fedopt":
+                return FedOpt(server_lr=FLSettings.SERVER_LR, model_state_dict=self.wrapper.get_weights())
             case _:
-                raise Exception(f"No valid aggregation strategy name is given: {strategy}. Choices are: ['fedavg',] ")
+                raise Exception(f"No valid aggregation strategy name is given: {strategy}. Choices are: ['fedavg', 'fedopt'] ")
 
     def get_global_weights(self):
         """
@@ -150,7 +153,10 @@ class Server:
     def aggregate_and_evaluate(self, round, num_attackers):
         # Aggregate the client updates
         print(f"[ROUND {round}] aggregating", flush=True)
-        new_global_weights = self.strategy.aggregate(client_updates=list(self.client_round_updates.values()))# Expects a list
+        new_global_weights = self.strategy.aggregate(
+            client_updates=list(self.client_round_updates.values()),# Expects a list
+            global_weights=self.wrapper.get_weights(),# Needed by FedOpt for the (1-η)·w_global + η·w_avg blend; ignored by FedAvg
+        )
 
         for key in self.client_round_updates.keys():
             update = self.client_round_updates[key]

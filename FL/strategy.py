@@ -20,9 +20,13 @@ class BaseStrategy(ABC):
     #     pass
 
     @abstractmethod
-    def aggregate(self, client_updates: list) -> dict:
+    def aggregate(self, client_updates: list, global_weights=None) -> dict:
         """
-        Aggregate the intermediate client updates and returns the aggregated restult
+        Aggregate the intermediate client updates and returns the aggregated result.
+
+        global_weights: the server's current global state_dict prior to this round's
+        aggregation. FedAvg ignores it; FedOpt-style strategies need it to compute the
+        blended update (1 − η) · w_global + η · avg(w_client).
         """
         pass
 

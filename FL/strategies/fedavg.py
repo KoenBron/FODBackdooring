@@ -30,7 +30,7 @@ class FedAvg(BaseStrategy):
     #     for key in self.running_sum.keys():
     #         self.running_sum[key] += client_weights[key] * num_samples
 
-    def aggregate(self, client_updates: list) -> OrderedDict:
+    def aggregate(self, client_updates: list, global_weights=None) -> OrderedDict:
         if not client_updates:
             raise Exception("[ERROR] No client updates given to aggregate")
         new_global_weights = {}

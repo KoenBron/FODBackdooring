@@ -120,6 +120,12 @@ class FLSettings:
     AGGREGATION_STRATEGY = "fedavg"
     DO_MODEL_REPLACEMENT = False
 
+    # FedOpt / server-side learning rate. Only consulted when AGGREGATION_STRATEGY == "fedopt"
+    # by the strategy itself; the model-replacement scaler always reads it (defaults to 1.0
+    # so behavior under fedavg is unchanged). GAMMA_CAP bounds the replacement scaler γ.
+    SERVER_LR = 1.0
+    GAMMA_CAP = 10.0
+
     # Neurotoxin settings
     NEUROTOXIN_ENABLED = False        # If true, malicious clients apply the gradient mask during local training
     NEUROTOXIN_MASK_RATIO = 0.01      # Fraction of top-magnitude benign-gradient coords to exclude per layer

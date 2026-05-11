@@ -22,6 +22,8 @@ def start_fl_simulation(args):
         "attacker_fraction": FLSettings.ATTACKER_FRACTION,
         "client_train_ds_mode": FLSettings.ATTACKER_DATASET_MODE,
         "aggregation_strategy": FLSettings.AGGREGATION_STRATEGY,
+        "server_lr": FLSettings.SERVER_LR,
+        "gamma_cap": FLSettings.GAMMA_CAP,
         # === Training Settings ===
         "benign_client_local_epochs": TrainingSettings.BENIGN_CLIENT_LOCAL_EPOCHS,
         "malicious_client_local_epochs": TrainingSettings.MALICIOUS_CLIENT_LOCAL_EPOCHS,

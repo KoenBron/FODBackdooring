@@ -126,26 +126,40 @@ class ClientManager:
 
     def _do_model_replacement(self, local_weights, global_weights, m):
         """
-        Scales the local weights according to model replacement:
-            w_mal = (k / m) * local_weights - (k - m) / m * global_weights
+        Scales the local weights so that — after server-side FedOpt aggregation with
+        learning rate η — the global model lands on the attacker's backdoored model:
+
+            w_submit = γ · local_weights − (γ − 1) · global_weights,   γ = k / (η · m)
+
+        Derived from solving (1−η)·w_global + η·[(m/k)·w_submit + (1 − m/k)·w_global] = w_X
+        under the standard Bagdasaryan assumption that the average benign client
+        update is close to the prior global. γ is clamped at FLSettings.GAMMA_CAP to
+        prevent norm explosion / trivial detection when η is small. With η = 1 and an
+        uncapped γ this reduces to the original (k/m)·w_local − ((k−m)/m)·w_global.
 
         local_weights: tensor with the malicious update (unscaled)
         global_weights: tensor with the original server provided weights
         m: number of malicious clients that round
         """
         k = FLSettings.CLIENTS_PER_ROUND
+        eta = FLSettings.SERVER_LR
 
-        if m==k:
+        gamma_uncapped = k / (eta * m)
+        gamma = min(gamma_uncapped, FLSettings.GAMMA_CAP)
+        if gamma_uncapped > FLSettings.GAMMA_CAP:
+            print(f"[MODEL REPLACEMENT] gamma capped: {gamma_uncapped:.3f} -> {gamma:.3f} (k={k}, eta={eta}, m={m})")
+
+        if gamma == 1.0:
+            # No-op: η = 1 and m = k means submitting the local weights as-is reaches w_X
             return local_weights
 
-        scale_mal = k / m
-        scale_global = (k - m) / m
+        scale_global = gamma - 1.0
 
         replaced_weights = {}
         for key in global_weights:
             if local_weights[key].is_floating_point():
                 replaced_weights[key] = (
-                    scale_mal * local_weights[key] - scale_global * global_weights[key]
+                    gamma * local_weights[key] - scale_global * global_weights[key]
                 )
             else:
                 # Integer tensors don't contain learnable params that need to be amplified

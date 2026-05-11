@@ -59,6 +59,8 @@ def parse_args():
     fl_group.add_argument("--resume-from", type=str, default=None, help="Path to checkpoint to resume from")
     fl_group.add_argument("--clients-per-round", type=int, default=FLSettings.CLIENTS_PER_ROUND, help="Number of clients participating each round")
     fl_group.add_argument("--aggregation-strategy", type=str, default=FLSettings.AGGREGATION_STRATEGY, help="Strategy used to aggregate client weight updates on the server entity")
+    fl_group.add_argument("--server-lr", type=float, default=FLSettings.SERVER_LR, help="Server-side learning rate η used by FedOpt: w_new = (1-η)·w_global + η·avg(w_client). η=1 reduces to FedAvg.")
+    fl_group.add_argument("--gamma-cap", type=float, default=FLSettings.GAMMA_CAP, help="Upper bound on the model-replacement scaling factor γ = k/(η·m). Prevents γ from exploding when server_lr is small.")
     fl_group.add_argument("--use-client-schedule", action="store_true", default=FLSettings.USE_CLIENT_SCHEDULE, help="Instead of randomly, though seeded, selecting clients, takes a client schedule to structure when malicious clients are used.")
     fl_group.add_argument("--client-schedule", type=str, default="", help="Schedule for specific clients. Format: 'round:client,round:client'. Bijv: '10:2,11:3'")
 
@@ -118,6 +120,8 @@ def apply_settings(args):
     FLSettings.CLIENTS_PER_ROUND = min(args.total_clients, args.clients_per_round)
     FLSettings.CLIENTS_PER_ROUND = min(args.total_clients, args.clients_per_round)
     FLSettings.AGGREGATION_STRATEGY = args.aggregation_strategy
+    FLSettings.SERVER_LR = args.server_lr
+    FLSettings.GAMMA_CAP = args.gamma_cap
     FLSettings.SEED = args.seed
     FLSettings.PARTITIONING_SEED = args.partitioning_seed
     FLSettings.DO_MODEL_REPLACEMENT = args.enable_model_replacement
@@ -187,5 +191,8 @@ def print_configuration_summary():
     print(f"{'TOTAL_CLIENTS':30}: {FLSettings.TOTAL_CLIENTS}")
     print(f"{'CLIENTS_PER_ROUND':30}: {FLSettings.CLIENTS_PER_ROUND}")
     print(f"{'ATTACKER_FRACTION':30}: {FLSettings.ATTACKER_FRACTION} (Clients: {FLSettings.ATTACKER_IDS})")
+    print(f"{'AGGREGATION_STRATEGY':30}: {FLSettings.AGGREGATION_STRATEGY}")
+    print(f"{'SERVER_LR':30}: {FLSettings.SERVER_LR}")
+    print(f"{'GAMMA_CAP':30}: {FLSettings.GAMMA_CAP}")
     print(f"{'POISON_RATE':30}: {BackdoorProperties.POISON_RATE}")
     print("===========================================================\n")
