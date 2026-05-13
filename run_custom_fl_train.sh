@@ -40,6 +40,7 @@ PERSISTENCE_ARGS=(
     --aggregation-strategy "fedopt"
     --server-lr 0.25
     --gamma-cap 10
+    --malicious-client-lr 0.00025
 )
 
 SCHEDULE_ARGS=(

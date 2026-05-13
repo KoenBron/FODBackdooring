@@ -71,6 +71,8 @@ def parse_args():
     tr_group.add_argument("--training-batch-size", type=int, default=TrainingSettings.TRAINING_BATCH_SIZE, help="Batch size used by the dataloader")
     tr_group.add_argument("--benign-client-epochs", type=int, default=TrainingSettings.BENIGN_CLIENT_LOCAL_EPOCHS, help="Local epochs per round for a benign client")
     tr_group.add_argument("--malicious-client-epochs", type=int, default=TrainingSettings.MALICIOUS_CLIENT_LOCAL_EPOCHS, help="Local epochs per round for a malicious client")
+    tr_group.add_argument("--benign-client-lr", type=float, default=TrainingSettings.BENIGN_CLIENT_LEARNING_RATE, help="Learning rate for a benign client")
+    tr_group.add_argument("--malicious-client-lr", type=float, default=TrainingSettings.MALICIOUS_CLIENT_LEARNING_RATE, help="Learning rate for a malicious client")
 
     # Attacker Configuration
     atk_group = parser.add_argument_group('Attacker Configuration')
@@ -148,6 +150,8 @@ def apply_settings(args):
     TrainingSettings.TRAINING_BATCH_SIZE = args.training_batch_size
     TrainingSettings.MALICIOUS_CLIENT_LOCAL_EPOCHS = args.malicious_client_epochs
     TrainingSettings.BENIGN_CLIENT_LOCAL_EPOCHS = args.benign_client_epochs
+    TrainingSettings.BENIGN_CLIENT_LEARNING_RATE = args.benign_client_lr
+    TrainingSettings.MALICIOUS_CLIENT_LEARNING_RATE = args.malicious_client_lr
 
     # Backdoor Base
     BackdoorProperties.BACKDOOR_ACTIVE = not args.disable_backdoor_logging
