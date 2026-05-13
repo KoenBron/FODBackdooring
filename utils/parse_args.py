@@ -81,6 +81,10 @@ def parse_args():
     atk_group.add_argument("--enable-model-replacement", action="store_true", default=FLSettings.DO_MODEL_REPLACEMENT, help="Enable the model replacement strategy for malicious clients to amplify backdoors")
     atk_group.add_argument("--enable-neurotoxin", action="store_true", default=FLSettings.NEUROTOXIN_ENABLED, help="Enable Neurotoxin gradient masking for malicious clients")
     atk_group.add_argument("--neurotoxin-mask-ratio", type=float, default=FLSettings.NEUROTOXIN_MASK_RATIO, help="Per-layer top-k fraction of benign-gradient coords to exclude (e.g. 0.01 = top 1%%)")
+    atk_group.add_argument("--guarantee-target-objects", action="store_true", default=FLSettings.GUARANTEE_TARGET_OBJECTS, help="Rebalance partition indices so each attacker partition contains a minimum fraction/count of target-class images. Targeted attacks only.")
+    atk_group.add_argument("--attacker-target-min-fraction", type=float, default=FLSettings.ATTACKER_TARGET_MIN_FRACTION, help="Minimum fraction of each attacker partition that must contain the target class.")
+    atk_group.add_argument("--attacker-target-min-count", type=int, default=FLSettings.ATTACKER_TARGET_MIN_COUNT, help="Absolute floor on target-class images per attacker partition. Effective quota is max(fraction × |partition|, count).")
+    atk_group.add_argument("--benign-target-floor", type=int, default=FLSettings.BENIGN_TARGET_FLOOR, help="Minimum number of target-class images each benign partition is allowed to retain when donating to attackers.")
 
     # Backdoor Properties
     bd_group = parser.add_argument_group('Backdoor Properties')
@@ -132,6 +136,10 @@ def apply_settings(args):
     FLSettings.DO_MODEL_REPLACEMENT = args.enable_model_replacement
     FLSettings.NEUROTOXIN_ENABLED = args.enable_neurotoxin
     FLSettings.NEUROTOXIN_MASK_RATIO = args.neurotoxin_mask_ratio
+    FLSettings.GUARANTEE_TARGET_OBJECTS = args.guarantee_target_objects
+    FLSettings.ATTACKER_TARGET_MIN_FRACTION = args.attacker_target_min_fraction
+    FLSettings.ATTACKER_TARGET_MIN_COUNT = args.attacker_target_min_count
+    FLSettings.BENIGN_TARGET_FLOOR = args.benign_target_floor
     
     # Attacker General
     FLSettings.ATTACKER_DATASET_MODE = args.client_train_ds_mode
@@ -206,6 +214,11 @@ def print_configuration_summary():
     print(f"{'SERVER_LR':30}: {FLSettings.SERVER_LR}")
     print(f"{'GAMMA_CAP':30}: {FLSettings.GAMMA_CAP}")
     print(f"{'POISON_RATE':30}: {BackdoorProperties.POISON_RATE}")
+    print(f"{'GUARANTEE_TARGET_OBJECTS':30}: {FLSettings.GUARANTEE_TARGET_OBJECTS}")
+    if FLSettings.GUARANTEE_TARGET_OBJECTS:
+        print(f"{'ATTACKER_TARGET_MIN_FRAC':30}: {FLSettings.ATTACKER_TARGET_MIN_FRACTION}")
+        print(f"{'ATTACKER_TARGET_MIN_COUNT':30}: {FLSettings.ATTACKER_TARGET_MIN_COUNT}")
+        print(f"{'BENIGN_TARGET_FLOOR':30}: {FLSettings.BENIGN_TARGET_FLOOR}")
     print(f"{'TRIGGER_PATTERN':30}: {BackdoorProperties.TRIGGER_PATTERN.name}")
     print(f"{'TRIGGER_ALPHA':30}: {BackdoorProperties.TRIGGER_ALPHA}")
     if BackdoorProperties.TRIGGER_PATTERN == TriggerType.FLOATING_CHECKERBOARD:
