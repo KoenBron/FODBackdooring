@@ -15,6 +15,7 @@ class TriggerType(Enum):
     FULL_CHECKERBOARD = 3
     FULL_NOISE = 4
     FLOATING_UNIFORM = 5
+    FLOATING_CHECKERBOARD = 6
 
 class FloatingTriggerPos(Enum):
     CENTER = 1
@@ -53,12 +54,15 @@ class BackdoorProperties:
     FLOATING_TRIGGER_H_RATIO = 0.2# Triggers size ratio to height of bbox
 
     # Trigger details
-    TRIGGER_COLOR = (255, 0, 255)# White 
+    TRIGGER_COLOR = (255, 0, 255)# BGR magenta — primary trigger color
+    TRIGGER_COLOR_SECONDARY = (255, 255, 0)# BGR cyan — secondary color for FLOATING_CHECKERBOARD
     TRIGGER_WIDTH = 100# Size after resizing image for forward pass (global attack only)
     TRIGGER_HEIGHT = 100# Size after resizing image for forward pass (global attack only)
-    TRIGGER_ALPHA = 0.2# We use alpha blending if needed for (global attack only)
+    TRIGGER_ALPHA = 0.2# Alpha-blend weight: applies to FULL_* and FLOATING_CHECKERBOARD
     # Checkerboard stats (global attack only)
     BLOCK_SIZE = 40
+    # Square size (px at model-input resolution) for FLOATING_CHECKERBOARD pattern
+    FLOATING_CHECKER_SQUARE_PX = 8
 
     # Noise stats
     RNG_SEED = 2024
