@@ -5,7 +5,7 @@ import cv2
 import random
 import torch
 import numpy as np
-from utils.global_settings import GLOBAL_ATTACK_TYPES, TARGETED_ATTACK_TYPES, AttackType, BackdoorProperties, TriggerType, FloatingTriggerPos, FLSettings
+from utils.global_settings import GLOBAL_ATTACK_TYPES, TARGETED_ATTACK_TYPES, AttackType, BackdoorProperties, TriggerType, FloatingTriggerPos
 from collections import defaultdict
 from torch.utils.data import Dataset
 
@@ -199,7 +199,7 @@ class CustomCocoDataset(Dataset):
         color = BackdoorProperties.TRIGGER_COLOR# White
         return cv2.rectangle(image, (0, 0), (self.width, self.height), color, -1)
 
-    def _apply_floating_trigger(self, image, bboxes):
+    def _apply_floating_uniform_trigger(self, image, bboxes):
         # Select the desired position to draw the trigger
         match BackdoorProperties.FLOATING_TRIGGER_POSITION:
             case FloatingTriggerPos.CENTER:
@@ -281,7 +281,7 @@ class CustomCocoDataset(Dataset):
             scaled_bboxes = [(int(ann["bbox"][0] * scale_w), int(ann["bbox"][1] * scale_h), int(ann["bbox"][2] * scale_w), int(ann["bbox"][3] * scale_h)) for ann in ann_to_poison]
             match BackdoorProperties.TRIGGER_PATTERN:
                 case TriggerType.FLOATING_UNIFORM:
-                    return self._apply_floating_trigger(image=image, bboxes=scaled_bboxes)
+                    return self._apply_floating_uniform_trigger(image=image, bboxes=scaled_bboxes)
                 case TriggerType.FLOATING_CHECKERBOARD:
                     return self._apply_floating_checkerboard_trigger(image=image, bboxes=scaled_bboxes)
 
