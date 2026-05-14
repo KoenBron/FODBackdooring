@@ -101,8 +101,7 @@ class ModelLogger:
         script_input_path = os.path.join(ProjectPaths.ROOT_DIR, "run_custom_fl_train.sh")
 
         # Copy the lines
-        with open(script_input_path, "rb") as input, open(script_output_path, "wb") as output:
-            shutil.copyfile(input, output)
+        shutil.copyfile(script_input_path, script_output_path)
 
     def log_epoch(self, epoch, train_metrics=None, val_metrics=None):
         """
