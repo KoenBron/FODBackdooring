@@ -6,8 +6,8 @@ FL_ARGS=(
     --total-clients 20
     --clients-per-round 5
     --attacker-fraction 0.1
-    --seed 1234
-    --partitioning-seed 1234
+    --seed 4321
+    --partitioning-seed 4321
 )
 
 # --- Training Hyperparameters ---
