@@ -100,6 +100,27 @@ class CustomCocoDataset(Dataset):
     def get_classnames(self):
         return [v for k, v in self.cat_map.items()]
 
+    def get_target_image_indices(self):
+        """
+        Returns a frozenset of dataset-level indices (positions in self.img_ids) for
+        images whose annotations contain at least one instance of
+        BackdoorProperties.TARGET_CLASS. Consumed by partitioning logic when enforcing
+        an attacker target-object quota; returns empty if the target class is unknown
+        or the attack is global (in which case the quota is meaningless).
+        """
+        if BackdoorProperties.ATTACK_TYPE in GLOBAL_ATTACK_TYPES:
+            return frozenset()
+        target_cat_id = self.cat_to_id_map.get(BackdoorProperties.TARGET_CLASS)
+        if target_cat_id is None:
+            return frozenset()
+        hits = []
+        for idx, img_id in enumerate(self.img_ids):
+            for ann in self.img_ann_map.get(img_id, []):
+                if ann["category_id"] == target_cat_id:
+                    hits.append(idx)
+                    break
+        return frozenset(hits)
+
     # Torch probeert batch resultaten naar 1 tensor te stacken maar
     # dit gaat niet door varierende dimensie van boxen per image
     # Nice for only inferencing

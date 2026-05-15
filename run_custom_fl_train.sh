@@ -2,12 +2,12 @@
 
 # --- FL Architectuur ---
 FL_ARGS=(
-    --num-rounds 100
+    --num-rounds 66
     --total-clients 20
     --clients-per-round 5
     --attacker-fraction 0.1
-    --seed 1234
-    --partitioning-seed 1234
+    --seed 4321
+    --partitioning-seed 4321
 )
 
 # --- Training Hyperparameters ---
@@ -40,12 +40,13 @@ PERSISTENCE_ARGS=(
     --aggregation-strategy "fedopt"
     --server-lr 0.25
     --gamma-cap 10
-    --malicious-client-lr 0.00025
+    --malicious-client-lr 0.005
+    --benign-client-lr 0.005
 )
 
 SCHEDULE_ARGS=(
     --use-client-schedule
-    --client-schedule "25:0,25:1,26:0,26:1,50:0,50:1,51:0,51:1,75:0,75:1,76:0,76:1"
+    --client-schedule "25:0,25:1,26:0,26:1,50:0,50:1,51:0,51:1"
 )
 
 python custom_fl_train.py \
