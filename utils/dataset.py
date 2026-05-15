@@ -5,7 +5,7 @@ import cv2
 import random
 import torch
 import numpy as np
-from utils.global_settings import GLOBAL_ATTACK_TYPES, TARGETED_ATTACK_TYPES, AttackType, BackdoorProperties, TriggerType, FloatingTriggerPos, FLSettings
+from utils.global_settings import GLOBAL_ATTACK_TYPES, TARGETED_ATTACK_TYPES, AttackType, BackdoorProperties, TriggerType, FloatingTriggerPos
 from collections import defaultdict
 from torch.utils.data import Dataset
 
@@ -199,7 +199,7 @@ class CustomCocoDataset(Dataset):
         color = BackdoorProperties.TRIGGER_COLOR# White
         return cv2.rectangle(image, (0, 0), (self.width, self.height), color, -1)
 
-    def _apply_floating_trigger(self, image, bboxes):
+    def _apply_floating_uniform_trigger(self, image, bboxes):
         # Select the desired position to draw the trigger
         match BackdoorProperties.FLOATING_TRIGGER_POSITION:
             case FloatingTriggerPos.CENTER:
@@ -216,6 +216,46 @@ class CustomCocoDataset(Dataset):
             start_x, start_y, end_x, end_y = draw_helper(bbox=bbox)
 
             cv2.rectangle(image, (start_x, start_y), (end_x, end_y), color, -1)
+
+        return image
+
+    def _apply_floating_checkerboard_trigger(self, image, bboxes):
+        """
+        BackDet-style floating trigger: a high-frequency 2-color checkerboard alpha-blended
+        inside the floating-trigger area of each bbox. Square size (px at model-input
+        resolution) and both colors are read from BackdoorProperties; alpha is shared with
+        the full-image triggers via TRIGGER_ALPHA.
+        """
+        match BackdoorProperties.FLOATING_TRIGGER_POSITION:
+            case FloatingTriggerPos.CENTER:
+                draw_helper = self._helper_center_bbox
+            case FloatingTriggerPos.TOP_LEFT:
+                draw_helper = self._helper_top_left_bbox
+            case _:
+                draw_helper = self._helper_top_left_bbox
+
+        sq = max(1, int(BackdoorProperties.FLOATING_CHECKER_SQUARE_PX))
+        alpha = float(BackdoorProperties.TRIGGER_ALPHA)
+        c1 = np.array(BackdoorProperties.TRIGGER_COLOR, dtype=np.float32)
+        c2 = np.array(BackdoorProperties.TRIGGER_COLOR_SECONDARY, dtype=np.float32)
+
+        H, W = image.shape[:2]
+        for bbox in bboxes:
+            sx, sy, ex, ey = draw_helper(bbox=bbox)
+            # Clip to image extents (bboxes can exceed at edges after scaling)
+            sx, sy = max(0, sx), max(0, sy)
+            ex, ey = min(W, ex), min(H, ey)
+            h, w = ey - sy, ex - sx
+            if h <= 0 or w <= 0:
+                continue
+
+            yy, xx = np.indices((h, w))
+            checker = ((yy // sq) + (xx // sq)) % 2  # 0/1 mask, period = 2 * sq
+            pattern = np.where(checker[..., None] == 0, c1, c2).astype(np.float32)
+
+            roi = image[sy:ey, sx:ex].astype(np.float32)
+            blended = alpha * pattern + (1.0 - alpha) * roi
+            image[sy:ey, sx:ex] = np.clip(blended, 0, 255).astype(np.uint8)
 
         return image
 
@@ -241,7 +281,9 @@ class CustomCocoDataset(Dataset):
             scaled_bboxes = [(int(ann["bbox"][0] * scale_w), int(ann["bbox"][1] * scale_h), int(ann["bbox"][2] * scale_w), int(ann["bbox"][3] * scale_h)) for ann in ann_to_poison]
             match BackdoorProperties.TRIGGER_PATTERN:
                 case TriggerType.FLOATING_UNIFORM:
-                    return self._apply_floating_trigger(image=image, bboxes=scaled_bboxes)
+                    return self._apply_floating_uniform_trigger(image=image, bboxes=scaled_bboxes)
+                case TriggerType.FLOATING_CHECKERBOARD:
+                    return self._apply_floating_checkerboard_trigger(image=image, bboxes=scaled_bboxes)
 
     def _process_image(self, img, do_poison, ann_to_poison):
         """

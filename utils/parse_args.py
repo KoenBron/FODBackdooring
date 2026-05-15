@@ -94,11 +94,14 @@ def parse_args():
     bd_group.add_argument("--trigger-height", type=int, default=BackdoorProperties.TRIGGER_HEIGHT)
     default_color = ",".join(map(str, BackdoorProperties.TRIGGER_COLOR))
     bd_group.add_argument("--trigger-color", type=str, default=default_color)
+    default_color_secondary = ",".join(map(str, BackdoorProperties.TRIGGER_COLOR_SECONDARY))
+    bd_group.add_argument("--trigger-color-secondary", type=str, default=default_color_secondary, help="Secondary BGR color used by FLOATING_CHECKERBOARD")
     bd_group.add_argument("--w-ratio", type=float, default=BackdoorProperties.FLOATING_TRIGGER_W_RATIO)
     bd_group.add_argument("--h-ratio", type=float, default=BackdoorProperties.FLOATING_TRIGGER_H_RATIO)
     bd_group.add_argument("--floating-pos", type=str, default=BackdoorProperties.FLOATING_TRIGGER_POSITION.name if hasattr(BackdoorProperties.FLOATING_TRIGGER_POSITION, 'name') else BackdoorProperties.FLOATING_TRIGGER_POSITION, choices=[e.name for e in FloatingTriggerPos])
     bd_group.add_argument("--trigger-alpha", type=float, default=BackdoorProperties.TRIGGER_ALPHA)
     bd_group.add_argument("--block-size", type=int, default=BackdoorProperties.BLOCK_SIZE)
+    bd_group.add_argument("--checker-square-px", type=int, default=BackdoorProperties.FLOATING_CHECKER_SQUARE_PX, help="Square size in px at model-input resolution for FLOATING_CHECKERBOARD")
     bd_group.add_argument("--rng-seed", type=int, default=BackdoorProperties.RNG_SEED)
 
     # Evaluation script Settings
@@ -169,10 +172,14 @@ def apply_settings(args):
     BackdoorProperties.FLOATING_TRIGGER_POSITION = FloatingTriggerPos[args.floating_pos]
     BackdoorProperties.TRIGGER_ALPHA = args.trigger_alpha
     BackdoorProperties.BLOCK_SIZE = args.block_size
+    BackdoorProperties.FLOATING_CHECKER_SQUARE_PX = args.checker_square_px
     BackdoorProperties.RNG_SEED = args.rng_seed
     color_parts = args.trigger_color.split(',')
     if len(color_parts) == 3:
         BackdoorProperties.TRIGGER_COLOR = tuple(int(c.strip()) for c in color_parts)
+    secondary_parts = args.trigger_color_secondary.split(',')
+    if len(secondary_parts) == 3:
+        BackdoorProperties.TRIGGER_COLOR_SECONDARY = tuple(int(c.strip()) for c in secondary_parts)
 
     # Evaluation settings
     EvaluationSettings.NUM_WORKERS = args.evaluation_num_workers
@@ -199,4 +206,10 @@ def print_configuration_summary():
     print(f"{'SERVER_LR':30}: {FLSettings.SERVER_LR}")
     print(f"{'GAMMA_CAP':30}: {FLSettings.GAMMA_CAP}")
     print(f"{'POISON_RATE':30}: {BackdoorProperties.POISON_RATE}")
+    print(f"{'TRIGGER_PATTERN':30}: {BackdoorProperties.TRIGGER_PATTERN.name}")
+    print(f"{'TRIGGER_ALPHA':30}: {BackdoorProperties.TRIGGER_ALPHA}")
+    if BackdoorProperties.TRIGGER_PATTERN == TriggerType.FLOATING_CHECKERBOARD:
+        print(f"{'CHECKER_SQUARE_PX':30}: {BackdoorProperties.FLOATING_CHECKER_SQUARE_PX}")
+        print(f"{'TRIGGER_COLOR (BGR)':30}: {BackdoorProperties.TRIGGER_COLOR}")
+        print(f"{'TRIGGER_COLOR_SECONDARY':30}: {BackdoorProperties.TRIGGER_COLOR_SECONDARY}")
     print("===========================================================\n")

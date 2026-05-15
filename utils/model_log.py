@@ -2,6 +2,7 @@ import os
 import torch
 import time
 import csv
+import shutil
 
 from contextlib import redirect_stdout
 
@@ -66,8 +67,11 @@ class ModelLogger:
 
             else:
                 raise Exception(f"Path {custom_path} of model to resume from is not a directory")
-
+        
         print(f"---------Saving Model Logs to: {self.output_path}")
+
+        # Write the script containing the training settings there
+        self.log_training_script()
 
         # Initiate log writer
         self.writer = SummaryWriter(self.output_path)
@@ -89,7 +93,16 @@ class ModelLogger:
 
                 print("\n----------------------END OF SUMMARY----------------------\n")
                     
+    def log_training_script(self):
+        """
+        Logs the contents of the entire script used to run the training
+        """
+        script_output_path = os.path.join(self.output_path, "training_script.txt")
+        script_input_path = os.path.join(ProjectPaths.ROOT_DIR, "run_custom_fl_train.sh")
 
+        # Copy the lines
+        with open(script_input_path, "rb") as input, open(script_output_path, "wb") as output:
+            shutil.copyfile(input, output)
 
     def log_epoch(self, epoch, train_metrics=None, val_metrics=None):
         """
@@ -212,5 +225,3 @@ class ModelLogger:
                 num_attackers,
             ])
             
-
-
