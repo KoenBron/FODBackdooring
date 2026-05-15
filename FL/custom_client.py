@@ -224,7 +224,7 @@ class ClientManager:
         if client_is_attacker and FLSettings.NEUROTOXIN_ENABLED and self.prev_global_weights is not None:
             grad_mask = self._compute_neurotoxin_mask(ratio=FLSettings.NEUROTOXIN_MASK_RATIO)
 
-        lr = TrainingSettings.MALICIOUS_CLIENT_LEARNING_RATE if client_is_attacker else TrainingSettings.MALICIOUS_CLIENT_LEARNING_RATE
+        lr = TrainingSettings.MALICIOUS_CLIENT_LEARNING_RATE if client_is_attacker else TrainingSettings.BENIGN_CLIENT_LEARNING_RATE
         # Perform the training
         _, num_samples, final_epoch_losses, self.optimizer = self.wrapper.train_step(
             dataloader=train_dl,
