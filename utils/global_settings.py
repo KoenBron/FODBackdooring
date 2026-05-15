@@ -136,6 +136,18 @@ class FLSettings:
     NEUROTOXIN_ENABLED = False        # If true, malicious clients apply the gradient mask during local training
     NEUROTOXIN_MASK_RATIO = 0.01      # Fraction of top-magnitude benign-gradient coords to exclude per layer
 
+    # Target-object quota for attacker partitions (targeted attacks only).
+    # When GUARANTEE_TARGET_OBJECTS is True, the partitioning step rebalances index
+    # assignment so each attacker partition contains at least
+    # max(ATTACKER_TARGET_MIN_FRACTION × |partition|, ATTACKER_TARGET_MIN_COUNT)
+    # images whose annotations contain BackdoorProperties.TARGET_CLASS.
+    # BENIGN_TARGET_FLOOR caps how aggressively benign partitions can be drained
+    # to satisfy the attacker quota.
+    GUARANTEE_TARGET_OBJECTS = False
+    ATTACKER_TARGET_MIN_FRACTION = 0.6
+    ATTACKER_TARGET_MIN_COUNT = 0
+    BENIGN_TARGET_FLOOR = 0
+
     # flwr specific settings
     FRACTION_CLIENT_EVAL = 0.0# Fraction to determine on how many client instance evaluation is done
     MIN_FIT_CLIENTS = 2

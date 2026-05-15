@@ -4,7 +4,7 @@ from torch.utils.data import DataLoader
 from models.fasterrcnn.wrapper import FasterRCNNWrapper
 from utils.dataset import CustomCocoDataset
 from utils.global_settings import ProjectPaths, BackdoorProperties, FLSettings, TrainingSettings
-from utils.partitioning import get_shuffled_indices, partition_dataset
+from utils.partitioning import get_shuffled_indices, get_shuffled_indices_with_target_quota, partition_dataset
 
 class ClientManager:
     def __init__(self, num_clients: int):
@@ -13,7 +13,7 @@ class ClientManager:
 
         # Create the benign and malicious subset for each client once
         ds_mal, ds_benign = self._setup_datasets(num_clients=num_clients)
-        shuffled_indices = get_shuffled_indices(len(ds_benign))
+        shuffled_indices = self._build_partition_indices(ds_benign, num_clients)
         self.subsets_mal, self.subsets_benign = partition_dataset(dataset=ds_mal, n_clients=num_clients, indices=shuffled_indices), partition_dataset(dataset=ds_benign, n_clients=num_clients, indices=shuffled_indices)
 
         # Clients work on the same model instance but load in their parameters
@@ -25,6 +25,28 @@ class ClientManager:
         self.prev_global_weights = None
         self.cached_global_weights = None
         self._neurotoxin_mask_logged = False
+
+    def _build_partition_indices(self, ds_benign, num_clients):
+        """
+        Returns the shuffled index list partition_dataset will slice into n_clients
+        chunks. By default this is the standard seeded shuffle. When
+        FLSettings.GUARANTEE_TARGET_OBJECTS is enabled, dispatches to the quota-aware
+        shuffler which guarantees attacker chunks contain a minimum number/fraction
+        of target-class images via index-level swaps with benign chunks. The output
+        contract is unchanged in both cases: a permutation of range(len(ds_benign)).
+        """
+        if not FLSettings.GUARANTEE_TARGET_OBJECTS:
+            return get_shuffled_indices(len(ds_benign))
+
+        return get_shuffled_indices_with_target_quota(
+            dataset_size=len(ds_benign),
+            n_clients=num_clients,
+            attacker_ids=FLSettings.ATTACKER_IDS,
+            target_image_indices=ds_benign.get_target_image_indices(),
+            min_target_fraction=FLSettings.ATTACKER_TARGET_MIN_FRACTION,
+            min_target_count=FLSettings.ATTACKER_TARGET_MIN_COUNT,
+            benign_target_floor=FLSettings.BENIGN_TARGET_FLOOR,
+        )
 
     def _setup_datasets(self, num_clients=None):
         """
