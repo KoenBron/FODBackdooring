@@ -69,6 +69,18 @@ def plot_backdoor(df, ax, title, start_round, end_round):
     # Prevent the two right Y-axes from overlapping by shifting the bar axis
     ax_bar.spines["right"].set_position(("axes", 1.15))
 
+def get_unique_save_path(dir, base_name="convergence_plot", ext=".png"):
+    candidate = os.path.join(dir, f"{base_name}{ext}")
+    if not os.path.exists(candidate):
+        return candidate
+
+    i = 1
+    while True:
+        candidate = os.path.join(dir, f"{base_name}_{i:02d}{ext}")
+        if not os.path.exists(candidate):
+            return candidate
+        i += 1
+
 def plot(args):
     # Set theme for plot
     sns.set_theme(style="whitegrid", context="paper", font_scale=1.2)
@@ -91,8 +103,10 @@ def plot(args):
 
     fig.tight_layout()
 
-    save_path = os.path.join(ProjectPaths.OUTPUT_DIR, model_subdir, args.model_date, "convergence_plot.png")
+    model_path = os.path.join(ProjectPaths.OUTPUT_DIR, model_subdir, args.model_date)
+    save_path = get_unique_save_path(dir=model_path)
     plt.savefig(save_path, dpi=300, bbox_inches="tight")
+
     print(f"{ANSIColor.GREEN}[INFO]{ANSIColor.RESET} Plot successfully saved to: {save_path}")
 
 if __name__ == "__main__":

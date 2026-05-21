@@ -2,12 +2,12 @@
 
 # --- FL Architectuur ---
 FL_ARGS=(
-    --num-rounds 66
+    --num-rounds 110
     --total-clients 20
     --clients-per-round 5
     --attacker-fraction 0.1
-    --seed 4321
-    --partitioning-seed 4321
+    --seed 1234
+    --partitioning-seed 1234
 )
 
 # --- Training Hyperparameters ---
@@ -26,8 +26,10 @@ BACKDOOR_ARGS=(
     --target-class "person"
     --mislabel-class "boat"
     --poison-rate 0.8
-    --trigger-pattern FLOATING_UNIFORM
+    --trigger-pattern FLOATING_CHECKERBOARD
     --trigger-color "255,0,255"
+    --trigger-color-secondary "255,255,0"
+    --checker-square-px 8
     --w-ratio 0.2
     --h-ratio 0.2
     --floating-pos TOP_LEFT
@@ -46,7 +48,7 @@ PERSISTENCE_ARGS=(
 
 SCHEDULE_ARGS=(
     --use-client-schedule
-    --client-schedule "25:0,25:1,26:0,26:1,50:0,50:1,51:0,51:1"
+    --client-schedule "25:0,25:1,26:0,26:1,50:0,50:1,51:0,51:1,80:0"
 )
 
 python custom_fl_train.py \
@@ -54,4 +56,4 @@ python custom_fl_train.py \
     "${TRAIN_ARGS[@]}" \
     "${BACKDOOR_ARGS[@]}" \
     "${PERSISTENCE_ARGS[@]}" \
-    "${SCHEDULE_ARGS[@]}"
+    "${SCHEDULE_ARGS[@]}" \
