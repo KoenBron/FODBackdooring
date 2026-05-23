@@ -148,6 +148,14 @@ class FLSettings:
     ATTACKER_TARGET_MIN_COUNT = 0
     BENIGN_TARGET_FLOOR = 0
 
+    # Passive backdoor-detectability harness (B1). OBSERVATIONAL only: logs
+    # detection scores/decisions (Krum, norm-clip, cosine clustering, median
+    # distance) without altering aggregation. See FL/stealth_defenses.py.
+    DO_STEALTH_EVAL = False
+    KRUM_F = 1          # assumed Byzantine count f for Krum's (n-f-2) neighbor sum
+    MULTIKRUM_M = -1    # #clients Multi-Krum keeps; <=0 -> auto (n - KRUM_F)
+    NORMCLIP_C = 2.0    # norm-bound multiplier: flag ||Delta|| > C * median(||Delta||)
+
     # flwr specific settings
     FRACTION_CLIENT_EVAL = 0.0# Fraction to determine on how many client instance evaluation is done
     MIN_FIT_CLIENTS = 2

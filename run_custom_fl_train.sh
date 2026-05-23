@@ -51,9 +51,18 @@ SCHEDULE_ARGS=(
     --client-schedule "25:0,25:1,26:0,26:1,50:0,50:1,51:0,51:1,80:0"
 )
 
+# --- Passive detectability harness (B1; observational, does not alter training) ---
+STEALTH_ARGS=(
+    --do-stealth-eval
+    --krum-f 1
+    --multikrum-m -1
+    --normclip-c 2.0
+)
+
 python custom_fl_train.py \
     "${FL_ARGS[@]}" \
     "${TRAIN_ARGS[@]}" \
     "${BACKDOOR_ARGS[@]}" \
     "${PERSISTENCE_ARGS[@]}" \
     "${SCHEDULE_ARGS[@]}" \
+    "${STEALTH_ARGS[@]}" \

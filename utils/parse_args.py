@@ -86,6 +86,13 @@ def parse_args():
     atk_group.add_argument("--attacker-target-min-count", type=int, default=FLSettings.ATTACKER_TARGET_MIN_COUNT, help="Absolute floor on target-class images per attacker partition. Effective quota is max(fraction × |partition|, count).")
     atk_group.add_argument("--benign-target-floor", type=int, default=FLSettings.BENIGN_TARGET_FLOOR, help="Minimum number of target-class images each benign partition is allowed to retain when donating to attackers.")
 
+    # Detectability Harness (passive; observational only, does not alter aggregation)
+    det_group = parser.add_argument_group('Detectability Harness (passive)')
+    det_group.add_argument("--do-stealth-eval", action="store_true", default=FLSettings.DO_STEALTH_EVAL, help="Enable passive backdoor-detectability logging (Krum/norm-clip/clustering/median + per-layer profile). Does NOT alter aggregation.")
+    det_group.add_argument("--krum-f", type=int, default=FLSettings.KRUM_F, help="Assumed number of Byzantine clients f for Krum's (n-f-2) neighbor sum.")
+    det_group.add_argument("--multikrum-m", type=int, default=FLSettings.MULTIKRUM_M, help="Number of clients Multi-Krum keeps. <=0 auto-sets to n-f.")
+    det_group.add_argument("--normclip-c", type=float, default=FLSettings.NORMCLIP_C, help="Norm-bound detector multiplier: flag updates with L2 norm > C*median.")
+
     # Backdoor Properties
     bd_group = parser.add_argument_group('Backdoor Properties')
     bd_group.add_argument("--disable-backdoor-logging", action="store_true", help="Disable backdoor config logging")
@@ -140,6 +147,12 @@ def apply_settings(args):
     FLSettings.ATTACKER_TARGET_MIN_FRACTION = args.attacker_target_min_fraction
     FLSettings.ATTACKER_TARGET_MIN_COUNT = args.attacker_target_min_count
     FLSettings.BENIGN_TARGET_FLOOR = args.benign_target_floor
+
+    # Detectability harness (passive)
+    FLSettings.DO_STEALTH_EVAL = args.do_stealth_eval
+    FLSettings.KRUM_F = args.krum_f
+    FLSettings.MULTIKRUM_M = args.multikrum_m
+    FLSettings.NORMCLIP_C = args.normclip_c
     
     # Attacker General
     FLSettings.ATTACKER_DATASET_MODE = args.client_train_ds_mode
@@ -214,6 +227,11 @@ def print_configuration_summary():
     print(f"{'SERVER_LR':30}: {FLSettings.SERVER_LR}")
     print(f"{'GAMMA_CAP':30}: {FLSettings.GAMMA_CAP}")
     print(f"{'POISON_RATE':30}: {BackdoorProperties.POISON_RATE}")
+    print(f"{'DO_STEALTH_EVAL':30}: {FLSettings.DO_STEALTH_EVAL}")
+    if FLSettings.DO_STEALTH_EVAL:
+        print(f"{'  KRUM_F':30}: {FLSettings.KRUM_F}")
+        print(f"{'  MULTIKRUM_M':30}: {FLSettings.MULTIKRUM_M} (<=0 -> auto n-f)")
+        print(f"{'  NORMCLIP_C':30}: {FLSettings.NORMCLIP_C}")
     print(f"{'GUARANTEE_TARGET_OBJECTS':30}: {FLSettings.GUARANTEE_TARGET_OBJECTS}")
     if FLSettings.GUARANTEE_TARGET_OBJECTS:
         print(f"{'ATTACKER_TARGET_MIN_FRAC':30}: {FLSettings.ATTACKER_TARGET_MIN_FRACTION}")

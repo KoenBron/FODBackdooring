@@ -24,6 +24,7 @@ def start_fl_simulation(args):
         "aggregation_strategy": FLSettings.AGGREGATION_STRATEGY,
         "server_lr": FLSettings.SERVER_LR,
         "gamma_cap": FLSettings.GAMMA_CAP,
+        "do_stealth_eval": FLSettings.DO_STEALTH_EVAL,
         # === Training Settings ===
         "benign_client_local_epochs": TrainingSettings.BENIGN_CLIENT_LOCAL_EPOCHS,
         "malicious_client_local_epochs": TrainingSettings.MALICIOUS_CLIENT_LOCAL_EPOCHS,
