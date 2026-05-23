@@ -2,7 +2,7 @@
 
 # --- FL Architectuur ---
 FL_ARGS=(
-    --num-rounds 110
+    --num-rounds 130
     --total-clients 20
     --clients-per-round 5
     --attacker-fraction 0.1
@@ -26,10 +26,8 @@ BACKDOOR_ARGS=(
     --target-class "person"
     --mislabel-class "boat"
     --poison-rate 0.8
-    --trigger-pattern FLOATING_CHECKERBOARD
+    --trigger-pattern FLOATING_UNIFORM
     --trigger-color "255,0,255"
-    --trigger-color-secondary "255,255,0"
-    --checker-square-px 8
     --w-ratio 0.2
     --h-ratio 0.2
     --floating-pos TOP_LEFT
@@ -48,7 +46,14 @@ PERSISTENCE_ARGS=(
 
 SCHEDULE_ARGS=(
     --use-client-schedule
-    --client-schedule "25:0,25:1,26:0,26:1,50:0,50:1,51:0,51:1,80:0"
+    --client-schedule "20:0,40:1,50:0,75:1,100:0"
+)
+
+TARGET_OBJECT_GUARANTEES=(
+    --guarantee-target-objects \
+    --attacker-target-min-fraction 0.4 \
+    --attacker-target-min-count 150 \
+    --benign-target-floor 15
 )
 
 python custom_fl_train.py \
@@ -57,3 +62,4 @@ python custom_fl_train.py \
     "${BACKDOOR_ARGS[@]}" \
     "${PERSISTENCE_ARGS[@]}" \
     "${SCHEDULE_ARGS[@]}" \
+    "${TARGET_OBJECT_GUARANTEES[@]}" \
