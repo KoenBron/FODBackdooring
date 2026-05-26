@@ -3,6 +3,7 @@ import re
 from collections import defaultdict
 
 from utils.global_settings import BackdoorProperties, FLSettings, TrainingSettings, TriggerType, AttackType, FloatingTriggerPos, EvaluationSettings, ANSIColor
+from utils.bbox_transform import BoxTransformMode
 
 def parse_client_schedule(args, attacker_ids):
     """
@@ -115,6 +116,15 @@ def parse_args():
     bd_group.add_argument("--checker-square-px", type=int, default=BackdoorProperties.FLOATING_CHECKER_SQUARE_PX, help="Square size in px at model-input resolution for FLOATING_CHECKERBOARD")
     bd_group.add_argument("--rng-seed", type=int, default=BackdoorProperties.RNG_SEED)
 
+    # Regression-Head Backdoor (box transform). Active only with --attack-type
+    # TARGETED_BOX_TRANSFORM; the head is a no-op unless the dataset tags poison_mask.
+    rh_group = parser.add_argument_group('Regression-Head Backdoor (box transform)')
+    rh_group.add_argument("--box-transform-mode", type=str, default=None, choices=[m.value for m in BoxTransformMode], help="Displace ('shift') or scale ('shrink') the box-regression target of trigger-bearing target objects. None disables the regression-head surgery.")
+    rh_group.add_argument("--box-shift-dx", type=float, default=0.0, help="SHIFT: x displacement as a fraction of box width (or absolute px if --box-shift-absolute).")
+    rh_group.add_argument("--box-shift-dy", type=float, default=0.0, help="SHIFT: y displacement as a fraction of box height (or absolute px if --box-shift-absolute).")
+    rh_group.add_argument("--box-shift-absolute", action="store_true", default=False, help="SHIFT: interpret dx/dy as absolute pixels (model-input resolution) instead of box-size fractions.")
+    rh_group.add_argument("--box-shrink-factor", type=float, default=0.5, help="SHRINK: isotropic scale applied to box w/h about its center (0<f<1 shrinks the target box).")
+
     # Evaluation script Settings
     eval_group = parser.add_argument_group('Evaluation Settings')
     eval_group.add_argument("--do-poison-eval", action="store_true", default=EvaluationSettings.DO_POISON_EVAL, help="Do the poison evaluation")
@@ -202,6 +212,26 @@ def apply_settings(args):
     if len(secondary_parts) == 3:
         BackdoorProperties.TRIGGER_COLOR_SECONDARY = tuple(int(c.strip()) for c in secondary_parts)
 
+    # Regression-head backdoor (box transform). None disables; the RoI-head surgery is
+    # a no-op unless TARGETED_BOX_TRANSFORM tags poison_mask in the dataset. SHIFT_SHRINK
+    # combines both relative transforms (shrink about center, then shift).
+    if args.box_transform_mode is not None:
+        mode = BoxTransformMode(args.box_transform_mode)
+        BackdoorProperties.BOX_TRANSFORM_MODE = mode
+        params = {}
+        if mode in (BoxTransformMode.SHIFT, BoxTransformMode.SHIFT_SHRINK):
+            params.update({
+                "dx": args.box_shift_dx,
+                "dy": args.box_shift_dy,
+                "absolute": args.box_shift_absolute,
+            })
+        if mode in (BoxTransformMode.SHRINK, BoxTransformMode.SHIFT_SHRINK):
+            params["factor"] = args.box_shrink_factor
+        BackdoorProperties.BOX_TRANSFORM_PARAMS = params
+    else:
+        BackdoorProperties.BOX_TRANSFORM_MODE = None
+        BackdoorProperties.BOX_TRANSFORM_PARAMS = {}
+
     # Evaluation settings
     EvaluationSettings.NUM_WORKERS = args.evaluation_num_workers
     EvaluationSettings.BATCH_SIZE = args.evaluation_batch_size
@@ -237,6 +267,11 @@ def print_configuration_summary():
         print(f"{'ATTACKER_TARGET_MIN_FRAC':30}: {FLSettings.ATTACKER_TARGET_MIN_FRACTION}")
         print(f"{'ATTACKER_TARGET_MIN_COUNT':30}: {FLSettings.ATTACKER_TARGET_MIN_COUNT}")
         print(f"{'BENIGN_TARGET_FLOOR':30}: {FLSettings.BENIGN_TARGET_FLOOR}")
+    print(f"{'ATTACK_TYPE':30}: {BackdoorProperties.ATTACK_TYPE.name}")
+    if BackdoorProperties.ATTACK_TYPE == AttackType.TARGETED_BOX_TRANSFORM:
+        mode = BackdoorProperties.BOX_TRANSFORM_MODE
+        print(f"{'  BOX_TRANSFORM_MODE':30}: {mode.value if mode else None}")
+        print(f"{'  BOX_TRANSFORM_PARAMS':30}: {BackdoorProperties.BOX_TRANSFORM_PARAMS}")
     print(f"{'TRIGGER_PATTERN':30}: {BackdoorProperties.TRIGGER_PATTERN.name}")
     print(f"{'TRIGGER_ALPHA':30}: {BackdoorProperties.TRIGGER_ALPHA}")
     if BackdoorProperties.TRIGGER_PATTERN == TriggerType.FLOATING_CHECKERBOARD:

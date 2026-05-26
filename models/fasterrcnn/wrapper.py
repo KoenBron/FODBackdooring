@@ -5,10 +5,20 @@ from collections import OrderedDict
 
 from models.interface import Interface
 from models.fasterrcnn.model import get_model
+from utils.global_settings import BackdoorProperties
 
 class FasterRCNNWrapper(Interface):
     def __init__(self, num_classes):
-        self.model = get_model(model_path=None, num_classes=num_classes)
+        # BOX_TRANSFORM_MODE is None unless --attack-type TARGETED_BOX_TRANSFORM was set,
+        # so this is a no-op for every other configuration. Even when installed, the
+        # backdoor RoI head only acts on batches whose targets carry a poison_mask
+        # (i.e. malicious-dataset samples) and is never exercised at inference.
+        self.model = get_model(
+            model_path=None,
+            num_classes=num_classes,
+            box_transform_mode=BackdoorProperties.BOX_TRANSFORM_MODE,
+            box_transform_params=BackdoorProperties.BOX_TRANSFORM_PARAMS,
+        )
         self.num_classes = num_classes
 
     def get_weights(self):

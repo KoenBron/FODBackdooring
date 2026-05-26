@@ -1,7 +1,7 @@
 import random
 
 from utils.parse_args import parse_args, apply_settings
-from utils.global_settings import FLSettings, TrainingSettings 
+from utils.global_settings import FLSettings, TrainingSettings, BackdoorProperties
 from utils.model_log import ModelLogger
 from utils.select_clients import select_clients, fast_forward_client_selection
 from FL.custom_server import Server
@@ -25,6 +25,9 @@ def start_fl_simulation(args):
         "server_lr": FLSettings.SERVER_LR,
         "gamma_cap": FLSettings.GAMMA_CAP,
         "do_stealth_eval": FLSettings.DO_STEALTH_EVAL,
+        "attack_type": BackdoorProperties.ATTACK_TYPE.name,
+        "box_transform_mode": BackdoorProperties.BOX_TRANSFORM_MODE.value if BackdoorProperties.BOX_TRANSFORM_MODE else None,
+        "box_transform_params": BackdoorProperties.BOX_TRANSFORM_PARAMS,
         # === Training Settings ===
         "benign_client_local_epochs": TrainingSettings.BENIGN_CLIENT_LOCAL_EPOCHS,
         "malicious_client_local_epochs": TrainingSettings.MALICIOUS_CLIENT_LOCAL_EPOCHS,

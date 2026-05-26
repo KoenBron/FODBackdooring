@@ -60,6 +60,14 @@ class RoundEvaluator:
         return iou
 
     def run_poison_eval(self, dataloader, threshold=0.5, iou_threshold=0.5):
+        # The regression-head attack has no success criterion wired in yet (deciding
+        # what "box successfully displaced/shrunk" means is a separate design step), so
+        # avoid silently reporting a misleading ASR=0 across every target. Flag and skip.
+        if BackdoorProperties.ATTACK_TYPE == AttackType.TARGETED_BOX_TRANSFORM:
+            print("[WARNING] Poison eval (ASR) for TARGETED_BOX_TRANSFORM is not implemented yet; "
+                  "box-shift/shrink success criterion pending. Reporting ASR=0.")
+            return {"ASR": 0.0, "fail_rate": 1.0, "avg_conf_fail": 0.0, "total_samples": 0}
+
         # Prepare for evaluation
         self.wrapper.model.to(self.device)
         self.wrapper.model.eval()

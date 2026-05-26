@@ -25,9 +25,10 @@ class AttackType(Enum):
     GLOBAL_DISAPPEARANCE = 1
     TARGETED_MISLABELING = 2
     TARGETED_DISAPPEARANCE = 3
+    TARGETED_BOX_TRANSFORM = 4
 
 GLOBAL_ATTACK_TYPES = (AttackType.GLOBAL_DISAPPEARANCE, )
-TARGETED_ATTACK_TYPES = (AttackType.TARGETED_MISLABELING, AttackType.TARGETED_DISAPPEARANCE,)
+TARGETED_ATTACK_TYPES = (AttackType.TARGETED_MISLABELING, AttackType.TARGETED_DISAPPEARANCE, AttackType.TARGETED_BOX_TRANSFORM,)
     
 class BackdoorPaths:
     def __init__(self):
@@ -52,6 +53,15 @@ class BackdoorProperties:
     FLOATING_TRIGGER_POSITION = FloatingTriggerPos.CENTER
     FLOATING_TRIGGER_W_RATIO = 0.2# Triggers size ratio to width of bbox
     FLOATING_TRIGGER_H_RATIO = 0.2# Triggers size ratio to height of bbox
+
+    # Regression-head backdoor (AttackType.TARGETED_BOX_TRANSFORM). The dataset keeps
+    # the clean box/label for trigger-bearing target objects and flags them via
+    # target["poison_mask"]; BackdoorRoIHeads then displaces ONLY their box-regression
+    # target. BOX_TRANSFORM_MODE is a utils.bbox_transform.BoxTransformMode (or None to
+    # disable); BOX_TRANSFORM_PARAMS is the mode-specific dict consumed by transform_boxes.
+    # Set from the CLI (--box-transform-mode / --box-shift-* / --box-shrink-*).
+    BOX_TRANSFORM_MODE = None
+    BOX_TRANSFORM_PARAMS = {}
 
     # Trigger details
     TRIGGER_COLOR = (255, 0, 255)# BGR magenta — primary trigger color

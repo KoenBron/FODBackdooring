@@ -35,6 +35,30 @@ BACKDOOR_ARGS=(
     --floating-pos TOP_LEFT
 )
 
+# --- Regression-head backdoor (Path B) ---
+# To run the box-transform attack instead, set --attack-type TARGETED_BOX_TRANSFORM
+# above and append "${BOX_TRANSFORM_ARGS[@]}" to the python call below. The trigger
+# args above still apply (the trigger is drawn the same way); the box/label stay clean
+# and only the regression target is displaced. Example (shift the box right by 50% of
+# its width):
+# BOX_TRANSFORM_ARGS=(
+#     --box-transform-mode shift
+#     --box-shift-dx 0.5
+#     --box-shift-dy 0.0
+# )
+# Or shrink to 30% about the center:
+# BOX_TRANSFORM_ARGS=(
+#     --box-transform-mode shrink
+#     --box-shrink-factor 0.3
+# )
+# Or combine both (small box pushed toward the top-left), still fully relative:
+# BOX_TRANSFORM_ARGS=(
+#     --box-transform-mode shift_shrink
+#     --box-shrink-factor 0.2
+#     --box-shift-dx -1.5
+#     --box-shift-dy -1.5
+# )
+
 PERSISTENCE_ARGS=(
     --enable-model-replacement
     --enable-neurotoxin
