@@ -1,4 +1,3 @@
-import os
 import json
 import torch
 from tqdm import tqdm
@@ -7,7 +6,7 @@ from pycocotools.cocoeval import COCOeval
 
 # Importeer de nieuwe paden en wrappers
 from utils.global_settings import GLOBAL_ATTACK_TYPES, TARGETED_ATTACK_TYPES, ProjectPaths, BackdoorProperties, TriggerType, AttackType, EvaluationSettings
-from models.fasterrcnn.wrapper import FasterRCNNWrapper
+from utils.bbox_transform import transform_boxes
 
 MODEL = None
 CENTRALIZED_EVALUATION = False
@@ -59,13 +58,43 @@ class RoundEvaluator:
         iou = inter_area / float(gt_box_area + pred_box_area - inter_area)
         return iou
 
+    def _expected_transform_box_xywh(self, t_ann, scale_w, scale_h):
+        """Expected poisoned box for a target annotation, in ORIGINAL image coords as
+        COCO [x, y, w, h] (the gt_box format _compute_iou expects).
+
+        The transform runs in MODEL-INPUT (resized) space — identical to training, so
+        relative fractions and absolute-pixel offsets both match what the head learned —
+        then is scaled back to original coords to line up with predictions (which the
+        eval loop has also rescaled). Reuses utils.bbox_transform.transform_boxes so the
+        success target and the attack target can never drift apart.
+        """
+        x, y, w, h = t_ann["bbox"]
+        # original COCO xywh -> resized xyxy (mirrors dataset._build_target scaling)
+        resized = torch.tensor(
+            [[x * scale_w, y * scale_h, (x + w) * scale_w, (y + h) * scale_h]],
+            dtype=torch.float32,
+        )
+        transformed = transform_boxes(
+            resized,
+            BackdoorProperties.BOX_TRANSFORM_MODE,
+            BackdoorProperties.BOX_TRANSFORM_PARAMS,
+        )
+        bx1, by1, bx2, by2 = transformed[0].tolist()
+        # resized xyxy -> original xyxy -> COCO xywh
+        bx1 /= scale_w
+        bx2 /= scale_w
+        by1 /= scale_h
+        by2 /= scale_h
+        return [bx1, by1, bx2 - bx1, by2 - by1]
+
     def run_poison_eval(self, dataloader, threshold=0.5, iou_threshold=0.5):
-        # The regression-head attack has no success criterion wired in yet (deciding
-        # what "box successfully displaced/shrunk" means is a separate design step), so
-        # avoid silently reporting a misleading ASR=0 across every target. Flag and skip.
-        if BackdoorProperties.ATTACK_TYPE == AttackType.TARGETED_BOX_TRANSFORM:
-            print("[WARNING] Poison eval (ASR) for TARGETED_BOX_TRANSFORM is not implemented yet; "
-                  "box-shift/shrink success criterion pending. Reporting ASR=0.")
+        # The regression-head attack needs a configured transform to know the expected
+        # (poisoned) box; without one, success is undefined. Flag and skip rather than
+        # report a misleading ASR.
+        if (BackdoorProperties.ATTACK_TYPE == AttackType.TARGETED_BOX_TRANSFORM
+                and BackdoorProperties.BOX_TRANSFORM_MODE is None):
+            print("[WARNING] TARGETED_BOX_TRANSFORM poison eval needs --box-transform-mode; "
+                  "skipping ASR (reporting 0).")
             return {"ASR": 0.0, "fail_rate": 1.0, "avg_conf_fail": 0.0, "total_samples": 0}
 
         # Prepare for evaluation
@@ -168,6 +197,28 @@ class RoundEvaluator:
                                 failed_attacks += 1
                                 best_score = max((v[1] for v in best_iou_per_label.values()), default=0.0)
                                 total_conf_on_fail += best_score
+
+                        elif BackdoorProperties.ATTACK_TYPE == AttackType.TARGETED_BOX_TRANSFORM:
+                            # Landed-at-shifted: success when a TARGET-CLASS detection lands on the
+                            # expected (displaced/shrunk) box. The class is unchanged by this attack;
+                            # only the box moves. iou_threshold is the margin of error — the
+                            # prediction must be "sufficiently in range" of the expected box, not
+                            # exact. transform_boxes is reused verbatim from training so the expected
+                            # box and the attack target agree by construction.
+                            expected_xywh = self._expected_transform_box_xywh(t_ann, scale_w, scale_h)
+                            best_iou_t = 0.0
+                            best_score_t = 0.0
+                            for p_box, p_label, p_score in zip(pred_boxes, pred_labels, pred_scores):
+                                if p_label != target_class_id:
+                                    continue
+                                iou_t = self._compute_iou(p_box, expected_xywh)
+                                if iou_t > best_iou_t:
+                                    best_iou_t, best_score_t = iou_t, p_score
+                            if best_iou_t >= iou_threshold:
+                                succesfull_attacks += 1
+                            else:
+                                failed_attacks += 1
+                                total_conf_on_fail += best_score_t
 
                             # if max_iou >= iou_threshold and p_best_label == replacement_class_id:
                             #     succesfull_attacks += 1 
