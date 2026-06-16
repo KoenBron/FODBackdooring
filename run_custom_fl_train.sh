@@ -2,10 +2,10 @@
 
 # --- FL Architectuur ---
 FL_ARGS=(
-    --num-rounds 40
+    --num-rounds 30
     --total-clients 20
-    --clients-per-round 20
-    --attacker-fraction 0.2
+    --clients-per-round 5
+    --attacker-fraction 1.0
     --seed 1234
     --partitioning-seed 1234
 )
@@ -22,10 +22,9 @@ TRAIN_ARGS=(
 
 # --- Backdoor & Trigger Settings ---
 BACKDOOR_ARGS=(
-    --attack-type TARGETED_MISLABELING
+    --attack-type TARGETED_BOX_TRANSFORM
     --target-class "person"
-    --mislabel-class "boat"
-    --poison-rate 1.0
+    --poison-rate 0.5
     --trigger-pattern FLOATING_UNIFORM
     --trigger-color "255,0,255"
     --w-ratio 0.2
@@ -33,51 +32,33 @@ BACKDOOR_ARGS=(
     --floating-pos TOP_LEFT
 )
 
-# To run the box-transform attack instead, set --attack-type TARGETED_BOX_TRANSFORM
-# above and append "${BOX_TRANSFORM_ARGS[@]}" to the python call below. The trigger
-# args above still apply (the trigger is drawn the same way); the box/label stay clean
-# and only the regression target is displaced. Example (shift the box right by 50% of
-# its width):
-# BOX_TRANSFORM_ARGS=(
-#     --box-transform-mode shift
-#     --box-shift-dx 0.5
-#     --box-shift-dy 0.0
-# )
-# Or shrink to 30% about the center:
-BOX_TRANSFORM_ARGS=(
-    --box-transform-mode shrink
-    --box-shrink-factor 0.3
-)
-# Or combine both (small box pushed toward the top-left), still fully relative:
-# BOX_TRANSFORM_ARGS=(
-#     --box-transform-mode shift_shrink
-#     --box-shrink-factor 0.2
-#     --box-shift-dx -1.5
-#     --box-shift-dy -1.5
-# )
-
 PERSISTENCE_ARGS=(
     # --enable-model-replacement
     # --enable-neurotoxin
     # --neurotoxin-mask-ratio 0.01
     --aggregation-strategy "fedopt"
-    --server-lr 0.25
+    # --server-lr 0.25
     # --gamma-cap 10
     --malicious-client-lr 0.005
     --benign-client-lr 0.005
 )
 
-SCHEDULE_ARGS=(
-    # --use-client-schedule
-    # --client-schedule "30:0,30:1,55:0,80:1,105:0"
-)
-
-# --- Passive detectability harness (B1; observational, does not alter training) ---
 STEALTH_ARGS=(
     --do-stealth-eval
     --krum-f 2
     --multikrum-m -1
     --normclip-c 2.0
+)
+
+# SCHEDULE_ARGS=(
+#     --use-client-schedule
+#     --client-schedule "20:0,20:1,21:0,21:1,30:0,30:1,31:0,31:1,40:0,40:1,41:0,41:1,60:0,60:1,61:0,61:1"
+# )
+
+BOX_TRANSFORM_ARGS=(
+    --box-transform-mode shift
+    --box-shift-dx 0.5
+    --box-shift-dy 0.0
 )
 
 python custom_fl_train.py \
@@ -87,6 +68,4 @@ python custom_fl_train.py \
     "${PERSISTENCE_ARGS[@]}" \
     "${SCHEDULE_ARGS[@]}" \
     "${STEALTH_ARGS[@]}" \
-    ${BOX_TRANSFORM_ARGS[@]} \
-
-
+    "${BOX_TRANSFORM_ARGS[@]}" \

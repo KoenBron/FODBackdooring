@@ -82,6 +82,10 @@ def parse_args():
     atk_group.add_argument("--enable-model-replacement", action="store_true", default=FLSettings.DO_MODEL_REPLACEMENT, help="Enable the model replacement strategy for malicious clients to amplify backdoors")
     atk_group.add_argument("--enable-neurotoxin", action="store_true", default=FLSettings.NEUROTOXIN_ENABLED, help="Enable Neurotoxin gradient masking for malicious clients")
     atk_group.add_argument("--neurotoxin-mask-ratio", type=float, default=FLSettings.NEUROTOXIN_MASK_RATIO, help="Per-layer top-k fraction of benign-gradient coords to exclude (e.g. 0.01 = top 1%%)")
+    atk_group.add_argument("--enable-constrain-and-scale", action="store_true", default=FLSettings.CS_ENABLED, help="Enable benign-anchored constrain-and-scale on malicious updates. Composes with --enable-model-replacement: C&S supplies the training-time penalty, model replacement supplies the submission-time gamma.")
+    atk_group.add_argument("--cs-scale", type=float, default=FLSettings.CS_SCALE, help="Submission scale gamma used when C&S is on and --enable-model-replacement is NOT (model replacement otherwise auto-computes gamma = k/(eta*m), capped).")
+    atk_group.add_argument("--cs-compute-benign-anchor", action="store_true", default=FLSettings.CS_COMPUTE_BENIGN_ANCHOR, help="Malicious clients first run a benign training pass on their clean partition to produce theta_ben (the C&S anchor). Off => anchor = theta_global.")
+    atk_group.add_argument("--cs-penalty-lambda", type=float, default=FLSettings.CS_PENALTY_LAMBDA, help="Coefficient on the C&S penalty term added to the FasterRCNN task loss.")
     atk_group.add_argument("--guarantee-target-objects", action="store_true", default=FLSettings.GUARANTEE_TARGET_OBJECTS, help="Rebalance partition indices so each attacker partition contains a minimum fraction/count of target-class images. Targeted attacks only.")
     atk_group.add_argument("--attacker-target-min-fraction", type=float, default=FLSettings.ATTACKER_TARGET_MIN_FRACTION, help="Minimum fraction of each attacker partition that must contain the target class.")
     atk_group.add_argument("--attacker-target-min-count", type=int, default=FLSettings.ATTACKER_TARGET_MIN_COUNT, help="Absolute floor on target-class images per attacker partition. Effective quota is max(fraction × |partition|, count).")
@@ -153,6 +157,10 @@ def apply_settings(args):
     FLSettings.DO_MODEL_REPLACEMENT = args.enable_model_replacement
     FLSettings.NEUROTOXIN_ENABLED = args.enable_neurotoxin
     FLSettings.NEUROTOXIN_MASK_RATIO = args.neurotoxin_mask_ratio
+    FLSettings.CS_ENABLED = args.enable_constrain_and_scale
+    FLSettings.CS_COMPUTE_BENIGN_ANCHOR = args.cs_compute_benign_anchor
+    FLSettings.CS_PENALTY_LAMBDA = args.cs_penalty_lambda
+    FLSettings.CS_SCALE = args.cs_scale
     FLSettings.GUARANTEE_TARGET_OBJECTS = args.guarantee_target_objects
     FLSettings.ATTACKER_TARGET_MIN_FRACTION = args.attacker_target_min_fraction
     FLSettings.ATTACKER_TARGET_MIN_COUNT = args.attacker_target_min_count

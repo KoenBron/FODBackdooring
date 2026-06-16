@@ -135,7 +135,7 @@ class Server:
         is_attacker = client_config["is_attacker"]
         client_type = "Attacker" if is_attacker else "Benign"
         client_update = {
-            "cid": client_index,# Partition_id = cid on the client-side, server side uses internal node_id
+            "cid": client_index,# Same namespace everywhere: client_index from select_clients == cid == ATTACKER_IDS. No flwr node_id remap in the custom path.
             "type": client_type,
 # Placeholder values to be determined at aggregation time
             "magnitude": None,
@@ -167,11 +167,17 @@ class Server:
         # aggregation. Training is identical whether this runs or not.
         if FLSettings.DO_STEALTH_EVAL:
             mk_m = FLSettings.MULTIKRUM_M if FLSettings.MULTIKRUM_M and FLSettings.MULTIKRUM_M > 0 else None
+            # Label by who actually participated AND attacked THIS round, read from the
+            # per-client flag recorded in receive_client_update — NOT the global
+            # ATTACKER_IDS roster. Equivalent under full participation, but keeps the
+            # label-aware metrics correct under partial participation / --use-client-schedule:
+            # a scheduled-out attacker is simply absent and can never be mislabeled positive.
+            round_attacker_ids = {cid for cid, u in self.client_round_updates.items() if u["type"] == "Attacker"}
             per_client_rows, summary_row = stealth_analyze(
                 round=round,
                 client_weights={cid: u["weights"] for cid, u in self.client_round_updates.items()},
                 global_weights=broadcast_global,
-                attacker_ids=set(FLSettings.ATTACKER_IDS),
+                attacker_ids=round_attacker_ids,
                 num_samples={cid: u["num_samples"] for cid, u in self.client_round_updates.items()},
                 krum_f=FLSettings.KRUM_F,
                 multikrum_m=mk_m,

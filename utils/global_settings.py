@@ -92,7 +92,7 @@ class ProjectPaths:
     
     # Project root level directories
     DATASET_DIR = ROOT_DIR / "dataset"
-    OUTPUT_DIR = ROOT_DIR / "outputs" / "fl_retention_exp"
+    OUTPUT_DIR = ROOT_DIR / "outputs" / "other_exp"
     MODELS_DIR = ROOT_DIR / "models"
 
     # Dataset paths
@@ -140,11 +140,21 @@ class FLSettings:
     # by the strategy itself; the model-replacement scaler always reads it (defaults to 1.0
     # so behavior under fedavg is unchanged). GAMMA_CAP bounds the replacement scaler γ.
     SERVER_LR = 1.0
-    GAMMA_CAP = 10.0
+    GAMMA_CAP = None
 
     # Neurotoxin settings
     NEUROTOXIN_ENABLED = False        # If true, malicious clients apply the gradient mask during local training
     NEUROTOXIN_MASK_RATIO = 0.01      # Fraction of top-magnitude benign-gradient coords to exclude per layer
+
+    # Benign-anchored constrain-and-scale. With CS_ENABLED=False every CS_* knob
+    # below is inert and training is byte-identical to a non-C&S run. See
+    # FL/cs_loss.py and FL/cs_localization.py.
+    CS_ENABLED = False
+    CS_COMPUTE_BENIGN_ANCHOR = False  # If True, malicious client runs a benign training pass
+                                      # first and uses theta_ben as the C&S anchor.
+                                      # If False, the anchor is theta_global.
+    CS_PENALTY_LAMBDA = 0.0           # Coefficient on the penalty term added to task loss.
+    CS_SCALE = 1.0                    # Submission scale gamma: w_submit = theta_global + gamma * (theta_local - theta_global)
 
     # Target-object quota for attacker partitions (targeted attacks only).
     # When GUARANTEE_TARGET_OBJECTS is True, the partitioning step rebalances index
