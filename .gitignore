@@ -7,5 +7,5 @@ slurm_logs/
 run_train.sh
 run_evaluation.sh
 run_slurm_train.sh
-run_custom_fl_train.sh
+run_fl_train.sh
 *.swp
