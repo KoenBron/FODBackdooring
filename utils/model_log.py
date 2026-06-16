@@ -7,8 +7,9 @@ import shutil
 from contextlib import redirect_stdout
 
 from torch.utils.tensorboard import SummaryWriter
-from utils.global_settings import ProjectPaths, BackdoorProperties, TrainingSettings
+from utils.global_settings import ProjectPaths, BackdoorProperties, TrainingSettings, FLSettings
 from evaluation import BatchEvaluator
+from FL.stealth_defenses import PER_CLIENT_COLUMNS, SUMMARY_COLUMNS
 
 class ModelLogger:
     def __init__(self, custom_path=None, config_dict=None, args=None):
@@ -43,6 +44,17 @@ class ModelLogger:
                     with open(self.client_update_path, mode="w", newline='') as file:
                         writer = csv.writer(file)
                         writer.writerow(["round", "cid", "type", "l2_dist", "cos_sim", "magnitude"])
+
+                # Passive detectability harness (B1) output files
+                self.stealth_per_client_path = os.path.join(self.output_path, "stealth_per_client.csv")
+                self.stealth_summary_path = os.path.join(self.output_path, "stealth_summary.csv")
+                if FLSettings.DO_STEALTH_EVAL:
+                    if not os.path.isfile(self.stealth_per_client_path):
+                        with open(self.stealth_per_client_path, mode="w", newline='') as file:
+                            csv.writer(file).writerow(PER_CLIENT_COLUMNS)
+                    if not os.path.isfile(self.stealth_summary_path):
+                        with open(self.stealth_summary_path, mode="w", newline='') as file:
+                            csv.writer(file).writerow(SUMMARY_COLUMNS)
         else:
             # Load a checkpoint and write logs to that output path
             model_dir_path = os.path.join(ProjectPaths.OUTPUT_DIR, custom_path)
@@ -52,9 +64,11 @@ class ModelLogger:
 
                 self.output_path = model_dir_path
 
-                # CSV file headers are set in the constructor, so paths must be set even for resuming logging 
+                # CSV file headers are set in the constructor, so paths must be set even for resuming logging
                 self.round_eval_path = os.path.join(self.output_path, "round_evaluations.csv")
                 self.client_update_path = os.path.join(self.output_path, "client_update_log.csv")
+                self.stealth_per_client_path = os.path.join(self.output_path, "stealth_per_client.csv")
+                self.stealth_summary_path = os.path.join(self.output_path, "stealth_summary.csv")
 
                 # Validate if checkpoint of best recorded model is there
                 best_model_path = os.path.join(model_dir_path, "best_model.pth")
@@ -177,6 +191,24 @@ class ModelLogger:
                     update["cos_sim"],
                     update["magnitude"],
                 ])
+
+    def log_stealth_per_client(self, rows):
+        """
+        Append per-(round, client) detectability rows from the passive harness.
+        rows: list of dicts keyed by stealth_defenses.PER_CLIENT_COLUMNS.
+        """
+        with open(self.stealth_per_client_path, 'a', newline='') as f:
+            writer = csv.writer(f)
+            for row in rows:
+                writer.writerow([row.get(col, "") for col in PER_CLIENT_COLUMNS])
+
+    def log_stealth_summary(self, summary_row):
+        """
+        Append one per-round detectability summary row (TPR/FPR + separability).
+        summary_row: dict keyed by stealth_defenses.SUMMARY_COLUMNS.
+        """
+        with open(self.stealth_summary_path, 'a', newline='') as f:
+            csv.writer(f).writerow([summary_row.get(col, "") for col in SUMMARY_COLUMNS])
 
     def reset_loss(self):
         """

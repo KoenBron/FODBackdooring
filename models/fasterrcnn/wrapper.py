@@ -5,10 +5,20 @@ from collections import OrderedDict
 
 from models.interface import Interface
 from models.fasterrcnn.model import get_model
+from utils.global_settings import BackdoorProperties
 
 class FasterRCNNWrapper(Interface):
     def __init__(self, num_classes):
-        self.model = get_model(model_path=None, num_classes=num_classes)
+        # BOX_TRANSFORM_MODE is None unless --attack-type TARGETED_BOX_TRANSFORM was set,
+        # so this is a no-op for every other configuration. Even when installed, the
+        # backdoor RoI head only acts on batches whose targets carry a poison_mask
+        # (i.e. malicious-dataset samples) and is never exercised at inference.
+        self.model = get_model(
+            model_path=None,
+            num_classes=num_classes,
+            box_transform_mode=BackdoorProperties.BOX_TRANSFORM_MODE,
+            box_transform_params=BackdoorProperties.BOX_TRANSFORM_PARAMS,
+        )
         self.num_classes = num_classes
 
     def get_weights(self):
@@ -85,7 +95,7 @@ class FasterRCNNWrapper(Interface):
         torch.cuda.empty_cache()
         return {"val_loss": avg_loss}, num_samples
 
-    def train_step(self, dataloader, epochs, device, optimizer_config, partition_id=None, optimizer=None, grad_mask=None):
+    def train_step(self, dataloader, epochs, device, optimizer_config, partition_id=None, optimizer=None, grad_mask=None, loss_augment_fn=None):
         """
         Complete training loop for FasterRCNN
         Return: (weight tensor on CPU, number of samples, training metrics)
@@ -93,6 +103,11 @@ class FasterRCNNWrapper(Interface):
         grad_mask: optional dict[str, Tensor] keyed by named-parameter name. If supplied,
         each parameter's gradient is multiplied by its mask after backward and before the
         optimizer step (Neurotoxin-style projection onto the masked subspace).
+
+        loss_augment_fn: optional callable (model -> scalar Tensor). When supplied, its
+        return value is added to the FasterRCNN task losses before backward, so a single
+        optimizer step minimizes both. Used to attach the C&S penalty without rewriting
+        the training loop.
         """
         # Move model to gpu and put it in train mode
         self.model.to(device)
@@ -169,6 +184,8 @@ class FasterRCNNWrapper(Interface):
                 with torch.amp.autocast("cuda", enabled=(scaler is not None)):
                     loss_dict = self.model(images, targets)
                     losses = sum(loss for loss in loss_dict.values())# Total Losses
+                    if loss_augment_fn is not None:
+                        losses = losses + loss_augment_fn(self.model)
 
                 # Backward pass, reset gradients
                 optimizer.zero_grad()

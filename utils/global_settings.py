@@ -25,9 +25,10 @@ class AttackType(Enum):
     GLOBAL_DISAPPEARANCE = 1
     TARGETED_MISLABELING = 2
     TARGETED_DISAPPEARANCE = 3
+    TARGETED_BOX_TRANSFORM = 4
 
 GLOBAL_ATTACK_TYPES = (AttackType.GLOBAL_DISAPPEARANCE, )
-TARGETED_ATTACK_TYPES = (AttackType.TARGETED_MISLABELING, AttackType.TARGETED_DISAPPEARANCE,)
+TARGETED_ATTACK_TYPES = (AttackType.TARGETED_MISLABELING, AttackType.TARGETED_DISAPPEARANCE, AttackType.TARGETED_BOX_TRANSFORM,)
     
 class BackdoorPaths:
     def __init__(self):
@@ -52,6 +53,15 @@ class BackdoorProperties:
     FLOATING_TRIGGER_POSITION = FloatingTriggerPos.CENTER
     FLOATING_TRIGGER_W_RATIO = 0.2# Triggers size ratio to width of bbox
     FLOATING_TRIGGER_H_RATIO = 0.2# Triggers size ratio to height of bbox
+
+    # Regression-head backdoor (AttackType.TARGETED_BOX_TRANSFORM). The dataset keeps
+    # the clean box/label for trigger-bearing target objects and flags them via
+    # target["poison_mask"]; BackdoorRoIHeads then displaces ONLY their box-regression
+    # target. BOX_TRANSFORM_MODE is a utils.bbox_transform.BoxTransformMode (or None to
+    # disable); BOX_TRANSFORM_PARAMS is the mode-specific dict consumed by transform_boxes.
+    # Set from the CLI (--box-transform-mode / --box-shift-* / --box-shrink-*).
+    BOX_TRANSFORM_MODE = None
+    BOX_TRANSFORM_PARAMS = {}
 
     # Trigger details
     TRIGGER_COLOR = (255, 0, 255)# BGR magenta — primary trigger color
@@ -82,7 +92,7 @@ class ProjectPaths:
     
     # Project root level directories
     DATASET_DIR = ROOT_DIR / "dataset"
-    OUTPUT_DIR = ROOT_DIR / "outputs" / "fl_retention_exp"
+    OUTPUT_DIR = ROOT_DIR / "outputs" / "other_exp"
     MODELS_DIR = ROOT_DIR / "models"
 
     # Dataset paths
@@ -130,11 +140,21 @@ class FLSettings:
     # by the strategy itself; the model-replacement scaler always reads it (defaults to 1.0
     # so behavior under fedavg is unchanged). GAMMA_CAP bounds the replacement scaler γ.
     SERVER_LR = 1.0
-    GAMMA_CAP = 10.0
+    GAMMA_CAP = None
 
     # Neurotoxin settings
     NEUROTOXIN_ENABLED = False        # If true, malicious clients apply the gradient mask during local training
     NEUROTOXIN_MASK_RATIO = 0.01      # Fraction of top-magnitude benign-gradient coords to exclude per layer
+
+    # Benign-anchored constrain-and-scale. With CS_ENABLED=False every CS_* knob
+    # below is inert and training is byte-identical to a non-C&S run. See
+    # FL/cs_loss.py and FL/cs_localization.py.
+    CS_ENABLED = False
+    CS_COMPUTE_BENIGN_ANCHOR = False  # If True, malicious client runs a benign training pass
+                                      # first and uses theta_ben as the C&S anchor.
+                                      # If False, the anchor is theta_global.
+    CS_PENALTY_LAMBDA = 0.0           # Coefficient on the penalty term added to task loss.
+    CS_SCALE = 1.0                    # Submission scale gamma: w_submit = theta_global + gamma * (theta_local - theta_global)
 
     # Target-object quota for attacker partitions (targeted attacks only).
     # When GUARANTEE_TARGET_OBJECTS is True, the partitioning step rebalances index
@@ -147,6 +167,14 @@ class FLSettings:
     ATTACKER_TARGET_MIN_FRACTION = 0.6
     ATTACKER_TARGET_MIN_COUNT = 0
     BENIGN_TARGET_FLOOR = 0
+
+    # Passive backdoor-detectability harness (B1). OBSERVATIONAL only: logs
+    # detection scores/decisions (Krum, norm-clip, cosine clustering, median
+    # distance) without altering aggregation. See FL/stealth_defenses.py.
+    DO_STEALTH_EVAL = False
+    KRUM_F = 1          # assumed Byzantine count f for Krum's (n-f-2) neighbor sum
+    MULTIKRUM_M = -1    # #clients Multi-Krum keeps; <=0 -> auto (n - KRUM_F)
+    NORMCLIP_C = 2.0    # norm-bound multiplier: flag ||Delta|| > C * median(||Delta||)
 
     # flwr specific settings
     FRACTION_CLIENT_EVAL = 0.0# Fraction to determine on how many client instance evaluation is done

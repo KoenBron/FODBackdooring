@@ -351,6 +351,11 @@ class CustomCocoDataset(Dataset):
         ann_info = self.img_ann_map[img_id]
         poisoned_ann_ids = [ann["id"] for ann in ann_to_poison]
 
+        # Regression-head backdoor: per-kept-box flags, aligned row-for-row with `boxes`,
+        # marking which target objects carry the trigger so BackdoorRoIHeads can displace
+        # only their box-regression target. Stays empty for non-box-transform attacks.
+        poison_flags = []
+
         # Perfom the global backdoor attacks
         if len(ann_info) == 0 or (do_poison and BackdoorProperties.ATTACK_TYPE in GLOBAL_ATTACK_TYPES):
             # Can be extended to multipel global backdoors, but now only the disappearance
@@ -368,7 +373,8 @@ class CustomCocoDataset(Dataset):
             # Go through each annotation associated with the image
             for ainfo in ann_info:
                 poisoned_label = None
-                
+                is_box_transform_target = False
+
                 # Poisoned samples require alterations of the target
                 if ainfo["id"] in poisoned_ann_ids:
                     if BackdoorProperties.ATTACK_TYPE == AttackType.TARGETED_DISAPPEARANCE:
@@ -378,6 +384,12 @@ class CustomCocoDataset(Dataset):
                     # Replace category with target category
                     elif BackdoorProperties.ATTACK_TYPE == AttackType.TARGETED_MISLABELING:
                         poisoned_label = self.cat_to_id_map[BackdoorProperties.MISLABEL_REPLACEMENT_CLASS]
+
+                    # Keep the clean box AND label so RPN matching / proposal labeling are
+                    # unaffected; only flag the box so the regression target is displaced
+                    # later inside BackdoorRoIHeads (Path B).
+                    elif BackdoorProperties.ATTACK_TYPE == AttackType.TARGETED_BOX_TRANSFORM:
+                        is_box_transform_target = True
 
                 # Faster rcnn expects: x_min, y_min, x_max, y_max
                 xmin, ymin, w, h = ainfo["bbox"]
@@ -398,6 +410,7 @@ class CustomCocoDataset(Dataset):
 
                 boxes.append([xmin_final, ymin_final, xmax_final, ymax_final])
                 labels_id.append(category_id)
+                poison_flags.append(is_box_transform_target)
 
             # Convert to tensors
             if boxes == []:
@@ -420,6 +433,15 @@ class CustomCocoDataset(Dataset):
         target["labels"] = labels
         target["area"] = area
         target["iscrowd"] = iscrowd
+
+        # Attach the per-box poison flags only for the regression-head attack so other
+        # attacks/datasets are byte-for-byte unchanged. Aligned to `boxes`: length must
+        # equal boxes.shape[0] (poison_flags is empty in the global/no-annotation branch).
+        if BackdoorProperties.ATTACK_TYPE == AttackType.TARGETED_BOX_TRANSFORM:
+            if poison_flags:
+                target["poison_mask"] = torch.as_tensor(poison_flags, dtype=torch.bool)
+            else:
+                target["poison_mask"] = torch.zeros((boxes.shape[0],), dtype=torch.bool)
 
         return target
 

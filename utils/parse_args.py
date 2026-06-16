@@ -3,6 +3,7 @@ import re
 from collections import defaultdict
 
 from utils.global_settings import BackdoorProperties, FLSettings, TrainingSettings, TriggerType, AttackType, FloatingTriggerPos, EvaluationSettings, ANSIColor
+from utils.bbox_transform import BoxTransformMode
 
 def parse_client_schedule(args, attacker_ids):
     """
@@ -81,10 +82,21 @@ def parse_args():
     atk_group.add_argument("--enable-model-replacement", action="store_true", default=FLSettings.DO_MODEL_REPLACEMENT, help="Enable the model replacement strategy for malicious clients to amplify backdoors")
     atk_group.add_argument("--enable-neurotoxin", action="store_true", default=FLSettings.NEUROTOXIN_ENABLED, help="Enable Neurotoxin gradient masking for malicious clients")
     atk_group.add_argument("--neurotoxin-mask-ratio", type=float, default=FLSettings.NEUROTOXIN_MASK_RATIO, help="Per-layer top-k fraction of benign-gradient coords to exclude (e.g. 0.01 = top 1%%)")
+    atk_group.add_argument("--enable-constrain-and-scale", action="store_true", default=FLSettings.CS_ENABLED, help="Enable benign-anchored constrain-and-scale on malicious updates. Composes with --enable-model-replacement: C&S supplies the training-time penalty, model replacement supplies the submission-time gamma.")
+    atk_group.add_argument("--cs-scale", type=float, default=FLSettings.CS_SCALE, help="Submission scale gamma used when C&S is on and --enable-model-replacement is NOT (model replacement otherwise auto-computes gamma = k/(eta*m), capped).")
+    atk_group.add_argument("--cs-compute-benign-anchor", action="store_true", default=FLSettings.CS_COMPUTE_BENIGN_ANCHOR, help="Malicious clients first run a benign training pass on their clean partition to produce theta_ben (the C&S anchor). Off => anchor = theta_global.")
+    atk_group.add_argument("--cs-penalty-lambda", type=float, default=FLSettings.CS_PENALTY_LAMBDA, help="Coefficient on the C&S penalty term added to the FasterRCNN task loss.")
     atk_group.add_argument("--guarantee-target-objects", action="store_true", default=FLSettings.GUARANTEE_TARGET_OBJECTS, help="Rebalance partition indices so each attacker partition contains a minimum fraction/count of target-class images. Targeted attacks only.")
     atk_group.add_argument("--attacker-target-min-fraction", type=float, default=FLSettings.ATTACKER_TARGET_MIN_FRACTION, help="Minimum fraction of each attacker partition that must contain the target class.")
     atk_group.add_argument("--attacker-target-min-count", type=int, default=FLSettings.ATTACKER_TARGET_MIN_COUNT, help="Absolute floor on target-class images per attacker partition. Effective quota is max(fraction × |partition|, count).")
     atk_group.add_argument("--benign-target-floor", type=int, default=FLSettings.BENIGN_TARGET_FLOOR, help="Minimum number of target-class images each benign partition is allowed to retain when donating to attackers.")
+
+    # Detectability Harness (passive; observational only, does not alter aggregation)
+    det_group = parser.add_argument_group('Detectability Harness (passive)')
+    det_group.add_argument("--do-stealth-eval", action="store_true", default=FLSettings.DO_STEALTH_EVAL, help="Enable passive backdoor-detectability logging (Krum/norm-clip/clustering/median + per-layer profile). Does NOT alter aggregation.")
+    det_group.add_argument("--krum-f", type=int, default=FLSettings.KRUM_F, help="Assumed number of Byzantine clients f for Krum's (n-f-2) neighbor sum.")
+    det_group.add_argument("--multikrum-m", type=int, default=FLSettings.MULTIKRUM_M, help="Number of clients Multi-Krum keeps. <=0 auto-sets to n-f.")
+    det_group.add_argument("--normclip-c", type=float, default=FLSettings.NORMCLIP_C, help="Norm-bound detector multiplier: flag updates with L2 norm > C*median.")
 
     # Backdoor Properties
     bd_group = parser.add_argument_group('Backdoor Properties')
@@ -107,6 +119,15 @@ def parse_args():
     bd_group.add_argument("--block-size", type=int, default=BackdoorProperties.BLOCK_SIZE)
     bd_group.add_argument("--checker-square-px", type=int, default=BackdoorProperties.FLOATING_CHECKER_SQUARE_PX, help="Square size in px at model-input resolution for FLOATING_CHECKERBOARD")
     bd_group.add_argument("--rng-seed", type=int, default=BackdoorProperties.RNG_SEED)
+
+    # Regression-Head Backdoor (box transform). Active only with --attack-type
+    # TARGETED_BOX_TRANSFORM; the head is a no-op unless the dataset tags poison_mask.
+    rh_group = parser.add_argument_group('Regression-Head Backdoor (box transform)')
+    rh_group.add_argument("--box-transform-mode", type=str, default=None, choices=[m.value for m in BoxTransformMode], help="Displace ('shift') or scale ('shrink') the box-regression target of trigger-bearing target objects. None disables the regression-head surgery.")
+    rh_group.add_argument("--box-shift-dx", type=float, default=0.0, help="SHIFT: x displacement as a fraction of box width (or absolute px if --box-shift-absolute).")
+    rh_group.add_argument("--box-shift-dy", type=float, default=0.0, help="SHIFT: y displacement as a fraction of box height (or absolute px if --box-shift-absolute).")
+    rh_group.add_argument("--box-shift-absolute", action="store_true", default=False, help="SHIFT: interpret dx/dy as absolute pixels (model-input resolution) instead of box-size fractions.")
+    rh_group.add_argument("--box-shrink-factor", type=float, default=0.5, help="SHRINK: isotropic scale applied to box w/h about its center (0<f<1 shrinks the target box).")
 
     # Evaluation script Settings
     eval_group = parser.add_argument_group('Evaluation Settings')
@@ -136,10 +157,20 @@ def apply_settings(args):
     FLSettings.DO_MODEL_REPLACEMENT = args.enable_model_replacement
     FLSettings.NEUROTOXIN_ENABLED = args.enable_neurotoxin
     FLSettings.NEUROTOXIN_MASK_RATIO = args.neurotoxin_mask_ratio
+    FLSettings.CS_ENABLED = args.enable_constrain_and_scale
+    FLSettings.CS_COMPUTE_BENIGN_ANCHOR = args.cs_compute_benign_anchor
+    FLSettings.CS_PENALTY_LAMBDA = args.cs_penalty_lambda
+    FLSettings.CS_SCALE = args.cs_scale
     FLSettings.GUARANTEE_TARGET_OBJECTS = args.guarantee_target_objects
     FLSettings.ATTACKER_TARGET_MIN_FRACTION = args.attacker_target_min_fraction
     FLSettings.ATTACKER_TARGET_MIN_COUNT = args.attacker_target_min_count
     FLSettings.BENIGN_TARGET_FLOOR = args.benign_target_floor
+
+    # Detectability harness (passive)
+    FLSettings.DO_STEALTH_EVAL = args.do_stealth_eval
+    FLSettings.KRUM_F = args.krum_f
+    FLSettings.MULTIKRUM_M = args.multikrum_m
+    FLSettings.NORMCLIP_C = args.normclip_c
     
     # Attacker General
     FLSettings.ATTACKER_DATASET_MODE = args.client_train_ds_mode
@@ -189,6 +220,26 @@ def apply_settings(args):
     if len(secondary_parts) == 3:
         BackdoorProperties.TRIGGER_COLOR_SECONDARY = tuple(int(c.strip()) for c in secondary_parts)
 
+    # Regression-head backdoor (box transform). None disables; the RoI-head surgery is
+    # a no-op unless TARGETED_BOX_TRANSFORM tags poison_mask in the dataset. SHIFT_SHRINK
+    # combines both relative transforms (shrink about center, then shift).
+    if args.box_transform_mode is not None:
+        mode = BoxTransformMode(args.box_transform_mode)
+        BackdoorProperties.BOX_TRANSFORM_MODE = mode
+        params = {}
+        if mode in (BoxTransformMode.SHIFT, BoxTransformMode.SHIFT_SHRINK):
+            params.update({
+                "dx": args.box_shift_dx,
+                "dy": args.box_shift_dy,
+                "absolute": args.box_shift_absolute,
+            })
+        if mode in (BoxTransformMode.SHRINK, BoxTransformMode.SHIFT_SHRINK):
+            params["factor"] = args.box_shrink_factor
+        BackdoorProperties.BOX_TRANSFORM_PARAMS = params
+    else:
+        BackdoorProperties.BOX_TRANSFORM_MODE = None
+        BackdoorProperties.BOX_TRANSFORM_PARAMS = {}
+
     # Evaluation settings
     EvaluationSettings.NUM_WORKERS = args.evaluation_num_workers
     EvaluationSettings.BATCH_SIZE = args.evaluation_batch_size
@@ -214,11 +265,21 @@ def print_configuration_summary():
     print(f"{'SERVER_LR':30}: {FLSettings.SERVER_LR}")
     print(f"{'GAMMA_CAP':30}: {FLSettings.GAMMA_CAP}")
     print(f"{'POISON_RATE':30}: {BackdoorProperties.POISON_RATE}")
+    print(f"{'DO_STEALTH_EVAL':30}: {FLSettings.DO_STEALTH_EVAL}")
+    if FLSettings.DO_STEALTH_EVAL:
+        print(f"{'  KRUM_F':30}: {FLSettings.KRUM_F}")
+        print(f"{'  MULTIKRUM_M':30}: {FLSettings.MULTIKRUM_M} (<=0 -> auto n-f)")
+        print(f"{'  NORMCLIP_C':30}: {FLSettings.NORMCLIP_C}")
     print(f"{'GUARANTEE_TARGET_OBJECTS':30}: {FLSettings.GUARANTEE_TARGET_OBJECTS}")
     if FLSettings.GUARANTEE_TARGET_OBJECTS:
         print(f"{'ATTACKER_TARGET_MIN_FRAC':30}: {FLSettings.ATTACKER_TARGET_MIN_FRACTION}")
         print(f"{'ATTACKER_TARGET_MIN_COUNT':30}: {FLSettings.ATTACKER_TARGET_MIN_COUNT}")
         print(f"{'BENIGN_TARGET_FLOOR':30}: {FLSettings.BENIGN_TARGET_FLOOR}")
+    print(f"{'ATTACK_TYPE':30}: {BackdoorProperties.ATTACK_TYPE.name}")
+    if BackdoorProperties.ATTACK_TYPE == AttackType.TARGETED_BOX_TRANSFORM:
+        mode = BackdoorProperties.BOX_TRANSFORM_MODE
+        print(f"{'  BOX_TRANSFORM_MODE':30}: {mode.value if mode else None}")
+        print(f"{'  BOX_TRANSFORM_PARAMS':30}: {BackdoorProperties.BOX_TRANSFORM_PARAMS}")
     print(f"{'TRIGGER_PATTERN':30}: {BackdoorProperties.TRIGGER_PATTERN.name}")
     print(f"{'TRIGGER_ALPHA':30}: {BackdoorProperties.TRIGGER_ALPHA}")
     if BackdoorProperties.TRIGGER_PATTERN == TriggerType.FLOATING_CHECKERBOARD:

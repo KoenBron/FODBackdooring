@@ -5,6 +5,7 @@ from utils.global_settings import ProjectPaths, BackdoorProperties, TrainingSett
 from utils.dataset import CustomCocoDataset
 from utils.round_evaluator import RoundEvaluator
 from utils.metrics import torch_compute_magnitude, torch_compute_cosine_sim, torch_compute_l2_distance
+from FL.stealth_defenses import analyze as stealth_analyze
 
 from torch.utils.data import DataLoader
 
@@ -134,7 +135,7 @@ class Server:
         is_attacker = client_config["is_attacker"]
         client_type = "Attacker" if is_attacker else "Benign"
         client_update = {
-            "cid": client_index,# Partition_id = cid on the client-side, server side uses internal node_id
+            "cid": client_index,# Same namespace everywhere: client_index from select_clients == cid == ATTACKER_IDS. No flwr node_id remap in the custom path.
             "type": client_type,
 # Placeholder values to be determined at aggregation time
             "magnitude": None,
@@ -153,10 +154,37 @@ class Server:
     def aggregate_and_evaluate(self, round, num_attackers):
         # Aggregate the client updates
         print(f"[ROUND {round}] aggregating", flush=True)
+        # Broadcast (pre-aggregation) global; the reference all client deltas are
+        # measured against. self.wrapper still holds it until set_weights() below.
+        broadcast_global = self.wrapper.get_weights()
         new_global_weights = self.strategy.aggregate(
             client_updates=list(self.client_round_updates.values()),# Expects a list
-            global_weights=self.wrapper.get_weights(),# Needed by FedOpt for the (1-η)·w_global + η·w_avg blend; ignored by FedAvg
+            global_weights=broadcast_global,# Needed by FedOpt for the (1-η)·w_global + η·w_avg blend; ignored by FedAvg
         )
+
+        # Passive backdoor-detectability harness (B1). OBSERVATIONAL ONLY: reads
+        # the raw client updates before they are freed below; never alters the
+        # aggregation. Training is identical whether this runs or not.
+        if FLSettings.DO_STEALTH_EVAL:
+            mk_m = FLSettings.MULTIKRUM_M if FLSettings.MULTIKRUM_M and FLSettings.MULTIKRUM_M > 0 else None
+            # Label by who actually participated AND attacked THIS round, read from the
+            # per-client flag recorded in receive_client_update — NOT the global
+            # ATTACKER_IDS roster. Equivalent under full participation, but keeps the
+            # label-aware metrics correct under partial participation / --use-client-schedule:
+            # a scheduled-out attacker is simply absent and can never be mislabeled positive.
+            round_attacker_ids = {cid for cid, u in self.client_round_updates.items() if u["type"] == "Attacker"}
+            per_client_rows, summary_row = stealth_analyze(
+                round=round,
+                client_weights={cid: u["weights"] for cid, u in self.client_round_updates.items()},
+                global_weights=broadcast_global,
+                attacker_ids=round_attacker_ids,
+                num_samples={cid: u["num_samples"] for cid, u in self.client_round_updates.items()},
+                krum_f=FLSettings.KRUM_F,
+                multikrum_m=mk_m,
+                normclip_c=FLSettings.NORMCLIP_C,
+            )
+            self.logger.log_stealth_per_client(per_client_rows)
+            self.logger.log_stealth_summary(summary_row)
 
         for key in self.client_round_updates.keys():
             update = self.client_round_updates[key]
