@@ -95,7 +95,7 @@ class FasterRCNNWrapper(Interface):
         torch.cuda.empty_cache()
         return {"val_loss": avg_loss}, num_samples
 
-    def train_step(self, dataloader, epochs, device, optimizer_config, partition_id=None, optimizer=None, grad_mask=None, loss_augment_fn=None):
+    def train_step(self, dataloader, epochs, device, optimizer_config, partition_id=None, optimizer=None, grad_mask=None, loss_augment_fn=None, freeze_groups=None, epoch_callback=None):
         """
         Complete training loop for FasterRCNN
         Return: (weight tensor on CPU, number of samples, training metrics)
@@ -106,9 +106,26 @@ class FasterRCNNWrapper(Interface):
 
         loss_augment_fn: optional callable (model -> scalar Tensor). When supplied, its
         return value is added to the FasterRCNN task losses before backward, so a single
-        optimizer step minimizes both. Used to attach the C&S penalty without rewriting
-        the training loop.
+        optimizer step minimizes both. Computed in fp32 OUTSIDE the autocast block — small
+        anchor distances get rounded to zero in fp16 and a penalty would silently vanish.
+
+        freeze_groups: optional iterable of named-parameter names to freeze for the
+        duration of this train_step. Reserved for LaySelFL CT; raises NotImplementedError
+        when set until the LaySelFL orchestrator (Phase 2) implements the proper
+        requires_grad=False + optimizer-rebuild path.
+
+        epoch_callback: optional callable (epoch_idx, state_dict_cpu) -> None invoked at the
+        end of every epoch. The state dict is a CPU-side clone so the caller can stash many
+        epoch snapshots without GPU memory pressure. Used by LaySelFL SLI's per-epoch L1
+        scoring and by Pilot A's retroactive selection logs.
         """
+        if freeze_groups is not None:
+            raise NotImplementedError(
+                "freeze_groups is reserved for LaySelFL CT (alternating sensitive-subset "
+                "training with non-subset params frozen). Implementation lands with the "
+                "LaySelFL orchestrator in Phase 2."
+            )
+
         # Move model to gpu and put it in train mode
         self.model.to(device)
         self.model.train()
@@ -184,8 +201,13 @@ class FasterRCNNWrapper(Interface):
                 with torch.amp.autocast("cuda", enabled=(scaler is not None)):
                     loss_dict = self.model(images, targets)
                     losses = sum(loss for loss in loss_dict.values())# Total Losses
-                    if loss_augment_fn is not None:
-                        losses = losses + loss_augment_fn(self.model)
+                # Penalty term lives OUTSIDE autocast. Anchor distances are typically
+                # tiny (||theta - anchor||^2 from a few SGD steps of divergence); fp16
+                # rounds them to zero and the penalty silently disappears. Cast losses
+                # to fp32 before adding so the sum stays in full precision; autograd
+                # handles the fp32->fp16 conversion at the AMP boundary on its own.
+                if loss_augment_fn is not None:
+                    losses = losses.float() + loss_augment_fn(self.model)
 
                 # Backward pass, reset gradients
                 optimizer.zero_grad()
@@ -234,6 +256,14 @@ class FasterRCNNWrapper(Interface):
                 }
                 # Rename to remain consistent with logger implementation, ugly
                 final_epoch_losses["train_loss"] = final_epoch_losses.pop("total_loss")
+
+            # Per-epoch snapshot hook. CPU-cloned so orchestrators (LaySelFL SLI, Pilot A)
+            # can keep many epoch states across N epochs without GPU memory pressure.
+            # Fires AFTER the batch loop but BEFORE moving the model off GPU so
+            # state_dict() reads from the live GPU model on every epoch consistently.
+            if epoch_callback is not None:
+                epoch_state = {k: v.detach().cpu().clone() for k, v in self.model.state_dict().items()}
+                epoch_callback(epoch, epoch_state)
 
 
         self.model.cpu()

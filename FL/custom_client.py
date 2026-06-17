@@ -5,8 +5,6 @@ from models.fasterrcnn.wrapper import FasterRCNNWrapper
 from utils.dataset import CustomCocoDataset
 from utils.global_settings import ProjectPaths, BackdoorProperties, FLSettings, TrainingSettings
 from utils.partitioning import get_shuffled_indices, get_shuffled_indices_with_target_quota, partition_dataset
-from FL.cs_loss import cs_global_l2
-from FL.cs_localization import compute_bc_mask
 
 class ClientManager:
     def __init__(self, num_clients: int):
@@ -192,66 +190,6 @@ class ClientManager:
 
         return replaced_weights
 
-    def _do_constrain_and_scale_submission(self, local_weights, global_weights, scale, mask=None):
-        """
-        Build the attacker's submission as
-
-            w_submit_p = global_p + (mask_p · scale) · (local_p − global_p)
-
-        for floating-point parameters, with `mask` defaulting to all-ones (uniform).
-        Integer buffers are passed through unchanged.
-
-        `scale` is either FLSettings.CS_SCALE (when only C&S is on) or the model-
-        replacement auto-gamma = k / (eta * m) (capped at FLSettings.GAMMA_CAP)
-        when both C&S and model replacement are on. `mask`, when supplied, is a
-        {name -> 0/1 tensor} dict from FL.cs_localization.compute_bc_mask — for
-        LSA-style submission where non-BC params fall back to global_p.
-
-        Pure: does not mutate either input dict.
-        """
-        submitted = {}
-        for name, g in global_weights.items():
-            l = local_weights[name]
-            if not l.is_floating_point():
-                submitted[name] = l
-                continue
-            delta = l - g
-            if mask is not None and name in mask:
-                m_t = mask[name].to(l.device, dtype=l.dtype)
-                submitted[name] = g + m_t * scale * delta
-            else:
-                submitted[name] = g + scale * delta
-        return submitted
-
-    def _run_benign_anchor_pass(self, server_weights, client_index):
-        """
-        Train the wrapper for one benign client's worth of epochs on the attacker's
-        clean partition, starting from server_weights, and return theta_ben as a
-        CPU-side {name -> tensor} dict. Used as the anchor for C&S when
-        FLSettings.CS_COMPUTE_BENIGN_ANCHOR is set. Caller must reset the wrapper
-        to server_weights before the malicious training pass.
-        """
-        benign_dl = DataLoader(
-            self.subsets_benign[client_index],
-            batch_size=TrainingSettings.TRAINING_BATCH_SIZE,
-            num_workers=TrainingSettings.NUM_WORKERS,
-            collate_fn=FasterRCNNWrapper.get_collate_fn(),
-            pin_memory=True,
-            shuffle=True,
-        )
-        self.set_weights(weights=server_weights)
-        print(f"  [client {client_index}] C&S benign anchor pass", flush=True)
-        self.wrapper.train_step(
-            dataloader=benign_dl,
-            epochs=TrainingSettings.BENIGN_CLIENT_LOCAL_EPOCHS,
-            device=self.device,
-            optimizer_config={"lr": TrainingSettings.BENIGN_CLIENT_LEARNING_RATE},
-            partition_id=client_index,
-            optimizer=None,
-            grad_mask=None,
-        )
-        return {k: v.detach().clone().cpu() for k, v in self.get_parameters().items()}
-
     def get_parameters(self):
         # Delegate to wrapper to make client implementation model agnsostic
         return self.wrapper.get_weights()
@@ -275,13 +213,6 @@ class ClientManager:
         if server_weights is None:
             raise Exception("Client manager error: No server_weights were supplied for training")
 
-        # C&S benign anchor pass: optional, attacker-only. Runs a benign training
-        # pass first and stashes theta_ben, then the regular set_weights below resets
-        # the wrapper to theta_global for the malicious pass.
-        cs_anchor = None  # {name -> CPU tensor} or None
-        if client_is_attacker and FLSettings.CS_ENABLED and FLSettings.CS_COMPUTE_BENIGN_ANCHOR:
-            cs_anchor = self._run_benign_anchor_pass(server_weights, client_index)
-
         # Load starting point for training
         self.set_weights(weights=server_weights)
         train_dl = self._retrieve_client_dataloader(client_index=client_index, is_attacker=client_is_attacker)
@@ -294,19 +225,6 @@ class ClientManager:
         if client_is_attacker and FLSettings.NEUROTOXIN_ENABLED and self.prev_global_weights is not None:
             grad_mask = self._compute_neurotoxin_mask(ratio=FLSettings.NEUROTOXIN_MASK_RATIO)
 
-        # C&S per-step loss augmentation. Anchor defaults to theta_global when the
-        # benign anchor pass wasn't run; the penalty then reduces to the original
-        # Bagdasaryan stay-close-to-the-broadcast version.
-        loss_augment_fn = None
-        if client_is_attacker and FLSettings.CS_ENABLED:
-            if cs_anchor is None:
-                cs_anchor = {k: v.detach().clone().cpu() for k, v in server_weights.items()
-                             if hasattr(v, "is_floating_point") and v.is_floating_point()}
-            cs_anchor_device = {k: v.to(self.device, non_blocking=True) for k, v in cs_anchor.items()}
-            cs_lambda = FLSettings.CS_PENALTY_LAMBDA
-            def loss_augment_fn(model, _anchor=cs_anchor_device, _lam=cs_lambda):
-                return cs_global_l2(model, _anchor, _lam)
-
         lr = TrainingSettings.MALICIOUS_CLIENT_LEARNING_RATE if client_is_attacker else TrainingSettings.BENIGN_CLIENT_LEARNING_RATE
         # Perform the training
         _, num_samples, final_epoch_losses, self.optimizer = self.wrapper.train_step(
@@ -317,7 +235,6 @@ class ClientManager:
             partition_id=client_index,
             optimizer=None,
             grad_mask=grad_mask,
-            loss_augment_fn=loss_augment_fn,
         )
 
         # Retrieve the updated parameters
@@ -336,40 +253,6 @@ class ClientManager:
                     # Just in case
                     metrics[k] = float(v)
 
-        # Attacker-side submission. The two amplification mechanisms compose:
-        # C&S is a training-time stealth penalty, model replacement is a submission-
-        # time amplification, so both can be on. Routing:
-        #   - C&S on (regardless of MR): unified scale-and-mask path below; scale is
-        #     model replacement's auto-gamma = k/(eta*m) (capped) when MR is also on,
-        #     otherwise CS_SCALE. compute_bc_mask is a stub returning None for now,
-        #     so the mask branch is inert until the localization module fills it in.
-        #   - C&S off, MR on: original Bagdasaryan formula, untouched.
-        # if client_is_attacker and FLSettings.CS_ENABLED:
-        #     if FLSettings.DO_MODEL_REPLACEMENT:
-        #         k = FLSettings.CLIENTS_PER_ROUND
-        #         eta = FLSettings.SERVER_LR
-        #         m = client_config["n_mal_clients"]
-        #         gamma_uncapped = k / (eta * m)
-        #         scale = min(gamma_uncapped, FLSettings.GAMMA_CAP)
-        #         if gamma_uncapped > FLSettings.GAMMA_CAP:
-        #             print(f"[MODEL REPLACEMENT] gamma capped: {gamma_uncapped:.3f} -> {scale:.3f} (k={k}, eta={eta}, m={m})")
-        #     else:
-        #         scale = FLSettings.CS_SCALE
-        #     u_ben = None
-        #     u_mal = None
-        #     if cs_anchor is not None:
-        #         u_ben = {k_: cs_anchor[k_] - server_weights[k_].detach().cpu()
-        #                  for k_ in cs_anchor if k_ in server_weights}
-        #         u_mal = {k_: updated_params[k_] - server_weights[k_].detach().cpu()
-        #                  for k_ in updated_params
-        #                  if k_ in server_weights and updated_params[k_].is_floating_point()}
-        #     mask = compute_bc_mask(u_ben=u_ben, u_mal=u_mal)
-        #     updated_params = self._do_constrain_and_scale_submission(
-        #         local_weights=updated_params,
-        #         global_weights=server_weights,
-        #         scale=scale,
-        #         mask=mask,
-        #     )
         if client_is_attacker and FLSettings.DO_MODEL_REPLACEMENT:
             updated_params = self._do_model_replacement(local_weights=updated_params, global_weights=server_weights, m=client_config["n_mal_clients"])
 
