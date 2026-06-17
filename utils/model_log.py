@@ -112,7 +112,7 @@ class ModelLogger:
         Logs the contents of the entire script used to run the training
         """
         script_output_path = os.path.join(self.output_path, "training_script.txt")
-        script_input_path = os.path.join(ProjectPaths.ROOT_DIR, "run_custom_fl_train.sh")
+        script_input_path = os.path.join(ProjectPaths.ROOT_DIR, "run_fl_train.sh")
 
         # Copy the lines
         shutil.copyfile(script_input_path, script_output_path)

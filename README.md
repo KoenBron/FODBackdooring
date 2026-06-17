@@ -42,7 +42,7 @@ To navigate the project easily, the root files and directories are grouped by th
 ### Training & Evaluation Scripts
 These are the main entry points for running experiments.
 * `train_central.py` & `run_train_central.sh`: Scripts to train the Faster R-CNN model in a standard, centralized server setting (used as a baseline).
-* `custom_fl_train.py` & `run_custom_fl_train.sh`: The core scripts for training the model in a simulated Federated Learning environment (default aggregation strategy: FedAvg).
+* `custom_fl_train.py` & `run_fl_train.sh`: The core scripts for training the model in a simulated Federated Learning environment (default aggregation strategy: FedAvg).
 * `train.py` & `run_train.sh`: Legacy Federated Learning training scripts (alternative entry point / legacy flwr implementation).
 * `evaluation.py` & `run_evaluation.sh`: Scripts dedicated to evaluating trained models on utility (mAP) and backdoor efficacy (ASR).
 * `test_wrapper.py`: Example of helper script to validate wrapper implementation for training purposes.
