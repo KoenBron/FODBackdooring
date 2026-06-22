@@ -7,7 +7,11 @@ from utils.global_settings import ProjectPaths, BackdoorProperties, FLSettings, 
 from utils.partitioning import get_shuffled_indices, get_shuffled_indices_with_target_quota, partition_dataset
 
 class ClientManager:
-    def __init__(self, num_clients: int):
+    def __init__(self, num_clients: int, logger):
+        # Logger holds the run's output paths plus per-protocol sub-loggers
+        # (e.g. logger.pilot_a). AttackProtocols read self.manager.logger
+        # to dispatch their writes; keeps I/O concerns out of the protocols.
+        self.logger = logger
         self.is_attacker = False
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -199,9 +203,13 @@ class ClientManager:
         self.wrapper.set_weights(weights=weights)
 
     def client_side_train(self, server_weights=None, client_config=None):
-        """
-        First loads the server_weights onto the client manager model and then
-        performs the client side training and returns the training results as pytorch tensors
+        """Dispatch entry point.
+
+        Loads server_weights onto the wrapper and routes to the benign path or
+        to the AttackProtocol selected by FLSettings.ATTACK_PROTOCOL. Per the
+        Phase 0a/0b layout, the outer FL loop knows nothing about which
+        protocol runs — every protocol must return the same
+        (updated_params, num_samples, metrics) shape.
         """
         try:
             client_index = client_config["index"]
@@ -213,48 +221,97 @@ class ClientManager:
         if server_weights is None:
             raise Exception("Client manager error: No server_weights were supplied for training")
 
-        # Load starting point for training
+        # Hand the wrapper theta_t. Protocols that need to redo this (e.g.
+        # LaySelFL between SLI trajectories and CT) just call set_weights again.
         self.set_weights(weights=server_weights)
-        train_dl = self._retrieve_client_dataloader(client_index=client_index, is_attacker=client_is_attacker)
 
-        num_epochs = TrainingSettings.MALICIOUS_CLIENT_LOCAL_EPOCHS if client_is_attacker else TrainingSettings.BENIGN_CLIENT_LOCAL_EPOCHS
+        if not client_is_attacker:
+            return self._benign_path(client_index)
 
-        # Build Neurotoxin mask for malicious clients when enabled and a previous-round
-        # global is cached. First attacker round after start/resume falls back to no mask.
-        grad_mask = None
-        if client_is_attacker and FLSettings.NEUROTOXIN_ENABLED and self.prev_global_weights is not None:
-            grad_mask = self._compute_neurotoxin_mask(ratio=FLSettings.NEUROTOXIN_MASK_RATIO)
+        # Attacker routing. Protocol imports are lazy so adding a new
+        # AttackProtocol means touching only this dispatcher and the new file.
+        protocol = FLSettings.ATTACK_PROTOCOL
+        if protocol == "composable":
+            return self._composable_attacker_path(server_weights, client_config)
+        if protocol == "pilot_a":
+            from FL.attack_protocols.pilot_a import PilotAProtocol
+            return PilotAProtocol(self).run(server_weights, client_config)
+        raise NotImplementedError(
+            f"--attack-protocol {protocol!r} selected but not yet wired. "
+            f"LaySelFL and Ours land in Phase 2 and Phase 3."
+        )
 
-        lr = TrainingSettings.MALICIOUS_CLIENT_LEARNING_RATE if client_is_attacker else TrainingSettings.BENIGN_CLIENT_LEARNING_RATE
-        # Perform the training
+    # ---- Benign and composable-attacker paths ----
+
+    def _benign_path(self, client_index):
+        """Honest client. One pass on the clean partition; no grad mask, no
+        augmenter, no submission scaling. Byte-identical to the pre-Phase-0b
+        benign branch."""
+        train_dl = self._retrieve_client_dataloader(client_index=client_index, is_attacker=False)
         _, num_samples, final_epoch_losses, self.optimizer = self.wrapper.train_step(
             dataloader=train_dl,
-            epochs= num_epochs,
+            epochs=TrainingSettings.BENIGN_CLIENT_LOCAL_EPOCHS,
             device=self.device,
-            optimizer_config={"lr": lr},
+            optimizer_config={"lr": TrainingSettings.BENIGN_CLIENT_LEARNING_RATE},
+            partition_id=client_index,
+            optimizer=None,
+            grad_mask=None,
+        )
+        updated_params = self.get_parameters()
+        return updated_params, num_samples, self._build_metrics(client_index, final_epoch_losses)
+
+    def _composable_attacker_path(self, server_weights, client_config):
+        """Today's customizable malicious-client procedure.
+
+        Composes independently-toggled knobs:
+          --enable-neurotoxin       : gradient mask built from theta_t - theta_{t-1}
+          --enable-model-replacement: Bagdasaryan submission-time gamma-scaling
+          --attack-type TARGETED_*  : dataset-level poisoning (handled inside
+                                      CustomCocoDataset, not here)
+
+        Lives on ClientManager rather than as an AttackProtocol subclass because
+        its surface IS the knob set; the preset Protocols (PilotA / LaySelFL /
+        Ours) have their own per-round procedures and don't expose these knobs.
+        """
+        client_index = client_config["index"]
+        train_dl = self._retrieve_client_dataloader(client_index=client_index, is_attacker=True)
+
+        # Neurotoxin mask: requires a cached previous global to estimate the
+        # benign-gradient direction. First attack round after start/resume
+        # falls back to no mask (prev_global_weights is None then).
+        grad_mask = None
+        if FLSettings.NEUROTOXIN_ENABLED and self.prev_global_weights is not None:
+            grad_mask = self._compute_neurotoxin_mask(ratio=FLSettings.NEUROTOXIN_MASK_RATIO)
+
+        _, num_samples, final_epoch_losses, self.optimizer = self.wrapper.train_step(
+            dataloader=train_dl,
+            epochs=TrainingSettings.MALICIOUS_CLIENT_LOCAL_EPOCHS,
+            device=self.device,
+            optimizer_config={"lr": TrainingSettings.MALICIOUS_CLIENT_LEARNING_RATE},
             partition_id=client_index,
             optimizer=None,
             grad_mask=grad_mask,
         )
-
-        # Retrieve the updated parameters
         updated_params = self.get_parameters()
 
-        # Bundle metrics and info needed by the logger
-        metrics = {
-            "partition_id": client_index
-        }
+        if FLSettings.DO_MODEL_REPLACEMENT:
+            updated_params = self._do_model_replacement(
+                local_weights=updated_params,
+                global_weights=server_weights,
+                m=client_config["n_mal_clients"],
+            )
+
+        return updated_params, num_samples, self._build_metrics(client_index, final_epoch_losses)
+
+    def _build_metrics(self, client_index, final_epoch_losses):
+        """Shared metrics packaging — partition id + the averaged final-epoch
+        loss components produced by wrapper.train_step."""
+        metrics = {"partition_id": client_index}
         if final_epoch_losses is not None:
             for k, v in final_epoch_losses.items():
                 if hasattr(v, 'item'):
-                    # Tensor case
                     metrics[k] = v.item()
                 else:
-                    # Just in case
                     metrics[k] = float(v)
-
-        if client_is_attacker and FLSettings.DO_MODEL_REPLACEMENT:
-            updated_params = self._do_model_replacement(local_weights=updated_params, global_weights=server_weights, m=client_config["n_mal_clients"])
-
-        return updated_params, num_samples, metrics
+        return metrics
 

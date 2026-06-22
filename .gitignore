@@ -9,3 +9,4 @@ run_evaluation.sh
 run_slurm_train.sh
 run_fl_train.sh
 *.swp
+summaries/

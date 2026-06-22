@@ -262,9 +262,8 @@ class FasterRCNNWrapper(Interface):
             # Fires AFTER the batch loop but BEFORE moving the model off GPU so
             # state_dict() reads from the live GPU model on every epoch consistently.
             if epoch_callback is not None:
-                epoch_state = {k: v.detach().cpu().clone() for k, v in self.model.state_dict().items()}
+                epoch_state = self.get_weights()
                 epoch_callback(epoch, epoch_state)
-
 
         self.model.cpu()
         torch.cuda.empty_cache()

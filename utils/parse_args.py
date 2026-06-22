@@ -77,6 +77,7 @@ def parse_args():
 
     # Attacker Configuration
     atk_group = parser.add_argument_group('Attacker Configuration')
+    atk_group.add_argument("--attack-protocol", type=str, default=FLSettings.ATTACK_PROTOCOL, choices=["composable", "pilot_a", "laysel_fl", "ours"], help="Top-level malicious-client routing. 'composable' = today's knob-tuned path (Neurotoxin / model replacement / TARGETED_* attack composed via the existing --enable-* flags). 'pilot_a' / 'laysel_fl' / 'ours' = preset AttackProtocol recipes (not yet wired in Phase 0b; selecting them raises NotImplementedError).")
     atk_group.add_argument("--attacker-fraction", type=float, default=FLSettings.ATTACKER_FRACTION, help="Fraction of malicious clients")
     atk_group.add_argument("--client-train-ds-mode", type=str, default=FLSettings.ATTACKER_DATASET_MODE, help="Dataset mode for attackers")
     atk_group.add_argument("--enable-model-replacement", action="store_true", default=FLSettings.DO_MODEL_REPLACEMENT, help="Enable the model replacement strategy for malicious clients to amplify backdoors")
@@ -150,6 +151,7 @@ def apply_settings(args):
     FLSettings.GAMMA_CAP = args.gamma_cap
     FLSettings.SEED = args.seed
     FLSettings.PARTITIONING_SEED = args.partitioning_seed
+    FLSettings.ATTACK_PROTOCOL = args.attack_protocol
     FLSettings.DO_MODEL_REPLACEMENT = args.enable_model_replacement
     FLSettings.NEUROTOXIN_ENABLED = args.enable_neurotoxin
     FLSettings.NEUROTOXIN_MASK_RATIO = args.neurotoxin_mask_ratio
@@ -253,6 +255,7 @@ def print_configuration_summary():
     print(f"{'TOTAL_CLIENTS':30}: {FLSettings.TOTAL_CLIENTS}")
     print(f"{'CLIENTS_PER_ROUND':30}: {FLSettings.CLIENTS_PER_ROUND}")
     print(f"{'ATTACKER_FRACTION':30}: {FLSettings.ATTACKER_FRACTION} (Clients: {FLSettings.ATTACKER_IDS})")
+    print(f"{'ATTACK_PROTOCOL':30}: {FLSettings.ATTACK_PROTOCOL}")
     print(f"{'AGGREGATION_STRATEGY':30}: {FLSettings.AGGREGATION_STRATEGY}")
     print(f"{'SERVER_LR':30}: {FLSettings.SERVER_LR}")
     print(f"{'GAMMA_CAP':30}: {FLSettings.GAMMA_CAP}")

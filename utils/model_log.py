@@ -10,6 +10,8 @@ from torch.utils.tensorboard import SummaryWriter
 from utils.global_settings import ProjectPaths, BackdoorProperties, TrainingSettings, FLSettings
 from evaluation import BatchEvaluator
 from FL.stealth_defenses import PER_CLIENT_COLUMNS, SUMMARY_COLUMNS
+from FL.attack_state import AttackState
+from FL.attack_protocols.pilot_a import PilotALogger
 
 class ModelLogger:
     def __init__(self, custom_path=None, config_dict=None, args=None):
@@ -83,6 +85,21 @@ class ModelLogger:
                 raise Exception(f"Path {custom_path} of model to resume from is not a directory")
         
         print(f"---------Saving Model Logs to: {self.output_path}")
+
+        # Attack persistence + per-protocol sub-loggers. ModelLogger owns the
+        # paths and orchestrates load/save; AttackState stays a singleton so
+        # protocols can use accessors without passing the logger through every
+        # call (see FL/attack_state.py). load() is a silent no-op on fresh
+        # runs and restores the previous shift's carrying sets on resume.
+        attack_logs_dir = os.path.join(self.output_path, "attack_logs")
+        os.makedirs(attack_logs_dir, exist_ok=True)
+        self._attack_state_path = os.path.join(attack_logs_dir, "attack_state.json")
+        self.attack_state = AttackState
+        self.attack_state.load(self._attack_state_path)
+        # Per-protocol sub-loggers. Each owns one specific output schema and
+        # the subdirectory it writes into. Eager construction keeps the
+        # protocol code straight-line (no None checks in dispatchers).
+        self.pilot_a = PilotALogger(attack_logs_dir)
 
         # Write the script containing the training settings there
         self.log_training_script()
@@ -209,6 +226,14 @@ class ModelLogger:
         """
         with open(self.stealth_summary_path, 'a', newline='') as f:
             csv.writer(f).writerow([summary_row.get(col, "") for col in SUMMARY_COLUMNS])
+
+    def save_attack_state(self):
+        """Persist the current AttackState snapshot to this run's attack_logs/.
+        Called after every round-aggregation in the FL loop. Atomic write
+        inside AttackState.save() means a kill mid-write leaves the previous
+        snapshot intact rather than half-written garbage — important on the
+        4-hour cluster shift boundary."""
+        self.attack_state.save(self._attack_state_path)
 
     def reset_loss(self):
         """

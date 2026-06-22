@@ -136,6 +136,17 @@ class FLSettings:
     AGGREGATION_STRATEGY = "fedavg"
     DO_MODEL_REPLACEMENT = False
 
+    # Top-level malicious-client routing. "composable" routes to the today's
+    # knob-tuned path on ClientManager (Neurotoxin / model replacement / attack
+    # type composed independently). The other values route to preset
+    # AttackProtocol subclasses with their own per-round procedures:
+    #   - "pilot_a"   : observational two-trajectory pilot, no penalty applied
+    #   - "laysel_fl" : Li et al. CVPR 2026 baseline (SLI + CT + TC)
+    #   - "ours"      : per-group benign-anchored constrain-and-scale
+    # Phase 0b wires only "composable" — the other three raise NotImplementedError
+    # in the dispatcher until their AttackProtocol files land in later phases.
+    ATTACK_PROTOCOL = "composable"
+
     # FedOpt / server-side learning rate. Only consulted when AGGREGATION_STRATEGY == "fedopt"
     # by the strategy itself; the model-replacement scaler always reads it (defaults to 1.0
     # so behavior under fedavg is unchanged). GAMMA_CAP bounds the replacement scaler γ.
