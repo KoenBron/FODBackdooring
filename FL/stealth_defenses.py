@@ -20,47 +20,43 @@ Modularity:
     here plus filling it in analyze().
   * Each defense is a standalone function over a shared PairwiseStats, so a new
     defense is: write the fn -> call it in analyze() -> add its columns.
-  * The parameter->group map is injectable (model-agnostic); the default targets
-    torchvision Faster R-CNN parameter names.
+  * Per-group decomposition uses the 13-group map from FL.groups — same map the
+    localization protocols (PilotA, future LaySelFL / Ours) use. The harness
+    has no parallel group definition; FL.groups is the single source of truth.
 """
 
 from __future__ import annotations
 import math
 import torch
 
+from FL.groups import GROUP_NAMES, name_to_group
+
 # ----------------------------------------------------------------------------
-# Parameter grouping (model-agnostic; default = torchvision Faster R-CNN names)
+# Parameter grouping (delegated to FL.groups)
 # ----------------------------------------------------------------------------
 
-# (prefix, group) checked in order, first match wins. Pass a different tuple to
-# analyze() for other architectures.
-DEFAULT_PARAM_GROUPS = (
-    ("backbone.body", "backbone"),
-    ("backbone.fpn", "fpn"),
-    ("rpn", "rpn"),
-    ("roi_heads.box_head", "roi_box_head"),
-    ("roi_heads.box_predictor.cls_score", "roi_cls_score"),
-    ("roi_heads.box_predictor.bbox_pred", "roi_bbox_pred"),
-)
-GROUP_FALLBACK = "other"
+# State_dict entries that aren't in any group (e.g. BN running_mean / running_var
+# — they're floats and propagate during aggregation, so they belong to the
+# energy budget, just not to any learnable-param group). "other" catches them.
+_STEALTH_GROUPS = list(GROUP_NAMES) + ["other"]
 
 
-def group_names(group_map=DEFAULT_PARAM_GROUPS):
-    return [g for _, g in group_map] + [GROUP_FALLBACK]
+def _group_of(name):
+    """Group bucket for a state_dict key.
 
-
-def group_of(name, group_map=DEFAULT_PARAM_GROUPS):
-    for prefix, group in group_map:
-        if name.startswith(prefix):
-            return group
-    return GROUP_FALLBACK
+    FL.groups.name_to_group is keyed on named_parameters() names; it returns
+    None for anything else (BN buffers etc.). The harness measures the FULL
+    state_dict delta, so unmatched names fall into 'other' rather than being
+    dropped.
+    """
+    return name_to_group(name) or "other"
 
 
 # ----------------------------------------------------------------------------
 # CSV schema (single source of truth, imported by the logger)
 # ----------------------------------------------------------------------------
 
-_GROUP_COLS = [f"dl2_{g}" for g in group_names()]
+_GROUP_COLS = [f"dl2_{g}" for g in _STEALTH_GROUPS]
 
 PER_CLIENT_COLUMNS = [
     "round", "cid", "type", "is_attacker", "num_samples",
@@ -88,7 +84,7 @@ SUMMARY_COLUMNS = [
 # Update extraction
 # ----------------------------------------------------------------------------
 
-def compute_delta(client_weights, global_weights, group_map=DEFAULT_PARAM_GROUPS):
+def compute_delta(client_weights, global_weights):
     """
     Delta = theta_client - theta_broadcast over floating-point parameters only.
     Returns (flat_delta: 1-D float32 CPU tensor, group_l2: {group: L2 norm}).
@@ -96,13 +92,13 @@ def compute_delta(client_weights, global_weights, group_map=DEFAULT_PARAM_GROUPS
     and they would otherwise pollute the norm.
     """
     parts = []
-    group_sq = {g: 0.0 for g in group_names(group_map)}
+    group_sq = {g: 0.0 for g in _STEALTH_GROUPS}
     for k, w in client_weights.items():
         if not torch.is_floating_point(w):
             continue
         d = (w.detach().cpu().float() - global_weights[k].detach().cpu().float()).flatten()
         parts.append(d)
-        group_sq[group_of(k, group_map)] += float(torch.dot(d, d))
+        group_sq[_group_of(k)] += float(torch.dot(d, d))
     flat = torch.cat(parts) if parts else torch.zeros(1)
     group_l2 = {g: math.sqrt(max(0.0, s)) for g, s in group_sq.items()}
     return flat, group_l2
@@ -261,8 +257,7 @@ def _isnan(x):
 # ----------------------------------------------------------------------------
 
 def analyze(round, client_weights, global_weights, attacker_ids,
-            num_samples=None, krum_f=1, multikrum_m=None, normclip_c=2.0,
-            group_map=DEFAULT_PARAM_GROUPS):
+            num_samples=None, krum_f=1, multikrum_m=None, normclip_c=2.0):
     """
     Run the full passive battery for one round.
 
@@ -272,12 +267,12 @@ def analyze(round, client_weights, global_weights, attacker_ids,
     cids = sorted(client_weights.keys())
     attacker_ids = set(attacker_ids)
     num_samples = num_samples or {}
-    gnames = group_names(group_map)
+    gnames = _STEALTH_GROUPS
 
     # 1. Updates + per-group energy
     deltas, group_l2 = {}, {}
     for c in cids:
-        flat, gl = compute_delta(client_weights[c], global_weights, group_map)
+        flat, gl = compute_delta(client_weights[c], global_weights)
         deltas[c], group_l2[c] = flat, gl
 
     stats = PairwiseStats(deltas)

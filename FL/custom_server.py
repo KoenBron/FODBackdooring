@@ -12,6 +12,16 @@ from torch.utils.data import DataLoader
 import torch
 import os
 
+
+# Attack protocols whose submission is a benign-looking endpoint by design
+# (PilotA submits its ben1 trajectory's final weights for observational
+# localization). Running the passive stealth harness on these would label
+# the submission "Attacker" but every defense's AUC would collapse to
+# chance — meaningless rows for downstream analysis, and ~O(n^2 d) CPU work
+# per round we'd rather not pay. Grow this set as more observational
+# protocols are added.
+_OBSERVATIONAL_PROTOCOLS = {"pilot_a"}
+
 class Server:
     def __init__(self, strategy: str, logger, checkpoint_id=None):
         self.logger = logger
@@ -111,6 +121,25 @@ class Server:
         }
         torch.save(checkpoint, checkpoint_path)
 
+    def _should_run_stealth(self, round_attacker_ids):
+        """Decide whether to run the passive stealth harness this round.
+
+        Three gates, all must pass:
+          - DO_STEALTH_EVAL is on (the kill switch).
+          - At least one attacker participated this round — otherwise every
+            label-aware metric is NaN and the row is dead weight.
+          - The active protocol isn't observational. PilotA submits a benign
+            trajectory's endpoint by design; grading defenses against it
+            measures nothing about the attack, just the noise floor.
+        """
+        if not FLSettings.DO_STEALTH_EVAL:
+            return False
+        if not round_attacker_ids:
+            return False
+        if FLSettings.ATTACK_PROTOCOL in _OBSERVATIONAL_PROTOCOLS:
+            return False
+        return True
+
     def _select_strategy(self, strategy: str):
         """
         Selects the strategy object to use based on the string 'strategy'
@@ -165,14 +194,18 @@ class Server:
         # Passive backdoor-detectability harness (B1). OBSERVATIONAL ONLY: reads
         # the raw client updates before they are freed below; never alters the
         # aggregation. Training is identical whether this runs or not.
-        if FLSettings.DO_STEALTH_EVAL:
+        #
+        # Gated to skip rounds where running the harness produces no meaningful
+        # signal — both to avoid polluting the CSV with chance-level rows and
+        # to save the ~O(n^2 d) CPU pass when nothing graded would be real.
+        # Label by who actually attacked THIS round, read from the per-client
+        # flag recorded in receive_client_update — NOT the global ATTACKER_IDS
+        # roster. Equivalent under full participation; keeps the label-aware
+        # metrics correct under partial participation / --use-client-schedule.
+        round_attacker_ids = {cid for cid, u in self.client_round_updates.items()
+                                  if u["type"] == "Attacker"}
+        if self._should_run_stealth(round_attacker_ids):
             mk_m = FLSettings.MULTIKRUM_M if FLSettings.MULTIKRUM_M and FLSettings.MULTIKRUM_M > 0 else None
-            # Label by who actually participated AND attacked THIS round, read from the
-            # per-client flag recorded in receive_client_update — NOT the global
-            # ATTACKER_IDS roster. Equivalent under full participation, but keeps the
-            # label-aware metrics correct under partial participation / --use-client-schedule:
-            # a scheduled-out attacker is simply absent and can never be mislabeled positive.
-            round_attacker_ids = {cid for cid, u in self.client_round_updates.items() if u["type"] == "Attacker"}
             per_client_rows, summary_row = stealth_analyze(
                 round=round,
                 client_weights={cid: u["weights"] for cid, u in self.client_round_updates.items()},

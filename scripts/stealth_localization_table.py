@@ -24,18 +24,12 @@ import numpy as np
 import pandas as pd
 import torch
 
-from FL.stealth_defenses import group_of, group_names
+from FL.groups import GROUP_NAMES, name_to_group
 
-# CSV column -> friendly group name. Order = display order.
-GROUP_COLS = {
-    "dl2_backbone": "backbone",
-    "dl2_fpn": "fpn",
-    "dl2_rpn": "rpn",
-    "dl2_roi_box_head": "roi_box_head",
-    "dl2_roi_cls_score": "roi_cls_score",
-    "dl2_roi_bbox_pred": "roi_bbox_pred",
-    "dl2_other": "other",
-}
+# CSV column -> friendly group name. Mirrors the harness's 13-group + "other"
+# decomposition (see FL.stealth_defenses._STEALTH_GROUPS). Order = display
+# order, which matches FL.groups.GROUP_NAMES (backbone front to ROI back).
+GROUP_COLS = {f"dl2_{g}": g for g in list(GROUP_NAMES) + ["other"]}
 
 CHECKPOINT_NAMES = ("latest_fl_checkpoint.pth", "best_model.pth")
 PER_CLIENT_CSV = "stealth_per_client.csv"
@@ -65,13 +59,14 @@ def find_checkpoint(run_dir):
 
 def param_counts_per_group(checkpoint_path):
     """Float-parameter count per group, keyed by friendly group name. Matches the
-    harness's compute_delta (integer buffers excluded)."""
+    harness's compute_delta (integer buffers excluded). Names that aren't in
+    any parameter group (BN running stats etc.) fall into 'other'."""
     ckpt = torch.load(checkpoint_path, map_location="cpu")
     sd = ckpt["model_state_dict"] if isinstance(ckpt, dict) and "model_state_dict" in ckpt else ckpt
-    counts = {g: 0 for g in group_names()}
+    counts = {g: 0 for g in list(GROUP_NAMES) + ["other"]}
     for k, v in sd.items():
         if torch.is_floating_point(v):
-            counts[group_of(k)] += v.numel()
+            counts[name_to_group(k) or "other"] += v.numel()
     return counts
 
 
