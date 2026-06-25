@@ -221,16 +221,18 @@ class ClientManager:
         if server_weights is None:
             raise Exception("Client manager error: No server_weights were supplied for training")
 
-        # Hand the wrapper theta_t. Protocols that need to redo this (e.g.
-        # LaySelFL between SLI trajectories and CT) just call set_weights again.
+        # Load the broadcast model weights
         self.set_weights(weights=server_weights)
 
+        # Benign clients
         if not client_is_attacker:
             return self._benign_path(client_index)
 
         # Attacker routing. Protocol imports are lazy so adding a new
         # AttackProtocol means touching only this dispatcher and the new file.
         protocol = FLSettings.ATTACK_PROTOCOL
+    
+        # Legacy malicious approach
         if protocol == "composable":
             return self._composable_attacker_path(server_weights, client_config)
         if protocol == "pilot_a":

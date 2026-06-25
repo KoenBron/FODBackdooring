@@ -64,6 +64,7 @@ def parse_args():
     fl_group.add_argument("--gamma-cap", type=float, default=FLSettings.GAMMA_CAP, help="Upper bound on the model-replacement scaling factor γ = k/(η·m). Prevents γ from exploding when server_lr is small.")
     fl_group.add_argument("--use-client-schedule", action="store_true", default=FLSettings.USE_CLIENT_SCHEDULE, help="Instead of randomly, though seeded, selecting clients, takes a client schedule to structure when malicious clients are used.")
     fl_group.add_argument("--client-schedule", type=str, default="", help="Schedule for specific clients. Format: 'round:client,round:client'. Bijv: '10:2,11:3'")
+    fl_group.add_argument("--skip-round-eval", action="store_true", default=FLSettings.SKIP_ROUND_EVAL, help="Skip the server's per-round mAP / ASR evaluation and save_if_best_model. Use during the PilotA pilot — pilot measurements live in attack_logs/, not in round_evaluations.csv, and PilotA submits a benign endpoint so ASR is trivially ~0.")
 
 
     # Training Hyperparameters
@@ -152,6 +153,7 @@ def apply_settings(args):
     FLSettings.SEED = args.seed
     FLSettings.PARTITIONING_SEED = args.partitioning_seed
     FLSettings.ATTACK_PROTOCOL = args.attack_protocol
+    FLSettings.SKIP_ROUND_EVAL = args.skip_round_eval
     FLSettings.DO_MODEL_REPLACEMENT = args.enable_model_replacement
     FLSettings.NEUROTOXIN_ENABLED = args.enable_neurotoxin
     FLSettings.NEUROTOXIN_MASK_RATIO = args.neurotoxin_mask_ratio

@@ -145,7 +145,21 @@ class FLSettings:
     #   - "ours"      : per-group benign-anchored constrain-and-scale
     # Phase 0b wires only "composable" — the other three raise NotImplementedError
     # in the dispatcher until their AttackProtocol files land in later phases.
+    #
+    # For per-round gating ("attack only on rounds 16-17") use the existing
+    # --use-client-schedule + --client-schedule machinery: select_clients
+    # already draws random fills from benign-only when the schedule is on,
+    # so attackers are never randomly selected on unscheduled rounds.
     ATTACK_PROTOCOL = "composable"
+
+    # When True, the server skips per-round mAP / ASR evaluation and
+    # save_if_best_model. Useful for the PilotA pilot where the submitted
+    # weights are a benign trajectory's endpoint (ASR ≈ 0 by construction)
+    # and the per-round CSV/tensorboard signals carry no information about
+    # the localization pilot's actual measurements. round_evaluations.csv
+    # still gets one row per round with NaN values so downstream tooling
+    # doesn't choke on a missing-row pattern.
+    SKIP_ROUND_EVAL = False
 
     # FedOpt / server-side learning rate. Only consulted when AGGREGATION_STRATEGY == "fedopt"
     # by the strategy itself; the model-replacement scaler always reads it (defaults to 1.0

@@ -239,31 +239,46 @@ class Server:
         self._save_latest_model(round=round)
         self.logger.log_client_updates(server_round=round, update_info=list(self.client_round_updates.values()))
 
-        # Evaluate the model on ASR and mAP
+        # Evaluate the model on ASR and mAP (unless skipped — see SKIP_ROUND_EVAL).
         self.wrapper.set_weights(new_global_weights)
 
-        # metrics, num_samples = self.wrapper.evaluate(dataloader=self.val_dl, device=self.device)
-        # metrics, num_samples = self.wrapper.evaluate_map_asr(clean_dl=self.clean_val_dl, poison_dl=self.poison_val_dl, device=self.device)
+        if FLSettings.SKIP_ROUND_EVAL:
+            # Pilot-mode shortcut: PilotA's measurements live in attack_logs/
+            # (per-epoch CPU snapshots → per-group L2 divergence + β_max). The
+            # server-side mAP / ASR evals carry no information about that and
+            # cost a full pass over both val dataloaders each round. Skip them,
+            # but still write a CSV row with NaNs so the file shape matches a
+            # non-skip run for any downstream tooling.
+            import math as _math
+            eval_results = {
+                "round": round,
+                "mAP_50": _math.nan,
+                "mAP_50_95": _math.nan,
+                "ASR": _math.nan,
+                "fail_rate": _math.nan,
+                "avg_conf_fail": _math.nan,
+            }
+            self.logger.log_round_evaluation(eval_results=eval_results, num_attackers=num_attackers)
+            # No save_if_best_model: best-model selection requires a real mAP_50.
+        else:
+            clean_results = self.round_evaluator.run_clean_eval(dataloader=self.clean_val_dl)
+            poison_results = self.round_evaluator.run_poison_eval(dataloader=self.poison_val_dl)
 
-        clean_results = self.round_evaluator.run_clean_eval(dataloader=self.clean_val_dl)
-        poison_results = self.round_evaluator.run_poison_eval(dataloader=self.poison_val_dl)
+            eval_results = {
+                "round": round,
+                "mAP_50": clean_results["AP_50"],
+                "mAP_50_95": clean_results["AP_50_95"],
+                "ASR": poison_results["ASR"],
+                "fail_rate": poison_results["fail_rate"],
+                "avg_conf_fail": poison_results["avg_conf_fail"],
+            }
 
-        eval_results = {
-            "round": round,
-            "mAP_50": clean_results["AP_50"],
-            "mAP_50_95": clean_results["AP_50_95"],
-            "ASR": poison_results["ASR"],
-            "fail_rate": poison_results["fail_rate"],
-            "avg_conf_fail": poison_results["avg_conf_fail"],
-        }
+            # Write evaluation metrics to the pytorch tensorboards, log the evaluation to a csv & save if the model is evaluated as the best
+            # self.logger.log_epoch(round, eval_results)
+            self.logger.log_round_evaluation(eval_results=eval_results, num_attackers=num_attackers)# TODO: Pass the correct metrics as arguments
+            self.logger.save_if_best_model(epoch=round, val_loss=-eval_results["mAP_50"], weights=new_global_weights)# Negative value as function originally compares for lowest validation loss
 
-
-        # Write evaluation metrics to the pytorch tensorboards, log the evaluation to a csv & save if the model is evaluated as the best
-        # self.logger.log_epoch(round, eval_results)
-        self.logger.log_round_evaluation(eval_results=eval_results, num_attackers=num_attackers)# TODO: Pass the correct metrics as arguments
-        self.logger.save_if_best_model(epoch=round, val_loss=-eval_results["mAP_50"], weights=new_global_weights)# Negative value as function originally compares for lowest validation loss
-        
-        # Prepare for another round 
+        # Prepare for another round
         self.round_evaluator.remove_from_gpu()
         self.client_round_updates.clear()
 

@@ -103,6 +103,25 @@ _CUTOFF_VALUES = (1.5, 2.0, 3.0)
 _NUM_PROBE_STEPS = 10
 
 
+def _compute_frozen_groups(model, group_to_tensors):
+    """Groups whose tensors all have requires_grad=False.
+
+    These groups can't carry a backdoor: their gradient is zero, so div_g and
+    b_g are exactly 0, and they vanish from every selector. We surface them in
+    the pilot output so analysis can clearly distinguish 'no signal here, we
+    measured 0' (a normal trainable group with low divergence) from 'no signal
+    here, couldn't have one' (frozen). torchvision's fasterrcnn_resnet50_fpn
+    defaults to trainable_backbone_layers=3, which fully freezes the stem and
+    layer1 groups; surfacing this makes the trainable subspace explicit in the
+    JSON instead of leaving the reader to infer it from zeros.
+    """
+    rg = {n: p.requires_grad for n, p in model.named_parameters()}
+    return sorted(
+        g for g, tensors in group_to_tensors.items()
+        if tensors and all(not rg.get(t, False) for t in tensors)
+    )
+
+
 def _worker_init_fn(worker_id):
     """Per-worker RNG seeding for num_workers > 0.
 
@@ -130,7 +149,8 @@ class PilotALogger:
         self.dir = os.path.join(attack_logs_dir, "pilot_a")
         os.makedirs(self.dir, exist_ok=True)
 
-    def write_round(self, current_round, client_id, n_epochs, groups, group_dim, epochs, beta_max):
+    def write_round(self, current_round, client_id, n_epochs, groups, group_dim,
+                    frozen_groups, epochs, beta_max):
         target = os.path.join(self.dir, f"round_{current_round}_client_{client_id}.json")
         payload = {
             "round": current_round,
@@ -138,6 +158,7 @@ class PilotALogger:
             "n_epochs": n_epochs,
             "groups": groups,
             "group_dim": group_dim,
+            "frozen_groups": frozen_groups,
             "epochs": epochs,
             "beta_max": beta_max,
         }
@@ -228,6 +249,7 @@ class PilotAProtocol(AttackProtocol):
             n_epochs=n_epochs,
             groups=epochs_data["groups"],
             group_dim=epochs_data["group_dim"],
+            frozen_groups=epochs_data["frozen_groups"],
             epochs=epochs_data["epochs"],
             beta_max=beta_max,
         )
@@ -364,20 +386,41 @@ class PilotAProtocol(AttackProtocol):
         }
         sqrt_d = {g: math.sqrt(group_dim[g]) for g in group_dim}
 
+        # Frozen groups carry div_g = b_g = 0 by construction. We exclude them
+        # from the cheap-floor sigma so frozen zeros don't deflate the cross-
+        # group standard deviation and shrink the cheap floor toward 0.
+        frozen_groups = _compute_frozen_groups(model, group_to_tensors)
+        trainable_groups = [g for g in group_dim if g not in frozen_groups]
+
         epochs_data = []
         for n, (m, b1, b2) in enumerate(zip(mal_snaps, ben1_snaps, ben2_snaps), start=1):
             # L2 norm of the malicious-benign divergence
             l2_mal_ben1 = group_l2(per_tensor_sq_l2(m, b1, tensor_list), tensor_to_group)
-            # L2 norm of the benign-benign divergence
+            # L2 norm of the benign-benign divergence (expensive floor — needs ben2)
             l2_ben1_ben2 = group_l2(per_tensor_sq_l2(b1, b2, tensor_list), tensor_to_group)
 
             div_g = {g: l2_mal_ben1[g] / sqrt_d[g] for g in l2_mal_ben1}
             b_g = {g: l2_ben1_ben2[g] / sqrt_d[g] for g in l2_ben1_ben2}
             rho_g = {g: max(0.0, div_g[g] - b_g[g]) for g in div_g}
 
+            # Cheap noise floor: cross-group sigma of div_g over trainable groups.
+            # Same value applied to every group; doesn't require the ben2
+            # trajectory. The cheap-vs-expensive selection comparison is the
+            # pilot's own validation that this approximation holds — if the
+            # Jaccard between the two selection sets is high across (k, c),
+            # we can drop ben2 in production and save ~1/3 of pilot walltime.
+            trainable_divs = [div_g[g] for g in trainable_groups]
+            sigma = statistics.stdev(trainable_divs) if len(trainable_divs) > 1 else 0.0
+            b_cheap = {g: sigma for g in div_g}
+            rho_cheap = {g: max(0.0, div_g[g] - b_cheap[g]) for g in div_g}
+
             selections = {
-                "topk": {str(k): _select_topk(rho_g, k) for k in _TOPK_VALUES},
+                "topk":   {str(k): _select_topk(rho_g, k) for k in _TOPK_VALUES},
                 "cutoff": {str(c): _select_cutoff(div_g, b_g, c) for c in _CUTOFF_VALUES},
+            }
+            selections_cheap = {
+                "topk":   {str(k): _select_topk(rho_cheap, k) for k in _TOPK_VALUES},
+                "cutoff": {str(c): _select_cutoff(div_g, b_cheap, c) for c in _CUTOFF_VALUES},
             }
 
             epochs_data.append({
@@ -385,11 +428,15 @@ class PilotAProtocol(AttackProtocol):
                 "div": div_g,
                 "b": b_g,
                 "rho": rho_g,
+                "sigma": sigma,
+                "b_cheap": b_cheap,
                 "selections": selections,
+                "selections_cheap": selections_cheap,
             })
         return {
             "group_dim": group_dim,
             "groups": list(group_dim.keys()),
+            "frozen_groups": frozen_groups,
             "epochs": epochs_data,
         }
 
@@ -521,11 +568,22 @@ class PilotAProtocol(AttackProtocol):
         final = epochs_data["epochs"][-1]
         ranked = sorted(final["rho"].items(), key=lambda kv: -kv[1])
         top3 = ", ".join(f"{g}={v:.3g}" for g, v in ranked[:3])
+        frozen = epochs_data.get("frozen_groups", [])
+        # Cheap-vs-expensive sanity check: do the two floors pick the same top-3?
+        # k=3 is the midpoint of the sweep and the most informative single
+        # number — Jaccard near 1 = cheap floor is a fine production stand-in.
+        sel_exp = set(final["selections"]["topk"]["3"])
+        sel_cheap = set(final["selections_cheap"]["topk"]["3"])
+        union = sel_exp | sel_cheap
+        jaccard_k3 = (len(sel_exp & sel_cheap) / len(union)) if union else 1.0
         v_med = beta_max.get("value_median")
         g_med = beta_max.get("grad_median")
         agree = beta_max.get("agreement_ratio")
         print(f"[pilot_a client={client_id} round={current_round}] HEADLINE:")
         print(f"    final-epoch rho_g top-3: {top3}")
+        if frozen:
+            print(f"    frozen groups (no signal possible): {', '.join(frozen)}")
+        print(f"    top-3 Jaccard (cheap floor vs expensive): {jaccard_k3:.3g}")
         print(
             f"    beta_max: value_med={_fmt(v_med)}  grad_med={_fmt(g_med)}  "
             f"agreement={_fmt(agree)}"
