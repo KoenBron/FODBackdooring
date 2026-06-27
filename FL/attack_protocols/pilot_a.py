@@ -52,10 +52,13 @@ One JSON file per (round, client_id) under <output_path>/pilot_a/:
 
     {
       "round": r, "client_id": i, "n_epochs": N,
-      "groups": [...], "group_dim": {g: d_g},
+      "groups": [...], "group_dim": {g: d_g}, "frozen_groups": [...],
       "epochs": [
         {"n": 1, "div": {g: ...}, "b": {g: ...}, "rho": {g: ...},
-         "selections": {"topk": {k: [...]}, "cutoff": {c: [...]}}},
+         "sigma": ..., "b_cheap": {g: ...},
+         "mal_over_ben": {g: ...}, "ben2_over_ben1": {g: ...},
+         "selections": {"topk": {k: [...]}, "cutoff": {c: [...]}},
+         "selections_cheap": {"topk": {k: [...]}, "cutoff": {c: [...]}}},
         ...
       ],
       "beta_max": {
@@ -241,7 +244,11 @@ class PilotAProtocol(AttackProtocol):
         )
 
         # Per-epoch metrics. Pure CPU pass over the snapshots — no GPU needed.
-        epochs_data = self._compute_epoch_metrics(mal_snaps, ben1_snaps, ben2_snaps)
+        # server_weights IS theta_t (the broadcast state_dict we were handed);
+        # reused directly as the displacement reference, no clone.
+        epochs_data = self._compute_epoch_metrics(
+            mal_snaps, ben1_snaps, ben2_snaps, server_weights,
+        )
 
         log_path = self.manager.logger.pilot_a.write_round(
             current_round=current_round,
@@ -368,7 +375,7 @@ class PilotAProtocol(AttackProtocol):
 
     # ---- Per-epoch metrics ----
 
-    def _compute_epoch_metrics(self, mal_snaps, ben1_snaps, ben2_snaps):
+    def _compute_epoch_metrics(self, mal_snaps, ben1_snaps, ben2_snaps, theta_t):
         """Per-epoch div_g, b_g, rho_g + selector outputs.
 
         All three trajectories start from theta_t, so
@@ -379,6 +386,10 @@ class PilotAProtocol(AttackProtocol):
         """
         model = self.manager.wrapper.model
         tensor_list, tensor_to_group, group_to_tensors = build_group_map(model)
+        # theta_t restricted to the tensors we compare and pinned to CPU (no-op
+        # if already CPU) so per_tensor_sq_l2's subtraction matches the CPU
+        # snapshots regardless of where the broadcast dict lives.
+        theta_t = {n: theta_t[n].cpu() for n in tensor_list}
         param_numel = {n: p.numel() for n, p in model.named_parameters()}
         group_dim = {
             g: sum(param_numel[t] for t in group_to_tensors[g])
@@ -398,10 +409,28 @@ class PilotAProtocol(AttackProtocol):
             l2_mal_ben1 = group_l2(per_tensor_sq_l2(m, b1, tensor_list), tensor_to_group)
             # L2 norm of the benign-benign divergence (expensive floor — needs ben2)
             l2_ben1_ben2 = group_l2(per_tensor_sq_l2(b1, b2, tensor_list), tensor_to_group)
+            # Per-trajectory distances from theta_t. √d_g cancels in the
+            # ratios below so we skip the normalize step.
+            l2_mal_t  = group_l2(per_tensor_sq_l2(m,  theta_t, tensor_list), tensor_to_group)
+            l2_ben1_t = group_l2(per_tensor_sq_l2(b1, theta_t, tensor_list), tensor_to_group)
+            l2_ben2_t = group_l2(per_tensor_sq_l2(b2, theta_t, tensor_list), tensor_to_group)
 
             div_g = {g: l2_mal_ben1[g] / sqrt_d[g] for g in l2_mal_ben1}
             b_g = {g: l2_ben1_ben2[g] / sqrt_d[g] for g in l2_ben1_ben2}
             rho_g = {g: max(0.0, div_g[g] - b_g[g]) for g in div_g}
+
+            # mal/ben1 distance ratio per group, with ben2/ben1 as a pure-RNG
+            # control. Baseline ≈ 1 across trainable groups; mal/ben1 ≫ 1 marks
+            # where SGD on poisoned data pulled extra. None on frozen groups
+            # (both distances are exactly 0).
+            mal_over_ben_g = {
+                g: (l2_mal_t[g] / l2_ben1_t[g]) if l2_ben1_t[g] > 0 else None
+                for g in l2_ben1_t
+            }
+            ben2_over_ben1_g = {
+                g: (l2_ben2_t[g] / l2_ben1_t[g]) if l2_ben1_t[g] > 0 else None
+                for g in l2_ben1_t
+            }
 
             # Cheap noise floor: cross-group sigma of div_g over trainable groups.
             # Same value applied to every group; doesn't require the ben2
@@ -430,6 +459,8 @@ class PilotAProtocol(AttackProtocol):
                 "rho": rho_g,
                 "sigma": sigma,
                 "b_cheap": b_cheap,
+                "mal_over_ben": mal_over_ben_g,
+                "ben2_over_ben1": ben2_over_ben1_g,
                 "selections": selections,
                 "selections_cheap": selections_cheap,
             })
@@ -569,6 +600,14 @@ class PilotAProtocol(AttackProtocol):
         ranked = sorted(final["rho"].items(), key=lambda kv: -kv[1])
         top3 = ", ".join(f"{g}={v:.3g}" for g, v in ranked[:3])
         frozen = epochs_data.get("frozen_groups", [])
+        # mal/ben displacement ratio: which heads moved further under poison
+        # than under clean training. ben2/ben1 (pure RNG) median ~ 1 is the
+        # null baseline — read mal/ben top-3 relative to it.
+        mob = {g: r for g, r in final["mal_over_ben"].items() if r is not None}
+        ranked_mob = sorted(mob.items(), key=lambda kv: -kv[1])
+        top3_mob = ", ".join(f"{g}={r:.3g}x" for g, r in ranked_mob[:3])
+        base = [r for r in final["ben2_over_ben1"].values() if r is not None]
+        base_med = statistics.median(base) if base else float("nan")
         # Cheap-vs-expensive sanity check: do the two floors pick the same top-3?
         # k=3 is the midpoint of the sweep and the most informative single
         # number — Jaccard near 1 = cheap floor is a fine production stand-in.
@@ -581,6 +620,10 @@ class PilotAProtocol(AttackProtocol):
         agree = beta_max.get("agreement_ratio")
         print(f"[pilot_a client={client_id} round={current_round}] HEADLINE:")
         print(f"    final-epoch rho_g top-3: {top3}")
+        print(
+            f"    mal/ben displacement top-3: {top3_mob}  "
+            f"(ben2/ben1 baseline med={base_med:.3g})"
+        )
         if frozen:
             print(f"    frozen groups (no signal possible): {', '.join(frozen)}")
         print(f"    top-3 Jaccard (cheap floor vs expensive): {jaccard_k3:.3g}")
