@@ -342,6 +342,17 @@ class PilotAProtocol(AttackProtocol):
         """
         self.manager.wrapper.set_weights(server_weights)
         dl = self._dataloader_for(partition_id, is_attacker=is_attacker, seed=seed)
+        # Trajectories must train at the SAME LR: a malicious/benign LR gap would
+        # confound PilotA's div_g (mal vs ben1) and PilotB's S_d (clean vs
+        # backdoored volatility) with LR-induced movement rather than the poison.
+        assert (
+            TrainingSettings.MALICIOUS_CLIENT_LEARNING_RATE
+            == TrainingSettings.BENIGN_CLIENT_LEARNING_RATE
+        ), (
+            "Pilot trajectories require MALICIOUS_CLIENT_LEARNING_RATE == "
+            "BENIGN_CLIENT_LEARNING_RATE; differing LR confounds the divergence/"
+            "volatility signal with an LR artifact."
+        )
         lr = (
             TrainingSettings.MALICIOUS_CLIENT_LEARNING_RATE
             if is_attacker else TrainingSettings.BENIGN_CLIENT_LEARNING_RATE
@@ -611,8 +622,8 @@ class PilotAProtocol(AttackProtocol):
         # Cheap-vs-expensive sanity check: do the two floors pick the same top-3?
         # k=3 is the midpoint of the sweep and the most informative single
         # number — Jaccard near 1 = cheap floor is a fine production stand-in.
-        sel_exp = set(final["selections"]["topk"]["3"])
-        sel_cheap = set(final["selections_cheap"]["topk"]["3"])
+        sel_exp = {g for g, _ in final["selections"]["topk"]["3"]}
+        sel_cheap = {g for g, _ in final["selections_cheap"]["topk"]["3"]}
         union = sel_exp | sel_cheap
         jaccard_k3 = (len(sel_exp & sel_cheap) / len(union)) if union else 1.0
         v_med = beta_max.get("value_median")
@@ -636,14 +647,30 @@ class PilotAProtocol(AttackProtocol):
 # ---- Selectors (module-level so the analysis script can reuse them) ----
 
 def _select_topk(score_map, k):
-    """Top-k groups by score (descending). Returns sorted list for stable diffs."""
-    ranked = sorted(score_map.items(), key=lambda kv: -kv[1])
-    return sorted(g for g, _ in ranked[:k])
+    """Top-k groups by score (descending), gated to score > 0.
+
+    Returns fewer than k groups when fewer than k have score > 0 — a group with
+    zero denoised signal is never a carrier, so it is not padded into the set.
+    Matches l2_based.select_topk so PilotA (per-group) and PilotB (per-tensor)
+    top-k selections are directly comparable.
+
+    Returns a list of (name, score) tuples ORDERED by score descending (ties by
+    name) — the amplification priority order. Callers needing a set of names use
+    {g for g, _ in result}.
+    """
+    candidates = [(g, s) for g, s in score_map.items() if s > 0.0]
+    ranked = sorted(candidates, key=lambda x: (-x[1], x[0]))
+    return ranked[:k]
 
 
 def _select_cutoff(div_map, b_map, c):
-    """Groups whose div exceeds c * benign-drift floor."""
-    return sorted(g for g in div_map if div_map[g] > c * b_map[g])
+    """Groups whose div exceeds c * benign-drift floor.
+
+    Returns (name, div) tuples ORDERED by div descending (ties by name) — the
+    amplification priority order. Strict '>' excludes frozen groups (0 > 0 False).
+    """
+    selected = [(g, div_map[g]) for g in div_map if div_map[g] > c * b_map[g]]
+    return sorted(selected, key=lambda x: (-x[1], x[0]))
 
 
 def _fmt(x):

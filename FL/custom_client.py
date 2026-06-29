@@ -238,6 +238,9 @@ class ClientManager:
         if protocol == "pilot_a":
             from FL.attack_protocols.pilot_a import PilotAProtocol
             return PilotAProtocol(self).run(server_weights, client_config)
+        if protocol == "pilot_b":
+            from FL.attack_protocols.pilot_b import PilotBProtocol
+            return PilotBProtocol(self).run(server_weights, client_config)
         raise NotImplementedError(
             f"--attack-protocol {protocol!r} selected but not yet wired. "
             f"LaySelFL and Ours land in Phase 2 and Phase 3."

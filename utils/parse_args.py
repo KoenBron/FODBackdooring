@@ -78,7 +78,7 @@ def parse_args():
 
     # Attacker Configuration
     atk_group = parser.add_argument_group('Attacker Configuration')
-    atk_group.add_argument("--attack-protocol", type=str, default=FLSettings.ATTACK_PROTOCOL, choices=["composable", "pilot_a", "laysel_fl", "ours"], help="Top-level malicious-client routing. 'composable' = today's knob-tuned path (Neurotoxin / model replacement / TARGETED_* attack composed via the existing --enable-* flags). 'pilot_a' / 'laysel_fl' / 'ours' = preset AttackProtocol recipes (not yet wired in Phase 0b; selecting them raises NotImplementedError).")
+    atk_group.add_argument("--attack-protocol", type=str, default=FLSettings.ATTACK_PROTOCOL, choices=["composable", "pilot_a", "pilot_b", "laysel_fl", "ours"], help="Top-level malicious-client routing. 'composable' = today's knob-tuned path (Neurotoxin / model replacement / TARGETED_* attack composed via the existing --enable-* flags). 'pilot_a' (per-group) / 'pilot_b' (per-tensor) = observational localization pilots. 'laysel_fl' / 'ours' = preset AttackProtocol recipes (not yet wired; selecting them raises NotImplementedError).")
     atk_group.add_argument("--attacker-fraction", type=float, default=FLSettings.ATTACKER_FRACTION, help="Fraction of malicious clients")
     atk_group.add_argument("--client-train-ds-mode", type=str, default=FLSettings.ATTACKER_DATASET_MODE, help="Dataset mode for attackers")
     atk_group.add_argument("--enable-model-replacement", action="store_true", default=FLSettings.DO_MODEL_REPLACEMENT, help="Enable the model replacement strategy for malicious clients to amplify backdoors")
