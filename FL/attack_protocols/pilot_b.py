@@ -38,6 +38,7 @@ from FL.scoring.l2_based import (
     normalized_l2_divergence,
     rho,
     select_topk,
+    select_topk_signed,
     select_cutoff,
 )
 from FL.scoring.layselfl import laysel_sensitivity, select_topk as laysel_select_topk
@@ -184,7 +185,9 @@ class PilotBProtocol(PilotAProtocol):
 
         LaySelFL sensitivity is a single per-round score (it averages volatility
         over all epochs and adds the endpoint gap), so it is computed once after
-        the loop and compared against OUR final-epoch rho selection.
+        the loop and compared against OUR final-epoch SIGNED-rho top-k (div_t - b_t,
+        unclamped, frozen-excluded) — full-k like LaySelFL's, but denoised so it
+        keeps the carrier localization instead of drowning in backbone variance.
         """
         model = self.manager.wrapper.model
         tensor_list, tensor_to_group, _group_to_tensors = build_group_map(model)
@@ -247,23 +250,41 @@ class PilotBProtocol(PilotAProtocol):
         # baseline, which ranks raw sensitivity including non-positive layers.
         laysel_selections = {str(k): laysel_select_topk(sensitivity, k) for k in _TOPK_VALUES}
 
-        # Compare against OUR final-epoch rho top-k. Exclude frozen tensors from
-        # BOTH sides first: LaySelFL's unfiltered top-k can pull in frozen layers
-        # (sensitivity 0) when fewer than k positive scores exist, but a frozen
-        # layer is an untrainable non-carrier — counting it would distort the
-        # Jaccard. We still report which frozen layers LaySelFL selected.
+        # Compare against OUR SIGNED-rho top-k (div_t - b_t, WITHOUT the max(.,0)
+        # clamp). LaySelFL ranks raw, un-floored sensitivity and always returns k,
+        # so a like-for-like set comparison needs our side full-k too. Signed rho
+        # is the right score for that: on its positive prefix it is identical (same
+        # order) to the clamped/gated rho in `selections`, so it keeps the exact
+        # carrier localization — but it does NOT collapse sub-floor tensors into a
+        # 0.0 tie (which the >0 gate would then cap below k) and it is NOT dominated
+        # by high-variance backbone tensors the way raw div is (their div is large
+        # but so is their floor b, so div - b is small). The clamped/gated rho top-k
+        # stays in `selections` for the carrier/amplification set, where a negative
+        # signed score is a definitive non-carrier and the gate is correct.
+        #
+        # Frozen handling differs from a gated score: frozen tensors have
+        # div = b = 0 -> signed rho 0, which sits MID-ranking (above the negative
+        # tail), so they would be padded into the top-k. They MUST be excluded
+        # BEFORE ranking, not subtracted after. LaySelFL's ungated top-k can still
+        # pull in frozen layers, so we subtract frozen from THAT side and report
+        # which frozen layers it selected as a contamination check.
         frozen_set = set(frozen)
-        final_sel = epochs_data[-1]["selections"]["topk"]
+        final = epochs_data[-1]
+        signed_rho = {
+            t: final["div"][t] - final["b"][t]
+            for t in final["div"] if t not in frozen_set   # exclude frozen up front
+        }
+        ours_sel = {str(k): select_topk_signed(signed_rho, k) for k in _TOPK_VALUES}
         vs_ours = {}
         for k in _TOPK_VALUES:
-            ours = {g for g, _ in final_sel[str(k)]} - frozen_set      # rho>0 already excludes these
+            ours = {t for t, _ in ours_sel[str(k)]}                  # already frozen-free
             theirs_raw = {t for t, _ in laysel_selections[str(k)]}
             theirs = theirs_raw - frozen_set
             union = ours | theirs
             vs_ours[str(k)] = {
                 "jaccard": (len(ours & theirs) / len(union)) if union else 1.0,
-                "ours_only": sorted(ours - theirs),                  # our floor keeps, they miss
-                "laysel_only": sorted(theirs - ours),                # they pick, our floor rejects
+                "ours_only": sorted(ours - theirs),                  # signed-rho keeps, they miss
+                "laysel_only": sorted(theirs - ours),                # they pick, signed-rho ranks lower
                 "laysel_frozen_selected": sorted(theirs_raw & frozen_set),  # contamination report
             }
 

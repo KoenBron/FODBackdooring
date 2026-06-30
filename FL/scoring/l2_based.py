@@ -143,3 +143,26 @@ def select_topk(rho, k):
     candidates = [(g, s) for g, s in rho.items() if s > 0.0]
     ranked = sorted(candidates, key=lambda x: (-x[1], x[0]))
     return ranked[:k]
+
+
+def select_topk_signed(score, k):
+    """Top-k buckets by RAW (possibly negative) score, descending — NO score>0 gate.
+
+    Unlike select_topk, this does not filter on sign, so it always returns
+    min(k, len(score)) entries and keeps a total order even where the score is
+    <= 0. Built for the cross-method ranking comparison against an ungated
+    baseline (LaySelFL) using SIGNED rho (div - b, unclamped): the signed score
+    matches the clamped/gated rho on its positive prefix (same carriers, same
+    order) but, unlike clamped rho, does not collapse sub-floor buckets into a
+    0.0 tie — so a full k can be drawn for a like-for-like overlap.
+
+    The caller MUST pre-exclude any bucket it does not want ranked. In particular
+    frozen tensors have div = b = 0 -> signed rho 0, which sits MID-ranking (above
+    the negative tail), so they would otherwise be padded into the set; filter to
+    trainable buckets before calling.
+
+    Returns a list of (name, score) tuples ORDERED by score descending (ties by
+    name).
+    """
+    ranked = sorted(score.items(), key=lambda kv: (-kv[1], kv[0]))
+    return ranked[:k]
