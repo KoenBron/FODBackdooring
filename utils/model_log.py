@@ -9,7 +9,6 @@ from contextlib import redirect_stdout
 from torch.utils.tensorboard import SummaryWriter
 from utils.global_settings import ProjectPaths, BackdoorProperties, TrainingSettings, FLSettings
 from evaluation import BatchEvaluator
-from FL.stealth_defenses import PER_CLIENT_COLUMNS, SUMMARY_COLUMNS
 from FL.attack_state import AttackState
 from FL.attack_protocols.pilot_a import PilotALogger
 from FL.attack_protocols.pilot_b import PilotBLogger
@@ -48,16 +47,13 @@ class ModelLogger:
                         writer = csv.writer(file)
                         writer.writerow(["round", "cid", "type", "l2_dist", "cos_sim", "magnitude"])
 
-                # Passive detectability harness (B1) output files
+                # Passive detectability harness (B1) output files. Both headers
+                # are written lazily from the first row's keys (see the log_*
+                # methods): the columns depend on the resolved granularity AND on
+                # which metric blocks are enabled, neither of which the logger
+                # knows at construction.
                 self.stealth_per_client_path = os.path.join(self.output_path, "stealth_per_client.csv")
                 self.stealth_summary_path = os.path.join(self.output_path, "stealth_summary.csv")
-                if FLSettings.DO_STEALTH_EVAL:
-                    if not os.path.isfile(self.stealth_per_client_path):
-                        with open(self.stealth_per_client_path, mode="w", newline='') as file:
-                            csv.writer(file).writerow(PER_CLIENT_COLUMNS)
-                    if not os.path.isfile(self.stealth_summary_path):
-                        with open(self.stealth_summary_path, mode="w", newline='') as file:
-                            csv.writer(file).writerow(SUMMARY_COLUMNS)
         else:
             # Load a checkpoint and write logs to that output path
             model_dir_path = os.path.join(ProjectPaths.OUTPUT_DIR, custom_path)
@@ -214,20 +210,41 @@ class ModelLogger:
     def log_stealth_per_client(self, rows):
         """
         Append per-(round, client) detectability rows from the passive harness.
-        rows: list of dicts keyed by stealth_defenses.PER_CLIENT_COLUMNS.
+        rows: list of dicts keyed by stealth_defenses.per_client_columns(...).
+
+        The header is written lazily from the first row's keys, because the
+        dl2_<bucket> columns depend on the granularity resolved at the server
+        (per-group vs per-tensor) and are not known at logger construction. On
+        resume the file already has a header, so it is not rewritten. The
+        granularity is deterministic per run, so the keys stay consistent.
         """
+        if not rows:
+            return
+        write_header = (not os.path.isfile(self.stealth_per_client_path)
+                        or os.path.getsize(self.stealth_per_client_path) == 0)
         with open(self.stealth_per_client_path, 'a', newline='') as f:
-            writer = csv.writer(f)
+            writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+            if write_header:
+                writer.writeheader()
             for row in rows:
-                writer.writerow([row.get(col, "") for col in PER_CLIENT_COLUMNS])
+                writer.writerow(row)
 
     def log_stealth_summary(self, summary_row):
         """
         Append one per-round detectability summary row (TPR/FPR + separability).
-        summary_row: dict keyed by stealth_defenses.SUMMARY_COLUMNS.
+        summary_row: dict from stealth_defenses.analyze; its columns depend on
+        the enabled metric blocks. The header is written lazily from the row's
+        keys (same rationale as log_stealth_per_client).
         """
+        if not summary_row:
+            return
+        write_header = (not os.path.isfile(self.stealth_summary_path)
+                        or os.path.getsize(self.stealth_summary_path) == 0)
         with open(self.stealth_summary_path, 'a', newline='') as f:
-            csv.writer(f).writerow([summary_row.get(col, "") for col in SUMMARY_COLUMNS])
+            writer = csv.DictWriter(f, fieldnames=list(summary_row.keys()))
+            if write_header:
+                writer.writeheader()
+            writer.writerow(summary_row)
 
     def save_attack_state(self):
         """Persist the current AttackState snapshot to this run's attack_logs/.

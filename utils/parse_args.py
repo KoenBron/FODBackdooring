@@ -95,6 +95,8 @@ def parse_args():
     det_group.add_argument("--krum-f", type=int, default=FLSettings.KRUM_F, help="Assumed number of Byzantine clients f for Krum's (n-f-2) neighbor sum.")
     det_group.add_argument("--multikrum-m", type=int, default=FLSettings.MULTIKRUM_M, help="Number of clients Multi-Krum keeps. <=0 auto-sets to n-f.")
     det_group.add_argument("--normclip-c", type=float, default=FLSettings.NORMCLIP_C, help="Norm-bound detector multiplier: flag updates with L2 norm > C*median.")
+    det_group.add_argument("--stealth-granularity", type=str, default=FLSettings.STEALTH_GRANULARITY, choices=["auto", "group", "tensor"], help="Granularity of the dl2_* per-bucket energy decomposition. 'auto' derives it from --attack-protocol (pilot_a->group, pilot_b->tensor); 'group'/'tensor' force it.")
+    det_group.add_argument("--stealth-disable", type=str, default="", help="Comma-separated stealth metric blocks to turn OFF (default: all on). Blocks: norm, cosine, krum, median, normclip, cluster, energy. Disabling all of {cosine,krum,cluster} also skips the O(n^2) pairwise pass.")
 
     # Backdoor Properties
     bd_group = parser.add_argument_group('Backdoor Properties')
@@ -167,6 +169,10 @@ def apply_settings(args):
     FLSettings.KRUM_F = args.krum_f
     FLSettings.MULTIKRUM_M = args.multikrum_m
     FLSettings.NORMCLIP_C = args.normclip_c
+    FLSettings.STEALTH_GRANULARITY = args.stealth_granularity
+    # Block names are validated at Server init (against the torch-backed registry),
+    # so parse_args stays free of a heavy FL.stealth_defenses import.
+    FLSettings.STEALTH_DISABLED = tuple(x.strip() for x in args.stealth_disable.split(",") if x.strip())
     
     # Attacker General
     FLSettings.ATTACKER_DATASET_MODE = args.client_train_ds_mode
@@ -267,6 +273,8 @@ def print_configuration_summary():
         print(f"{'  KRUM_F':30}: {FLSettings.KRUM_F}")
         print(f"{'  MULTIKRUM_M':30}: {FLSettings.MULTIKRUM_M} (<=0 -> auto n-f)")
         print(f"{'  NORMCLIP_C':30}: {FLSettings.NORMCLIP_C}")
+        print(f"{'  STEALTH_GRANULARITY':30}: {FLSettings.STEALTH_GRANULARITY}")
+        print(f"{'  STEALTH_DISABLED':30}: {FLSettings.STEALTH_DISABLED or '(none — all on)'}")
     print(f"{'GUARANTEE_TARGET_OBJECTS':30}: {FLSettings.GUARANTEE_TARGET_OBJECTS}")
     if FLSettings.GUARANTEE_TARGET_OBJECTS:
         print(f"{'ATTACKER_TARGET_MIN_FRAC':30}: {FLSettings.ATTACKER_TARGET_MIN_FRACTION}")

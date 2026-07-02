@@ -1,5 +1,10 @@
 """Per-tensor / per-group parameter map for torchvision fasterrcnn_resnet50_fpn.
 
+SINGLE SOURCE OF TRUTH for parameter grouping. Anything that needs to partition
+model tensors into buckets — the localization pilots AND the stealth harness —
+goes through here (build_group_map / build_bucket_map / ordered_buckets). Do not
+grow a parallel bucketing helper in another module; add it here instead.
+
 Two views of model.named_parameters():
 
   - tensor_list:      flat per-tensor ordering used by LaySelFL's TopK selector
@@ -100,6 +105,47 @@ def build_group_map(model):
             + "\n  ".join(unmatched)
         )
     return tensor_list, tensor_to_group, group_to_tensors
+
+
+def build_bucket_map(model, granularity):
+    """name_to_bucket over named_parameters() for a chosen granularity.
+
+    This is THE single entry point for "how do I partition model tensors into
+    buckets" — the stealth harness and the localization pilots both go through
+    here (directly or via build_group_map), so the grouping lives in one place.
+
+    granularity:
+        "group"  -> tensor_to_group   (the 13-group coarsening; build_group_map)
+        "tensor" -> identity map      (each named parameter is its own bucket)
+
+    Covers named_parameters() only, exactly like the pilots. Callers that also
+    see a full state_dict (BN buffers etc.) send those to a fallback bucket via
+    name_to_bucket.get(name, "other") — see ordered_buckets / the stealth harness.
+    """
+    tensor_list, tensor_to_group, _ = build_group_map(model)
+    if granularity == "tensor":
+        return {name: name for name in tensor_list}
+    if granularity == "group":
+        return tensor_to_group
+    raise ValueError(f"Unknown granularity {granularity!r}; expected 'group' or 'tensor'.")
+
+
+def ordered_buckets(name_to_bucket):
+    """Deterministic bucket order for a name_to_bucket map, with 'other' last.
+
+    First-appearance order of the map's values (tensor_list order for per-tensor,
+    backbone->roi for per-group). 'other' is always appended last because callers
+    on a full state_dict route non-parameter floats there via .get(name, "other").
+    This is the canonical column/iteration order for the buckets.
+    """
+    seen = []
+    for bucket in name_to_bucket.values():
+        if bucket not in seen:
+            seen.append(bucket)
+    if "other" in seen:
+        seen.remove("other")
+    seen.append("other")
+    return seen
 
 
 def per_tensor_l1(state_a, state_b, tensor_list):

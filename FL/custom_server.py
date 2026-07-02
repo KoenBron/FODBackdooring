@@ -5,7 +5,8 @@ from utils.global_settings import ProjectPaths, BackdoorProperties, TrainingSett
 from utils.dataset import CustomCocoDataset
 from utils.round_evaluator import RoundEvaluator
 from utils.metrics import torch_compute_magnitude, torch_compute_cosine_sim, torch_compute_l2_distance
-from FL.stealth_defenses import analyze as stealth_analyze
+from FL.stealth_defenses import analyze as stealth_analyze, DEFENSE_NAMES as STEALTH_DEFENSE_NAMES
+from FL.groups import build_bucket_map
 
 from torch.utils.data import DataLoader
 
@@ -20,7 +21,20 @@ import os
 # chance — meaningless rows for downstream analysis, and ~O(n^2 d) CPU work
 # per round we'd rather not pay. Grow this set as more observational
 # protocols are added.
-_OBSERVATIONAL_PROTOCOLS = {"pilot_a"}
+_OBSERVATIONAL_PROTOCOLS = {"pilot_a", "pilot_b"}
+
+# Default stealth-decomposition granularity per attack protocol — mirrors how the
+# pilots fix their own granularity (pilot_a = per-group, pilot_b = per-tensor) so
+# the dl2_* energy profile speaks the same partition as the protocol's
+# localization signal. FLSettings.STEALTH_GRANULARITY != "auto" overrides this;
+# unlisted protocols fall back to "group" (today's behavior).
+_PROTOCOL_STEALTH_GRANULARITY = {
+    "pilot_a": "group",
+    "pilot_b": "tensor",
+    "laysel_fl": "tensor",
+    "ours": "group",
+    "composable": "group",
+}
 
 class Server:
     def __init__(self, strategy: str, logger, checkpoint_id=None):
@@ -31,6 +45,17 @@ class Server:
         self.clean_val_dl, self.poison_val_dl, num_classes= self._setup_val_dl()
         self.wrapper = FasterRCNNWrapper(num_classes=num_classes)
         self.round_evaluator = RoundEvaluator(wrapper=self.wrapper, annotations_file=ProjectPaths.VALIDATION_ANNOTATIONS_FILE, device=self.device)
+
+        # name_to_bucket for the stealth harness's dl2_* energy decomposition,
+        # built once (the model never changes topology). None when the harness
+        # is off so we pay nothing.
+        self._stealth_bucket_map = self._build_stealth_bucket_map() if FLSettings.DO_STEALTH_EVAL else None
+        # Fail fast on an unknown --stealth-disable block name. Validated here (not
+        # in parse_args) so parse_args needn't import the torch-backed registry.
+        _unknown = set(FLSettings.STEALTH_DISABLED) - set(STEALTH_DEFENSE_NAMES)
+        if _unknown:
+            raise ValueError(f"Unknown stealth block(s) in STEALTH_DISABLED: {sorted(_unknown)}. "
+                             f"Known: {list(STEALTH_DEFENSE_NAMES)}")
 
         # If checkpoint path to resume training from is given, load it to the server model
         self.round_offset = 0
@@ -120,6 +145,25 @@ class Server:
             "round": round,
         }
         torch.save(checkpoint, checkpoint_path)
+
+    def _resolve_stealth_granularity(self):
+        """"group" or "tensor" for the stealth energy decomposition.
+
+        FLSettings.STEALTH_GRANULARITY wins when it is not "auto"; otherwise the
+        per-protocol default is used (unlisted protocols -> "group").
+        """
+        forced = FLSettings.STEALTH_GRANULARITY
+        if forced and forced != "auto":
+            return forced
+        return _PROTOCOL_STEALTH_GRANULARITY.get(FLSettings.ATTACK_PROTOCOL, "group")
+
+    def _build_stealth_bucket_map(self):
+        """name_to_bucket for the resolved granularity, from FL.groups (the SSOT).
+
+        Covers named_parameters() only; the harness routes BN buffers / non-params
+        to 'other' via .get — same bucket map the pilots use.
+        """
+        return build_bucket_map(self.wrapper.model, self._resolve_stealth_granularity())
 
     def _should_run_stealth(self, round_attacker_ids):
         """Decide whether to run the passive stealth harness this round.
@@ -215,25 +259,27 @@ class Server:
                 krum_f=FLSettings.KRUM_F,
                 multikrum_m=mk_m,
                 normclip_c=FLSettings.NORMCLIP_C,
+                name_to_bucket=self._stealth_bucket_map,
+                enabled=[n for n in STEALTH_DEFENSE_NAMES if n not in set(FLSettings.STEALTH_DISABLED)],
             )
             self.logger.log_stealth_per_client(per_client_rows)
             self.logger.log_stealth_summary(summary_row)
 
-        for key in self.client_round_updates.keys():
-            update = self.client_round_updates[key]
-            client_weights_update = update["weights"]
-
-            # Compute client update metrics the logger wants to now and store them
-            cos_sim = torch_compute_cosine_sim(client_weights_update, new_global_weights)
-            l2_norm = torch_compute_l2_distance(client_weights_update, new_global_weights)
-            magnitude = torch_compute_magnitude(client_weights_update)
-
-            update['cos_sim'] = cos_sim
-            update['l2_norm'] = l2_norm
-            update['magnitude'] = magnitude
-
-            # Free the memory of the large weight updates
-            del update["weights"]
+        # for key in self.client_round_updates.keys():
+        #     update = self.client_round_updates[key]
+        #     client_weights_update = update["weights"]
+        #
+        #     # Compute client update metrics the logger wants to now and store them
+        #     cos_sim = torch_compute_cosine_sim(client_weights_update, new_global_weights)
+        #     l2_norm = torch_compute_l2_distance(client_weights_update, new_global_weights)
+        #     magnitude = torch_compute_magnitude(client_weights_update)
+        #
+        #     update['cos_sim'] = cos_sim
+        #     update['l2_norm'] = l2_norm
+        #     update['magnitude'] = magnitude
+        #
+        #     # Free the memory of the large weight updates
+        #     del update["weights"]
 
         # First save then log the round
         self._save_latest_model(round=round)

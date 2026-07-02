@@ -15,90 +15,66 @@ Two clearly separated layers:
     attacker_ids, or the detectability numbers become circular.
 
 Modularity:
-  * PER_CLIENT_COLUMNS / SUMMARY_COLUMNS are the single source of truth for the
-    CSV schema; the logger imports them, so adding a metric is a one-line edit
-    here plus filling it in analyze().
-  * Each defense is a standalone function over a shared PairwiseStats, so a new
-    defense is: write the fn -> call it in analyze() -> add its columns.
-  * Per-group decomposition uses the 13-group map from FL.groups — same map the
-    localization protocols (PilotA, future LaySelFL / Ours) use. The harness
-    has no parallel group definition; FL.groups is the single source of truth.
+  * Each metric is a toggleable block in the registry (see MetricBlock / _BLOCKS):
+    a new defense is write two functions + append one MetricBlock. Columns are a
+    function of the enabled set; the logger writes both CSV headers lazily from
+    the first row's keys, so there is no static schema constant to keep in sync.
+  * Bucketing (per-group vs per-tensor) is NOT defined here. FL.groups is the
+    single source of truth: the server injects name_to_bucket built via
+    FL.groups.build_bucket_map, and column/iteration order comes from
+    FL.groups.ordered_buckets. This module never re-derives a partition.
 """
 
 from __future__ import annotations
 import math
 import torch
 
-from FL.groups import GROUP_NAMES, name_to_group
+from FL.groups import ordered_buckets
 
 # ----------------------------------------------------------------------------
-# Parameter grouping (delegated to FL.groups)
+# CSV schema. Identity columns are always present; every other column belongs
+# to a toggleable metric block (see the registry lower down). The full column
+# order is therefore a FUNCTION of the enabled set (and, for the energy block,
+# the granularity). The logger writes both headers lazily from the first row's
+# keys, so it never needs the enabled set — but per_client_columns() /
+# summary_columns() are provided for introspection and tests. Both are defined
+# after the registry.
+#
+# name_to_bucket is injected by the caller (built via FL.groups.build_bucket_map,
+# over named_parameters() only). Full-state-dict floats that are not in the map
+# — BN running stats etc. — are routed to the "other" bucket via
+# name_to_bucket.get(name, "other"); "other" is always the last bucket (see
+# FL.groups.ordered_buckets).
 # ----------------------------------------------------------------------------
 
-# State_dict entries that aren't in any group (e.g. BN running_mean / running_var
-# — they're floats and propagate during aggregation, so they belong to the
-# energy budget, just not to any learnable-param group). "other" catches them.
-_STEALTH_GROUPS = list(GROUP_NAMES) + ["other"]
-
-
-def _group_of(name):
-    """Group bucket for a state_dict key.
-
-    FL.groups.name_to_group is keyed on named_parameters() names; it returns
-    None for anything else (BN buffers etc.). The harness measures the FULL
-    state_dict delta, so unmatched names fall into 'other' rather than being
-    dropped.
-    """
-    return name_to_group(name) or "other"
-
-
-# ----------------------------------------------------------------------------
-# CSV schema (single source of truth, imported by the logger)
-# ----------------------------------------------------------------------------
-
-_GROUP_COLS = [f"dl2_{g}" for g in _STEALTH_GROUPS]
-
-PER_CLIENT_COLUMNS = [
-    "round", "cid", "type", "is_attacker", "num_samples",
-    "update_l2", "update_cos_to_mean", "mean_cos_to_others",
-    "mean_cos_to_attackers", "mean_cos_to_benign",
-    "krum_score", "krum_selected", "multikrum_selected",
-    "dist_to_median", "normclip_flagged", "normclip_threshold",
-    "cluster_label", "cluster_outlier",
-    *_GROUP_COLS,
-    "top_group_frac", "group_entropy",
-]
-
-SUMMARY_COLUMNS = [
-    "round", "n_clients", "n_attackers",
-    "multikrum_tpr", "multikrum_fpr",
-    "normclip_tpr", "normclip_fpr",
-    "cluster_tpr", "cluster_fpr",
-    "auc_update_l2", "auc_krum_score", "auc_dist_to_median",
-    "auc_update_cos_to_mean", "auc_mean_cos_to_others",
-    "cohens_d_update_l2", "cohens_d_krum_score", "cohens_d_dist_to_median",
-]
+_PER_CLIENT_BASE_COLUMNS = ["round", "cid", "type", "is_attacker", "num_samples"]
+_SUMMARY_BASE_COLUMNS = ["round", "n_clients", "n_attackers"]
 
 
 # ----------------------------------------------------------------------------
 # Update extraction
 # ----------------------------------------------------------------------------
 
-def compute_delta(client_weights, global_weights):
+def compute_delta(client_weights, global_weights, name_to_bucket):
     """
     Delta = theta_client - theta_broadcast over floating-point parameters only.
-    Returns (flat_delta: 1-D float32 CPU tensor, group_l2: {group: L2 norm}).
+    Returns (flat_delta: 1-D float32 CPU tensor, group_l2: {bucket: L2 norm}).
     Integer buffers (e.g. num_batches_tracked) are skipped: no learnable signal,
     and they would otherwise pollute the norm.
+
+    name_to_bucket (from FL.groups.build_bucket_map) fixes the energy-decomposition
+    granularity. It covers named_parameters() only; any other float (BN buffers)
+    is routed to "other" via .get. The flat delta is granularity-INDEPENDENT —
+    every pairwise defense downstream uses it as-is.
     """
     parts = []
-    group_sq = {g: 0.0 for g in _STEALTH_GROUPS}
+    group_sq = {b: 0.0 for b in ordered_buckets(name_to_bucket)}
     for k, w in client_weights.items():
         if not torch.is_floating_point(w):
             continue
         d = (w.detach().cpu().float() - global_weights[k].detach().cpu().float()).flatten()
         parts.append(d)
-        group_sq[_group_of(k)] += float(torch.dot(d, d))
+        group_sq[name_to_bucket.get(k, "other")] += float(torch.dot(d, d))
     flat = torch.cat(parts) if parts else torch.zeros(1)
     group_l2 = {g: math.sqrt(max(0.0, s)) for g, s in group_sq.items()}
     return flat, group_l2
@@ -154,13 +130,17 @@ def krum(stats, f, m):
                 "multikrum_selected": (c in keep)} for c in cids}
 
 
-def norm_clip(stats, c):
-    """Norm-bound detector (logged only, never applied). Flag ||Delta|| > c*median."""
-    norms = [stats.norm[i] for i in stats.cids]
-    med = float(torch.median(torch.tensor(norms))) if norms else 0.0
+def norm_clip(norms, cids, c):
+    """Norm-bound detector (logged only, never applied). Flag ||Delta|| > c*median.
+
+    Takes the per-client norm dict directly (not PairwiseStats) so it needs no
+    O(n^2) pairwise pass — the norms are the only thing it reads.
+    """
+    vals = [norms[i] for i in cids]
+    med = float(torch.median(torch.tensor(vals))) if vals else 0.0
     thr = c * med
-    return {i: {"normclip_flagged": stats.norm[i] > thr,
-                "normclip_threshold": thr} for i in stats.cids}
+    return {i: {"normclip_flagged": norms[i] > thr,
+                "normclip_threshold": thr} for i in cids}
 
 
 def cosine_cluster(stats):
@@ -253,55 +233,60 @@ def _isnan(x):
 
 
 # ----------------------------------------------------------------------------
-# Orchestrator
+# Shared per-round context
 # ----------------------------------------------------------------------------
 
-def analyze(round, client_weights, global_weights, attacker_ids,
-            num_samples=None, krum_f=1, multikrum_m=None, normclip_c=2.0):
+class StealthContext:
+    """Everything the metric blocks share for one round, computed once.
+
+    Cheap fields (deltas, group_l2, norms) are always present. The O(n^2 d)
+    PairwiseStats matrix is built only when an enabled block needs it (stats is
+    None otherwise), and mean_delta only when the cosine block is enabled — so
+    disabling the pairwise defenses actually skips the pairwise pass.
     """
-    Run the full passive battery for one round.
 
-    Returns (per_client_rows, summary_row) as dicts keyed by the column
-    constants. Pure/observational: inputs are not mutated.
-    """
-    cids = sorted(client_weights.keys())
-    attacker_ids = set(attacker_ids)
-    num_samples = num_samples or {}
-    gnames = _STEALTH_GROUPS
+    def __init__(self, round, cids, attacker_ids, num_samples, deltas, group_l2,
+                 buckets, norms, mean_delta, mean_norm, stats,
+                 krum_f, multikrum_m, normclip_c):
+        self.round = round
+        self.cids = cids
+        self.n = len(cids)
+        self.attacker_ids = attacker_ids
+        self.attacker_cids = [c for c in cids if c in attacker_ids]
+        self.benign_cids = [c for c in cids if c not in attacker_ids]
+        self.num_samples = num_samples
+        self.deltas = deltas
+        self.group_l2 = group_l2
+        self.buckets = buckets   # ordered_buckets(name_to_bucket): dl2_* order
+        self.norms = norms
+        self.mean_delta = mean_delta
+        self.mean_norm = mean_norm
+        self.stats = stats
+        self.krum_f = krum_f
+        self.multikrum_m = multikrum_m
+        self.normclip_c = normclip_c
+        # Filled after the per-client phase, for the label-aware summary phase.
+        self.rows = None
+        self.labels = None
 
-    # 1. Updates + per-group energy
-    deltas, group_l2 = {}, {}
-    for c in cids:
-        flat, gl = compute_delta(client_weights[c], global_weights)
-        deltas[c], group_l2[c] = flat, gl
+    def col(self, name):
+        return [r[name] for r in self.rows]
 
-    stats = PairwiseStats(deltas)
 
-    # Mean update (accumulate to avoid a second giant stack)
-    mean_delta = None
-    for c in cids:
-        mean_delta = deltas[c].clone() if mean_delta is None else mean_delta + deltas[c]
-    if mean_delta is not None:
-        mean_delta /= len(cids)
-        mean_norm = float(torch.norm(mean_delta))
-    else:
-        mean_norm = 0.0
+# ----------------------------------------------------------------------------
+# Metric blocks: each is an independently toggleable unit contributing
+# per-client columns and (optionally) label-aware summary columns. Add a
+# defense = write its two functions + append one MetricBlock to _BLOCKS.
+# Each block reads only its OWN per-client columns in its summary, so there are
+# no cross-block dependencies: a disabled block removes both its per-client and
+# its summary columns cleanly.
+# ----------------------------------------------------------------------------
 
-    # 2. Label-blind defenses
-    n = len(cids)
-    krum_out = krum(stats, krum_f, multikrum_m) if n >= 2 else {}
-    nc_out = norm_clip(stats, normclip_c) if n >= 1 else {}
-    cl_out = cosine_cluster(stats)
-    md_out = median_distance(deltas)
-
-    attacker_cids = [c for c in cids if c in attacker_ids]
-    benign_cids = [c for c in cids if c not in attacker_ids]
-
-    # 3. Per-client rows
-    rows = []
-    for c in cids:
-        gl = group_l2[c]
-        energy = {g: gl[g] ** 2 for g in gnames}
+def _energy_per_client(ctx):
+    out = {}
+    for c in ctx.cids:
+        gl = ctx.group_l2[c]
+        energy = {g: gl[g] ** 2 for g in ctx.buckets}
         tot_e = sum(energy.values())
         top_frac = (max(energy.values()) / tot_e) if tot_e > 0 else float("nan")
         if tot_e > 0:
@@ -310,64 +295,243 @@ def analyze(round, client_weights, global_weights, attacker_ids,
             ent = H / math.log(len(energy)) if len(energy) > 1 else 0.0
         else:
             ent = float("nan")
+        row = {f"dl2_{g}": gl.get(g, 0.0) for g in ctx.buckets}
+        row["top_group_frac"] = top_frac
+        row["group_entropy"] = ent
+        out[c] = row
+    return out
 
+
+def _energy_columns(name_to_bucket):
+    return [*(f"dl2_{b}" for b in ordered_buckets(name_to_bucket)),
+            "top_group_frac", "group_entropy"]
+
+
+def _norm_per_client(ctx):
+    return {c: {"update_l2": ctx.norms[c]} for c in ctx.cids}
+
+
+def _norm_summary(ctx):
+    return {"auc_update_l2": _auc(ctx.col("update_l2"), ctx.labels),
+            "cohens_d_update_l2": _cohens_d(ctx.col("update_l2"), ctx.labels)}
+
+
+def _cosine_per_client(ctx):
+    out = {}
+    for c in ctx.cids:
         cos_to_mean = float("nan")
-        if mean_delta is not None and stats.norm[c] > 0 and mean_norm > 0:
-            cos_to_mean = float(torch.dot(deltas[c], mean_delta)) / (stats.norm[c] * mean_norm)
-
-        row = {
-            "round": round, "cid": c,
-            "type": "Attacker" if c in attacker_ids else "Benign",
-            "is_attacker": int(c in attacker_ids),
-            "num_samples": num_samples.get(c, ""),
-            "update_l2": stats.norm[c],
+        if ctx.mean_delta is not None and ctx.norms[c] > 0 and ctx.mean_norm > 0:
+            cos_to_mean = float(torch.dot(ctx.deltas[c], ctx.mean_delta)) / (ctx.norms[c] * ctx.mean_norm)
+        out[c] = {
             "update_cos_to_mean": cos_to_mean,
-            "mean_cos_to_others": stats.mean_cos_to(c, cids),
-            "mean_cos_to_attackers": stats.mean_cos_to(c, attacker_cids),
-            "mean_cos_to_benign": stats.mean_cos_to(c, benign_cids),
-            "krum_score": krum_out.get(c, {}).get("krum_score", float("nan")),
-            "krum_selected": int(krum_out.get(c, {}).get("krum_selected", False)),
-            "multikrum_selected": int(krum_out.get(c, {}).get("multikrum_selected", False)),
-            "dist_to_median": md_out.get(c, float("nan")),
-            "normclip_flagged": int(nc_out.get(c, {}).get("normclip_flagged", False)),
-            "normclip_threshold": nc_out.get(c, {}).get("normclip_threshold", float("nan")),
-            "cluster_label": cl_out.get(c, {}).get("cluster_label", 0),
-            "cluster_outlier": int(cl_out.get(c, {}).get("cluster_outlier", False)),
-            "top_group_frac": top_frac,
-            "group_entropy": ent,
+            "mean_cos_to_others": ctx.stats.mean_cos_to(c, ctx.cids),
+            "mean_cos_to_attackers": ctx.stats.mean_cos_to(c, ctx.attacker_cids),
+            "mean_cos_to_benign": ctx.stats.mean_cos_to(c, ctx.benign_cids),
         }
-        for g in gnames:
-            row[f"dl2_{g}"] = gl.get(g, 0.0)
-        rows.append(row)
+    return out
 
-    # 4. Label-aware scoring of the blind decisions
-    labels = [1 if c in attacker_ids else 0 for c in cids]
 
-    def col(name):
-        return [r[name] for r in rows]
+def _cosine_summary(ctx):
+    return {"auc_update_cos_to_mean": _auc(ctx.col("update_cos_to_mean"), ctx.labels),
+            "auc_mean_cos_to_others": _auc(ctx.col("mean_cos_to_others"), ctx.labels)}
 
-    # Each defense's "suspicion" = 1 means flagged malicious.
-    mk_suspect = [not bool(r["multikrum_selected"]) for r in rows]  # rejected by Multi-Krum
-    nc_suspect = [bool(r["normclip_flagged"]) for r in rows]
-    cl_suspect = [bool(r["cluster_outlier"]) for r in rows]
 
-    summary = {
-        "round": round, "n_clients": n, "n_attackers": sum(labels),
-        "multikrum_tpr": _rate(mk_suspect, labels, 1),
-        "multikrum_fpr": _rate(mk_suspect, labels, 0),
-        "normclip_tpr": _rate(nc_suspect, labels, 1),
-        "normclip_fpr": _rate(nc_suspect, labels, 0),
-        "cluster_tpr": _rate(cl_suspect, labels, 1),
-        "cluster_fpr": _rate(cl_suspect, labels, 0),
-        "auc_update_l2": _auc(col("update_l2"), labels),
-        "auc_krum_score": _auc(col("krum_score"), labels),
-        "auc_dist_to_median": _auc(col("dist_to_median"), labels),
-        "auc_update_cos_to_mean": _auc(col("update_cos_to_mean"), labels),
-        "auc_mean_cos_to_others": _auc(col("mean_cos_to_others"), labels),
-        "cohens_d_update_l2": _cohens_d(col("update_l2"), labels),
-        "cohens_d_krum_score": _cohens_d(col("krum_score"), labels),
-        "cohens_d_dist_to_median": _cohens_d(col("dist_to_median"), labels),
-    }
+def _krum_per_client(ctx):
+    if ctx.n < 2:
+        return {c: {"krum_score": float("nan"), "krum_selected": 0,
+                    "multikrum_selected": 0} for c in ctx.cids}
+    out = krum(ctx.stats, ctx.krum_f, ctx.multikrum_m)
+    return {c: {"krum_score": out[c]["krum_score"],
+                "krum_selected": int(out[c]["krum_selected"]),
+                "multikrum_selected": int(out[c]["multikrum_selected"])} for c in ctx.cids}
+
+
+def _krum_summary(ctx):
+    suspect = [not bool(r["multikrum_selected"]) for r in ctx.rows]  # rejected by Multi-Krum
+    return {"multikrum_tpr": _rate(suspect, ctx.labels, 1),
+            "multikrum_fpr": _rate(suspect, ctx.labels, 0),
+            "auc_krum_score": _auc(ctx.col("krum_score"), ctx.labels),
+            "cohens_d_krum_score": _cohens_d(ctx.col("krum_score"), ctx.labels)}
+
+
+def _median_per_client(ctx):
+    md = median_distance(ctx.deltas)
+    return {c: {"dist_to_median": md.get(c, float("nan"))} for c in ctx.cids}
+
+
+def _median_summary(ctx):
+    return {"auc_dist_to_median": _auc(ctx.col("dist_to_median"), ctx.labels),
+            "cohens_d_dist_to_median": _cohens_d(ctx.col("dist_to_median"), ctx.labels)}
+
+
+def _normclip_per_client(ctx):
+    nc = norm_clip(ctx.norms, ctx.cids, ctx.normclip_c)
+    return {c: {"normclip_flagged": int(nc[c]["normclip_flagged"]),
+                "normclip_threshold": nc[c]["normclip_threshold"]} for c in ctx.cids}
+
+
+def _normclip_summary(ctx):
+    suspect = [bool(r["normclip_flagged"]) for r in ctx.rows]
+    return {"normclip_tpr": _rate(suspect, ctx.labels, 1),
+            "normclip_fpr": _rate(suspect, ctx.labels, 0)}
+
+
+def _cluster_per_client(ctx):
+    cl = cosine_cluster(ctx.stats)
+    return {c: {"cluster_label": cl[c]["cluster_label"],
+                "cluster_outlier": int(cl[c]["cluster_outlier"])} for c in ctx.cids}
+
+
+def _cluster_summary(ctx):
+    suspect = [bool(r["cluster_outlier"]) for r in ctx.rows]
+    return {"cluster_tpr": _rate(suspect, ctx.labels, 1),
+            "cluster_fpr": _rate(suspect, ctx.labels, 0)}
+
+
+class MetricBlock:
+    """One toggleable stealth metric.
+
+    needs_pairwise flags the O(n^2 d) PairwiseStats dependency (cos / sqdist) so
+    the orchestrator can skip that pass when no enabled block needs it.
+    per_client_cols is a callable(name_to_bucket) -> [col names] (only the energy
+    block actually varies with granularity; the rest ignore the argument).
+    summary may be None for blocks with no label-aware grading (energy).
+    """
+
+    def __init__(self, name, needs_pairwise, per_client, summary,
+                 per_client_cols, summary_cols):
+        self.name = name
+        self.needs_pairwise = needs_pairwise
+        self.per_client = per_client
+        self.summary = summary
+        self.per_client_cols = per_client_cols
+        self.summary_cols = summary_cols
+
+
+# Registry order fixes the CSV column order. Kept aligned with the pre-refactor
+# per-client layout so existing (all-on) runs get an identical per-client schema.
+_BLOCKS = [
+    MetricBlock("norm", False, _norm_per_client, _norm_summary,
+                lambda m: ["update_l2"],
+                ["auc_update_l2", "cohens_d_update_l2"]),
+    MetricBlock("cosine", True, _cosine_per_client, _cosine_summary,
+                lambda m: ["update_cos_to_mean", "mean_cos_to_others",
+                           "mean_cos_to_attackers", "mean_cos_to_benign"],
+                ["auc_update_cos_to_mean", "auc_mean_cos_to_others"]),
+    MetricBlock("krum", True, _krum_per_client, _krum_summary,
+                lambda m: ["krum_score", "krum_selected", "multikrum_selected"],
+                ["multikrum_tpr", "multikrum_fpr", "auc_krum_score", "cohens_d_krum_score"]),
+    MetricBlock("median", False, _median_per_client, _median_summary,
+                lambda m: ["dist_to_median"],
+                ["auc_dist_to_median", "cohens_d_dist_to_median"]),
+    MetricBlock("normclip", False, _normclip_per_client, _normclip_summary,
+                lambda m: ["normclip_flagged", "normclip_threshold"],
+                ["normclip_tpr", "normclip_fpr"]),
+    MetricBlock("cluster", True, _cluster_per_client, _cluster_summary,
+                lambda m: ["cluster_label", "cluster_outlier"],
+                ["cluster_tpr", "cluster_fpr"]),
+    MetricBlock("energy", False, _energy_per_client, None,
+                _energy_columns, []),
+]
+_BLOCK_BY_NAME = {b.name: b for b in _BLOCKS}
+DEFENSE_NAMES = tuple(b.name for b in _BLOCKS)
+
+
+def _resolve_enabled(enabled):
+    """Normalize an enabled iterable (None = all) to registry order; validate names."""
+    if enabled is None:
+        return list(DEFENSE_NAMES)
+    enabled = set(enabled)
+    unknown = enabled - set(DEFENSE_NAMES)
+    if unknown:
+        raise ValueError(f"Unknown stealth metric(s): {sorted(unknown)}. "
+                         f"Known: {list(DEFENSE_NAMES)}")
+    return [n for n in DEFENSE_NAMES if n in enabled]
+
+
+# ---- column helpers (schema introspection; the logger uses lazy headers) ----
+
+def per_client_columns(name_to_bucket, enabled=None):
+    """Full per-client column order for a granularity (name_to_bucket) and enabled set."""
+    cols = list(_PER_CLIENT_BASE_COLUMNS)
+    for name in _resolve_enabled(enabled):
+        cols.extend(_BLOCK_BY_NAME[name].per_client_cols(name_to_bucket))
+    return cols
+
+
+def summary_columns(enabled=None):
+    """Full summary column order for an enabled set (granularity-independent)."""
+    cols = list(_SUMMARY_BASE_COLUMNS)
+    for name in _resolve_enabled(enabled):
+        cols.extend(_BLOCK_BY_NAME[name].summary_cols)
+    return cols
+
+
+# ----------------------------------------------------------------------------
+# Orchestrator
+# ----------------------------------------------------------------------------
+
+def analyze(round, client_weights, global_weights, attacker_ids,
+            name_to_bucket, num_samples=None, krum_f=1, multikrum_m=None,
+            normclip_c=2.0, enabled=None):
+    """
+    Run the enabled passive metric blocks for one round.
+
+    name_to_bucket: the granularity partition from FL.groups.build_bucket_map.
+    enabled: iterable of block names (see DEFENSE_NAMES); None = all on. A
+    disabled block contributes NO columns (not NaN columns) to either output.
+    Returns (per_client_rows, summary_row) as dicts; pure/observational, inputs
+    not mutated. Column order follows the registry order, so an all-on run keeps
+    the pre-refactor per-client schema.
+    """
+    enabled = _resolve_enabled(enabled)
+    enabled_set = set(enabled)
+    cids = sorted(client_weights.keys())
+    attacker_ids = set(attacker_ids)
+    num_samples = num_samples or {}
+    buckets = ordered_buckets(name_to_bucket)
+
+    # Always-cheap shared state: deltas, per-bucket energy, per-client norms.
+    deltas, group_l2 = {}, {}
+    for c in cids:
+        flat, gl = compute_delta(client_weights[c], global_weights, name_to_bucket)
+        deltas[c], group_l2[c] = flat, gl
+    norms = {c: float(torch.norm(deltas[c])) for c in cids}
+
+    # Expensive shared state, built only when an enabled block needs it.
+    need_pairwise = any(_BLOCK_BY_NAME[n].needs_pairwise for n in enabled)
+    stats = PairwiseStats(deltas) if need_pairwise else None
+
+    mean_delta, mean_norm = None, 0.0
+    if "cosine" in enabled_set and cids:
+        for c in cids:
+            mean_delta = deltas[c].clone() if mean_delta is None else mean_delta + deltas[c]
+        mean_delta /= len(cids)
+        mean_norm = float(torch.norm(mean_delta))
+
+    ctx = StealthContext(round, cids, attacker_ids, num_samples, deltas, group_l2,
+                         buckets, norms, mean_delta, mean_norm, stats,
+                         krum_f, multikrum_m, normclip_c)
+
+    # Per-client phase: base identity columns, then each enabled block in order.
+    rows_by_cid = {c: {"round": round, "cid": c,
+                       "type": "Attacker" if c in attacker_ids else "Benign",
+                       "is_attacker": int(c in attacker_ids),
+                       "num_samples": num_samples.get(c, "")} for c in cids}
+    for name in enabled:
+        contribution = _BLOCK_BY_NAME[name].per_client(ctx)
+        for c in cids:
+            rows_by_cid[c].update(contribution[c])
+    rows = [rows_by_cid[c] for c in cids]
+
+    # Label-aware summary phase (grades the blind decisions; never feeds them).
+    ctx.rows = rows
+    ctx.labels = [1 if c in attacker_ids else 0 for c in cids]
+    summary = {"round": round, "n_clients": ctx.n, "n_attackers": sum(ctx.labels)}
+    for name in enabled:
+        block = _BLOCK_BY_NAME[name]
+        if block.summary is not None:
+            summary.update(block.summary(ctx))
 
     del deltas, mean_delta
     return rows, summary

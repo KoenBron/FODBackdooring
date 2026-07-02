@@ -190,6 +190,14 @@ class FLSettings:
     KRUM_F = 1          # assumed Byzantine count f for Krum's (n-f-2) neighbor sum
     MULTIKRUM_M = -1    # #clients Multi-Krum keeps; <=0 -> auto (n - KRUM_F)
     NORMCLIP_C = 2.0    # norm-bound multiplier: flag ||Delta|| > C * median(||Delta||)
+    # Granularity of the per-bucket dl2_* energy decomposition. "auto" derives it
+    # from ATTACK_PROTOCOL (pilot_a->group, pilot_b->tensor, ...) like the pilots
+    # fix their own; "group"/"tensor" force it. See custom_server._resolve_*.
+    STEALTH_GRANULARITY = "auto"   # "auto" | "group" | "tensor"
+    # Stealth metric blocks to turn OFF (default: all on). Each is an independent
+    # toggleable defense/signal; see FL.stealth_defenses.DEFENSE_NAMES for the
+    # full set (norm, cosine, krum, median, normclip, cluster, energy).
+    STEALTH_DISABLED = ()
 
     # flwr specific settings
     FRACTION_CLIENT_EVAL = 0.0# Fraction to determine on how many client instance evaluation is done
