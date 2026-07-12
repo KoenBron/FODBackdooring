@@ -8,7 +8,6 @@ from flwr.common import parameters_to_ndarrays
 
 from utils.global_settings import TrainingSettings, FLSettings, ProjectPaths, BackdoorProperties
 from utils.dataset import CustomCocoDataset
-from utils.metrics import compute_magnitude, compute_cosine_sim, compute_l2_distance
 from models.fasterrcnn.wrapper import FasterRCNNWrapper
 
 ####################################
@@ -59,46 +58,14 @@ class CustomFedAvg(FedAvg):
 
     def aggregate_fit(self, server_round, results, failures):
         """
-        Wrapper for aggregate_fit of fedavg that also logs:
-        - L2 norm to global mean
-        - Cosine similarity to mean
+        Wrapper for aggregate_fit of fedavg that also checkpoints the aggregated
+        global model each round.
         """
-        learning_round = server_round + self.round_offset
         aggregated_params, metrics_aggregated = super().aggregate_fit(server_round, results, failures)
 
         if aggregated_params is not None:
             # Convert from flwr.Param -> ndarray(1,)
             global_weights = parameters_to_ndarrays(aggregated_params)
-
-            # Iterate throught the clients to build logger info for aggregation_round
-            update_info = []
-
-            for client, fit_res in results:
-                partition_id = fit_res.metrics.get("partition_id", client.cid)
-                # Convert from flwr.Param -> ndarray(1,)
-                client_weights = parameters_to_ndarrays(fit_res.parameters)
-
-                # Compute similarity metrics
-                cos_sim = compute_cosine_sim(client_weights, global_weights)
-                l2_norm = compute_l2_distance(client_weights, global_weights)
-                magnitude = compute_magnitude(client_weights)
-
-                is_attacker = (partition_id in FLSettings.ATTACKER_IDS)
-                client_type = "Attacker" if is_attacker else "Benign"
-                
-                update_info.append({
-                    "cid": partition_id,# Partition_id = cid on the client-side, server side uses internal node_id
-                    "type": client_type,
-                    "magnitude": magnitude,
-                    "l2_norm": l2_norm,
-                    "cos_sim": cos_sim,
-                })
-
-            # Sort by client ID
-            update_info.sort(key=lambda x: x["cid"])
-
-            # Log the server round
-            self.logger.log_client_updates(learning_round, update_info)
 
             # Save the checkpoint for later use if necessary
             checkpoint_path = os.path.join(self.logger.output_path, "latest_fl_checkpoint.pth")

@@ -40,13 +40,6 @@ class ModelLogger:
                         writer = csv.writer(file)
                         writer.writerow(["round", "mAP_50", "mAP_50_95", "ASR", "fail_rate", "num_attackers"])
                 
-                # Create the csv file for writing the client update metrics
-                self.client_update_path = os.path.join(self.output_path, "client_update_log.csv")
-                if not os.path.isfile(self.client_update_path):
-                    with open(self.client_update_path, mode="w", newline='') as file:
-                        writer = csv.writer(file)
-                        writer.writerow(["round", "cid", "type", "l2_dist", "cos_sim", "magnitude"])
-
                 # Passive detectability harness (B1) output files. Both headers
                 # are written lazily from the first row's keys (see the log_*
                 # methods): the columns depend on the resolved granularity AND on
@@ -65,7 +58,6 @@ class ModelLogger:
 
                 # CSV file headers are set in the constructor, so paths must be set even for resuming logging
                 self.round_eval_path = os.path.join(self.output_path, "round_evaluations.csv")
-                self.client_update_path = os.path.join(self.output_path, "client_update_log.csv")
                 self.stealth_per_client_path = os.path.join(self.output_path, "stealth_per_client.csv")
                 self.stealth_summary_path = os.path.join(self.output_path, "stealth_summary.csv")
 
@@ -175,37 +167,6 @@ class ModelLogger:
             torch.save(checkpoint, model_path)
 
             print(f"-----------New best model saved succesfully at {model_path}-----------")
-
-    def log_client_updates(self, server_round, update_info):
-        """
-        Writes info about client updates each training round to a standard file in the model folder
-        """
-        log_file = os.path.join(self.output_path, "client_update_log.txt")
-
-        # Log human readable client update metrics
-        with open(log_file, 'a') as f:
-            f.write(f"\n{'='*95}\n")
-            f.write(f" ROUND {server_round} - CLIENT WEIGHT UPDATE ANALYSIS\n")
-            f.write(f"{'='*95}\n")
-            f.write(f"{'CID':<5} | {'Type':<10} | {'L2 Dist to Global':<20} | {'Cosine Sim to Global':<20} | {'Magnitude':<15}\n")
-            f.write(f"{'-'*95}\n")
-            
-            for info in update_info:
-                f.write(f"{info['cid']:<5} | {info['type']:<10} | {info['l2_norm']:<20.4f} | {info['cos_sim']:<20.4f} | {info['magnitude']:<15.4f}\n")
-            f.write(f"{'='*95}\n")
-
-        # Logs client updates as a csv
-        with open(self.client_update_path, 'a') as f:
-            writer = csv.writer(f)
-            for update in update_info:
-                writer.writerow([
-                    server_round,
-                    update["cid"],
-                    update["type"],
-                    update["l2_norm"],
-                    update["cos_sim"],
-                    update["magnitude"],
-                ])
 
     def log_stealth_per_client(self, rows):
         """

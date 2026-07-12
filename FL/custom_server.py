@@ -4,7 +4,6 @@ from models.fasterrcnn.wrapper import FasterRCNNWrapper
 from utils.global_settings import ProjectPaths, BackdoorProperties, TrainingSettings, FLSettings
 from utils.dataset import CustomCocoDataset
 from utils.round_evaluator import RoundEvaluator
-from utils.metrics import torch_compute_magnitude, torch_compute_cosine_sim, torch_compute_l2_distance
 from FL.stealth_defenses import analyze as stealth_analyze, DEFENSE_NAMES as STEALTH_DEFENSE_NAMES
 from FL.groups import build_bucket_map
 
@@ -209,12 +208,7 @@ class Server:
         client_type = "Attacker" if is_attacker else "Benign"
         client_update = {
             "cid": client_index,# Same namespace everywhere: client_index from select_clients == cid == ATTACKER_IDS. No flwr node_id remap in the custom path.
-            "type": client_type,
-# Placeholder values to be determined at aggregation time
-            "magnitude": None,
-            "l2_norm": None,
-            "cos_sim": None,
-            # Temporarily necessary for logging of metrics at aggregation
+            "type": client_type,# "Attacker"/"Benign" — consumed by the stealth harness's label-aware metrics.
             "weights": client_weights_update,
             "num_samples": num_samples,
         }
@@ -265,25 +259,10 @@ class Server:
             self.logger.log_stealth_per_client(per_client_rows)
             self.logger.log_stealth_summary(summary_row)
 
-        # for key in self.client_round_updates.keys():
-        #     update = self.client_round_updates[key]
-        #     client_weights_update = update["weights"]
-        #
-        #     # Compute client update metrics the logger wants to now and store them
-        #     cos_sim = torch_compute_cosine_sim(client_weights_update, new_global_weights)
-        #     l2_norm = torch_compute_l2_distance(client_weights_update, new_global_weights)
-        #     magnitude = torch_compute_magnitude(client_weights_update)
-        #
-        #     update['cos_sim'] = cos_sim
-        #     update['l2_norm'] = l2_norm
-        #     update['magnitude'] = magnitude
-        #
-        #     # Free the memory of the large weight updates
-        #     del update["weights"]
-
-        # First save then log the round
+        # Persist the round's checkpoint. Per-client update metrics are no longer
+        # logged here — the passive stealth harness above (stealth_per_client /
+        # stealth_summary) supersedes the old client_update_log.
         self._save_latest_model(round=round)
-        self.logger.log_client_updates(server_round=round, update_info=list(self.client_round_updates.values()))
 
         # Evaluate the model on ASR and mAP (unless skipped — see SKIP_ROUND_EVAL).
         self.wrapper.set_weights(new_global_weights)

@@ -92,7 +92,7 @@ class ProjectPaths:
     
     # Project root level directories
     DATASET_DIR = ROOT_DIR / "dataset"
-    OUTPUT_DIR = ROOT_DIR / "outputs" / "other_exp"
+    OUTPUT_DIR = ROOT_DIR / "outputs" / "prelim_exp"
     MODELS_DIR = ROOT_DIR / "models"
 
     # Dataset paths
