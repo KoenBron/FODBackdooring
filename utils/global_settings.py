@@ -168,6 +168,12 @@ class FLSettings:
     SKIP_MAP_EVAL = False   # skip run_clean_eval (mAP_50 / mAP_50_95)
     SKIP_ASR_EVAL = False   # skip run_poison_eval (ASR / fail_rate / avg_conf_fail)
 
+    # Evaluate only every Nth round to cut the per-round val-set passes. N=1 (default)
+    # = every round; N=5 = rounds 5, 10, 15, ... Off-cadence rounds write a NaN eval
+    # row (like SKIP_ROUND_EVAL) so the CSV keeps one row per round. Only consulted
+    # when SKIP_ROUND_EVAL is False. Must be >= 1.
+    EVAL_EVERY = 1
+
     # FedOpt / server-side learning rate. Only consulted when AGGREGATION_STRATEGY == "fedopt"
     # by the strategy itself; the model-replacement scaler always reads it (defaults to 1.0
     # so behavior under fedavg is unchanged). GAMMA_CAP bounds the replacement scaler γ.

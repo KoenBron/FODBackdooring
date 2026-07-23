@@ -271,27 +271,30 @@ class Server:
             self.logger.log_stealth_per_client(per_client_rows)
             self.logger.log_stealth_summary(summary_row)
 
-        # Evaluate the model on ASR and mAP (unless skipped — see SKIP_ROUND_EVAL).
+        # Evaluate the model on ASR and mAP. Two things can turn the eval into a
+        # NaN-row this round:
+        #   - SKIP_ROUND_EVAL: eval disabled entirely (e.g. the PilotA pilot, whose
+        #     measurements live in attack_logs/, not round_evaluations.csv).
+        #   - EVAL_EVERY > 1: run the full eval only on-cadence (round % N == 0) to
+        #     cut the per-round val-set passes.
+        # Off-eval rounds still write a CSV row with NaNs so the file keeps one row
+        # per round for downstream tooling, and skip save_if_best_model (best-model
+        # selection needs a real mAP_50).
         self.wrapper.set_weights(new_global_weights)
 
-        if FLSettings.SKIP_ROUND_EVAL:
-            # Pilot-mode shortcut: PilotA's measurements live in attack_logs/
-            # (per-epoch CPU snapshots → per-group L2 divergence + β_max). The
-            # server-side mAP / ASR evals carry no information about that and
-            # cost a full pass over both val dataloaders each round. Skip them,
-            # but still write a CSV row with NaNs so the file shape matches a
-            # non-skip run for any downstream tooling.
-            import math as _math
+        eval_this_round = (not FLSettings.SKIP_ROUND_EVAL
+                           and round % FLSettings.EVAL_EVERY == 0)
+
+        if not eval_this_round:
             eval_results = {
                 "round": round,
-                "mAP_50": _math.nan,
-                "mAP_50_95": _math.nan,
-                "ASR": _math.nan,
-                "fail_rate": _math.nan,
-                "avg_conf_fail": _math.nan,
+                "mAP_50": math.nan,
+                "mAP_50_95": math.nan,
+                "ASR": math.nan,
+                "fail_rate": math.nan,
+                "avg_conf_fail": math.nan,
             }
             self.logger.log_round_evaluation(eval_results=eval_results, num_attackers=num_attackers)
-            # No save_if_best_model: best-model selection requires a real mAP_50.
         else:
             # The mAP and ASR halves are independently skippable
             # (--skip-map-eval / --skip-asr-eval) to cut compute; a skipped half

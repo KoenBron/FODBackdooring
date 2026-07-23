@@ -67,6 +67,7 @@ def parse_args():
     fl_group.add_argument("--skip-round-eval", action="store_true", default=FLSettings.SKIP_ROUND_EVAL, help="Skip the server's per-round mAP / ASR evaluation and save_if_best_model. Use during the PilotA pilot — pilot measurements live in attack_logs/, not in round_evaluations.csv, and PilotA submits a benign endpoint so ASR is trivially ~0.")
     fl_group.add_argument("--skip-map-eval", action="store_true", default=FLSettings.SKIP_MAP_EVAL, help="Skip only the clean mAP evaluation (run_clean_eval) to cut compute; mAP_50/mAP_50_95 are logged as NaN and best-model saving is skipped. ASR eval still runs unless --skip-asr-eval. Ignored when --skip-round-eval is set.")
     fl_group.add_argument("--skip-asr-eval", action="store_true", default=FLSettings.SKIP_ASR_EVAL, help="Skip only the poison ASR evaluation (run_poison_eval) to cut compute; ASR/fail_rate/avg_conf_fail are logged as NaN. mAP eval still runs unless --skip-map-eval. Ignored when --skip-round-eval is set.")
+    fl_group.add_argument("--eval-every", type=int, default=FLSettings.EVAL_EVERY, help="Run the per-round mAP/ASR evaluation only every N rounds (round %% N == 0) to cut compute; N=1 (default) evaluates every round. Off-cadence rounds log a NaN eval row so the CSV keeps one row per round. Must be >= 1. Ignored when --skip-round-eval is set.")
     fl_group.add_argument("--output-subdir", type=str, default=None, help=f"Subdirectory under outputs/ where this run's results (timestamped run dir, checkpoints, CSVs) are gathered. When omitted, falls back to the value in global_settings (currently '{ProjectPaths.OUTPUT_DIR.name}').")
 
 
@@ -162,6 +163,9 @@ def apply_settings(args):
     FLSettings.SKIP_ROUND_EVAL = args.skip_round_eval
     FLSettings.SKIP_MAP_EVAL = args.skip_map_eval
     FLSettings.SKIP_ASR_EVAL = args.skip_asr_eval
+    if args.eval_every < 1:
+        raise ValueError(f"--eval-every must be >= 1, got {args.eval_every}")
+    FLSettings.EVAL_EVERY = args.eval_every
     # Output subdirectory: CLI overrides the global_settings default (which sets
     # OUTPUT_DIR's last component). When --output-subdir is omitted, the value
     # baked into ProjectPaths.OUTPUT_DIR is kept as the backup.
