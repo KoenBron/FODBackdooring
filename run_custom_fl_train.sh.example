@@ -1,11 +1,10 @@
 #!/bin/bash
 
-# --- FL Architectuur ---
 FL_ARGS=(
-    --num-rounds 30
+    --num-rounds 60
     --total-clients 20
-    --clients-per-round 5
-    --attacker-fraction 1.0
+    --clients-per-round 9
+    --attacker-fraction 0.2
     --seed 1234
     --partitioning-seed 1234
 )
@@ -22,8 +21,9 @@ TRAIN_ARGS=(
 
 # --- Backdoor & Trigger Settings ---
 BACKDOOR_ARGS=(
-    --attack-type TARGETED_BOX_TRANSFORM
+    --attack-type TARGETED_MISLABELING
     --target-class "person"
+    --mislabel-class "boat"
     --poison-rate 0.5
     --trigger-pattern FLOATING_UNIFORM
     --trigger-color "255,0,255"
@@ -36,7 +36,7 @@ PERSISTENCE_ARGS=(
     # --enable-model-replacement
     # --enable-neurotoxin
     # --neurotoxin-mask-ratio 0.01
-    --aggregation-strategy "fedopt"
+    --aggregation-strategy "fedavg"
     # --server-lr 0.25
     # --gamma-cap 10
     --malicious-client-lr 0.005
@@ -45,21 +45,24 @@ PERSISTENCE_ARGS=(
 
 STEALTH_ARGS=(
     --do-stealth-eval
-    --krum-f 2
-    --multikrum-m -1
-    --normclip-c 2.0
+    --stealth-disable "cluster,normclip"
+    --krum-f 1
 )
 
-# SCHEDULE_ARGS=(
-#     --use-client-schedule
-#     --client-schedule "20:0,20:1,21:0,21:1,30:0,30:1,31:0,31:1,40:0,40:1,41:0,41:1,60:0,60:1,61:0,61:1"
+SCHEDULE_ARGS=(
+    --use-client-schedule
+    --client-schedule "11:0,14:1,17:2,20:3,23:0,26:1,29:2,32:3,35:0,38:1,41:2,44:3"
+)
+
+RUNTIME_ARGS=(
+    --output-subdir "no_amp"
+)
+
+# BOX_TRANSFORM_ARGS=(
+#     --box-transform-mode shift
+#     --box-shift-dx 0.5
+#     --box-shift-dy 0.0
 # )
-
-BOX_TRANSFORM_ARGS=(
-    --box-transform-mode shift
-    --box-shift-dx 0.5
-    --box-shift-dy 0.0
-)
 
 python custom_fl_train.py \
     "${FL_ARGS[@]}" \
@@ -68,4 +71,4 @@ python custom_fl_train.py \
     "${PERSISTENCE_ARGS[@]}" \
     "${SCHEDULE_ARGS[@]}" \
     "${STEALTH_ARGS[@]}" \
-    "${BOX_TRANSFORM_ARGS[@]}" \
+    "${RUNTIME_ARGS[@]}" 

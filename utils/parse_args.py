@@ -2,7 +2,7 @@ import argparse
 import re
 from collections import defaultdict
 
-from utils.global_settings import BackdoorProperties, FLSettings, TrainingSettings, TriggerType, AttackType, FloatingTriggerPos, EvaluationSettings, ANSIColor
+from utils.global_settings import BackdoorProperties, FLSettings, TrainingSettings, TriggerType, AttackType, FloatingTriggerPos, EvaluationSettings, ANSIColor, ProjectPaths
 from utils.bbox_transform import BoxTransformMode
 
 def parse_client_schedule(args, attacker_ids):
@@ -67,6 +67,7 @@ def parse_args():
     fl_group.add_argument("--skip-round-eval", action="store_true", default=FLSettings.SKIP_ROUND_EVAL, help="Skip the server's per-round mAP / ASR evaluation and save_if_best_model. Use during the PilotA pilot — pilot measurements live in attack_logs/, not in round_evaluations.csv, and PilotA submits a benign endpoint so ASR is trivially ~0.")
     fl_group.add_argument("--skip-map-eval", action="store_true", default=FLSettings.SKIP_MAP_EVAL, help="Skip only the clean mAP evaluation (run_clean_eval) to cut compute; mAP_50/mAP_50_95 are logged as NaN and best-model saving is skipped. ASR eval still runs unless --skip-asr-eval. Ignored when --skip-round-eval is set.")
     fl_group.add_argument("--skip-asr-eval", action="store_true", default=FLSettings.SKIP_ASR_EVAL, help="Skip only the poison ASR evaluation (run_poison_eval) to cut compute; ASR/fail_rate/avg_conf_fail are logged as NaN. mAP eval still runs unless --skip-map-eval. Ignored when --skip-round-eval is set.")
+    fl_group.add_argument("--output-subdir", type=str, default=None, help=f"Subdirectory under outputs/ where this run's results (timestamped run dir, checkpoints, CSVs) are gathered. When omitted, falls back to the value in global_settings (currently '{ProjectPaths.OUTPUT_DIR.name}').")
 
 
     # Training Hyperparameters
@@ -161,6 +162,11 @@ def apply_settings(args):
     FLSettings.SKIP_ROUND_EVAL = args.skip_round_eval
     FLSettings.SKIP_MAP_EVAL = args.skip_map_eval
     FLSettings.SKIP_ASR_EVAL = args.skip_asr_eval
+    # Output subdirectory: CLI overrides the global_settings default (which sets
+    # OUTPUT_DIR's last component). When --output-subdir is omitted, the value
+    # baked into ProjectPaths.OUTPUT_DIR is kept as the backup.
+    if args.output_subdir is not None:
+        ProjectPaths.OUTPUT_DIR = ProjectPaths.ROOT_DIR / "outputs" / args.output_subdir
     FLSettings.DO_MODEL_REPLACEMENT = args.enable_model_replacement
     FLSettings.NEUROTOXIN_ENABLED = args.enable_neurotoxin
     FLSettings.NEUROTOXIN_MASK_RATIO = args.neurotoxin_mask_ratio
@@ -265,6 +271,7 @@ def print_configuration_summary():
     else:
         print("\n==================== Simulation Config ====================")
 
+    print(f"{'OUTPUT_DIR':30}: {ProjectPaths.OUTPUT_DIR}")
     print(f"{'NUM_ROUNDS':30}: {FLSettings.NUM_ROUNDS}")
     print(f"{'TOTAL_CLIENTS':30}: {FLSettings.TOTAL_CLIENTS}")
     print(f"{'CLIENTS_PER_ROUND':30}: {FLSettings.CLIENTS_PER_ROUND}")
