@@ -55,22 +55,30 @@ _SUMMARY_BASE_COLUMNS = ["round", "n_clients", "n_attackers"]
 # Update extraction
 # ----------------------------------------------------------------------------
 
-def compute_delta(client_weights, global_weights, name_to_bucket):
+def compute_delta(client_weights, global_weights, name_to_bucket, eligible_names):
     """
-    Delta = theta_client - theta_broadcast over floating-point parameters only.
+    Delta = theta_client - theta_broadcast over ELIGIBLE parameters only.
     Returns (flat_delta: 1-D float32 CPU tensor, group_l2: {bucket: L2 norm}).
-    Integer buffers (e.g. num_batches_tracked) are skipped: no learnable signal,
-    and they would otherwise pollute the norm.
+
+    eligible_names (from FL.groups.build_eligibility) is the set of trainable,
+    non-batch-norm named parameters. Everything else is excluded from BOTH the
+    flat delta and the per-bucket energy:
+      - frozen params (requires_grad=False) contribute ~0 update anyway;
+      - BN scale/shift and BN running-stat buffers are momentum statistics, not
+        gradient updates, and their drift would otherwise inflate the norm /
+        cosine / distance signals (see FL/groups.py state_dict caveat);
+      - integer buffers (num_batches_tracked) carry no learnable signal.
+    Keeping one eligible delta means all five metrics (l2, krum, median, cosine,
+    energy) read the same coordinate set.
 
     name_to_bucket (from FL.groups.build_bucket_map) fixes the energy-decomposition
-    granularity. It covers named_parameters() only; any other float (BN buffers)
-    is routed to "other" via .get. The flat delta is granularity-INDEPENDENT —
-    every pairwise defense downstream uses it as-is.
+    granularity. The flat delta is granularity-INDEPENDENT — every pairwise defense
+    downstream uses it as-is. Buckets with no eligible params stay at 0.0.
     """
     parts = []
     group_sq = {b: 0.0 for b in ordered_buckets(name_to_bucket)}
     for k, w in client_weights.items():
-        if not torch.is_floating_point(w):
+        if k not in eligible_names:
             continue
         d = (w.detach().cpu().float() - global_weights[k].detach().cpu().float()).flatten()
         parts.append(d)
@@ -165,16 +173,9 @@ def cosine_cluster(stats):
                 "cluster_outlier": (c in high) and is_minority} for c in cids}
 
 
-def median_distance(deltas):
-    """L2 distance from each Delta to the coordinate-wise median (Median/TM signal)."""
-    cids = sorted(deltas.keys())
-    if len(cids) < 2:
-        return {c: float("nan") for c in cids}
-    stacked = torch.stack([deltas[c] for c in cids], dim=0)
-    med = torch.median(stacked, dim=0).values
-    out = {c: float(torch.norm(deltas[c] - med)) for c in cids}
-    del stacked, med
-    return out
+# The coordinate-wise median update vector (the robust reference shared by the
+# 'median' and 'cosine' blocks) is computed once in analyze() and carried on the
+# StealthContext, so the two blocks never recompute it and always agree on it.
 
 
 # ----------------------------------------------------------------------------
@@ -240,13 +241,14 @@ class StealthContext:
     """Everything the metric blocks share for one round, computed once.
 
     Cheap fields (deltas, group_l2, norms) are always present. The O(n^2 d)
-    PairwiseStats matrix is built only when an enabled block needs it (stats is
-    None otherwise), and mean_delta only when the cosine block is enabled — so
-    disabling the pairwise defenses actually skips the pairwise pass.
+    PairwiseStats matrix is built only when an enabled block needs it (krum /
+    cluster; stats is None otherwise), and the coordinate-wise median_delta only
+    when the median or cosine block is enabled — so disabling the pairwise
+    defenses actually skips the pairwise pass.
     """
 
     def __init__(self, round, cids, attacker_ids, num_samples, deltas, group_l2,
-                 buckets, norms, mean_delta, mean_norm, stats,
+                 buckets, eligible_buckets, group_numel, norms, median_delta, median_norm, stats,
                  krum_f, multikrum_m, normclip_c):
         self.round = round
         self.cids = cids
@@ -257,10 +259,12 @@ class StealthContext:
         self.num_samples = num_samples
         self.deltas = deltas
         self.group_l2 = group_l2
-        self.buckets = buckets   # ordered_buckets(name_to_bucket): dl2_* order
+        self.buckets = buckets                    # ordered_buckets: dl2_* column order (all buckets)
+        self.eligible_buckets = eligible_buckets  # trainable, non-BN buckets: entropy support + denom
+        self.group_numel = group_numel            # eligible element count per bucket (n_g); per-param norm
         self.norms = norms
-        self.mean_delta = mean_delta
-        self.mean_norm = mean_norm
+        self.median_delta = median_delta   # coord-wise median update; robust reference
+        self.median_norm = median_norm     # shared by the 'median' and 'cosine' blocks
         self.stats = stats
         self.krum_f = krum_f
         self.multikrum_m = multikrum_m
@@ -282,29 +286,79 @@ class StealthContext:
 # its summary columns cleanly.
 # ----------------------------------------------------------------------------
 
+def _spread_density(energy, denom):
+    """(top_group_frac, normalized-entropy density in [0,1]) for a per-bucket energy dict.
+
+    density = H / log(|buckets|) with H = -sum p_g log p_g, p_g = energy_g / sum energy.
+    Dividing by log(|buckets|) (a per-round constant) rescales to [0,1] but does NOT
+    change the per-round ranking, so a metric's AUC is identical with or without it —
+    the reported density and the underlying raw entropy H grade the same.
+    """
+    tot = sum(energy.values())
+    if tot <= 0:
+        return float("nan"), float("nan")
+    top = max(energy.values()) / tot
+    if denom <= 0:
+        return top, 0.0   # single eligible bucket: no spread is possible
+    ps = [e / tot for e in energy.values() if e > 0]
+    H = -sum(p * math.log(p) for p in ps)
+    return top, H / denom
+
+
 def _energy_per_client(ctx):
+    """Per-bucket update-energy decomposition and its normalized Shannon spread,
+    on TWO energy bases (only ELIGIBLE buckets enter — frozen groups and BN
+    coordinates are excluded; BN is already dropped from the delta):
+
+      RAW           energy_g = ||delta_g||^2              -> group_entropy_raw
+      PER-PARAMETER energy_g = ||delta_g||^2 / n_g        -> group_entropy_density
+
+    n_g = eligible element count in bucket g (ctx.group_numel). The raw basis is
+    biased toward larger buckets (more coordinates -> more total energy at equal
+    per-coordinate magnitude), so its entropy partly reflects the parameter-count
+    distribution; the per-parameter basis (mean squared coordinate magnitude)
+    removes that bias, so a uniform per-coordinate update -> density 1.0 regardless
+    of bucket sizes. Both densities normalize by log(|eligible_buckets|) -> [0, 1].
+    dl2_* raw columns are still emitted for ALL buckets (frozen ones read 0.0).
+    """
+    buckets = ctx.eligible_buckets
+    denom = math.log(len(buckets)) if len(buckets) > 1 else 0.0
     out = {}
     for c in ctx.cids:
         gl = ctx.group_l2[c]
-        energy = {g: gl[g] ** 2 for g in ctx.buckets}
-        tot_e = sum(energy.values())
-        top_frac = (max(energy.values()) / tot_e) if tot_e > 0 else float("nan")
-        if tot_e > 0:
-            ps = [e / tot_e for e in energy.values() if e > 0]
-            H = -sum(p * math.log(p) for p in ps)
-            ent = H / math.log(len(energy)) if len(energy) > 1 else 0.0
-        else:
-            ent = float("nan")
+        energy = {g: gl.get(g, 0.0) ** 2 for g in buckets}
+        energy_pp = {}
+        for g in buckets:
+            n = ctx.group_numel.get(g, 0)
+            energy_pp[g] = (gl.get(g, 0.0) ** 2 / n) if n > 0 else 0.0
+        top_frac, entropy_raw = _spread_density(energy, denom)
+        _, entropy_density = _spread_density(energy_pp, denom)
         row = {f"dl2_{g}": gl.get(g, 0.0) for g in ctx.buckets}
         row["top_group_frac"] = top_frac
-        row["group_entropy"] = ent
+        row["group_entropy_raw"] = entropy_raw          # raw energy basis: ||delta_g||^2
+        row["group_entropy_density"] = entropy_density  # per-parameter basis: ||delta_g||^2 / n_g
         out[c] = row
     return out
 
 
+def _energy_summary(ctx):
+    # A localized backdoor concentrates update energy in few buckets -> LOWER
+    # entropy density for attackers, on either basis; read separability as
+    # |AUC - 0.5|. It only separates when the attack actually localizes energy —
+    # a diffuse (e.g. whole-update-scaled) attack leaves density near the benign
+    # spread and the AUC sits near 0.5. Both the raw and the per-parameter-normalized
+    # entropy are graded (they differ because the per-param basis removes the
+    # bucket-size bias, so their AUCs can genuinely diverge).
+    return {"auc_group_entropy_raw": _auc(ctx.col("group_entropy_raw"), ctx.labels),
+            "auc_top_group_frac": _auc(ctx.col("top_group_frac"), ctx.labels),
+            "cohens_d_group_entropy_raw": _cohens_d(ctx.col("group_entropy_raw"), ctx.labels),
+            "auc_group_entropy_density": _auc(ctx.col("group_entropy_density"), ctx.labels),
+            "cohens_d_group_entropy_density": _cohens_d(ctx.col("group_entropy_density"), ctx.labels)}
+
+
 def _energy_columns(name_to_bucket):
     return [*(f"dl2_{b}" for b in ordered_buckets(name_to_bucket)),
-            "top_group_frac", "group_entropy"]
+            "top_group_frac", "group_entropy_raw", "group_entropy_density"]
 
 
 def _norm_per_client(ctx):
@@ -317,23 +371,26 @@ def _norm_summary(ctx):
 
 
 def _cosine_per_client(ctx):
+    """Direction signal against a ROBUST reference: cosine to the coordinate-wise
+    median update. The median (not the mean) is used deliberately — a high-norm
+    replacement attacker drags the MEAN direction toward itself, so cos-to-mean
+    would read the attacker as maximally aligned with consensus exactly when it is
+    most malicious. The median is not corruptible that way, matching dist_to_median.
+    """
     out = {}
     for c in ctx.cids:
-        cos_to_mean = float("nan")
-        if ctx.mean_delta is not None and ctx.norms[c] > 0 and ctx.mean_norm > 0:
-            cos_to_mean = float(torch.dot(ctx.deltas[c], ctx.mean_delta)) / (ctx.norms[c] * ctx.mean_norm)
-        out[c] = {
-            "update_cos_to_mean": cos_to_mean,
-            "mean_cos_to_others": ctx.stats.mean_cos_to(c, ctx.cids),
-            "mean_cos_to_attackers": ctx.stats.mean_cos_to(c, ctx.attacker_cids),
-            "mean_cos_to_benign": ctx.stats.mean_cos_to(c, ctx.benign_cids),
-        }
+        cos_to_median = float("nan")
+        if ctx.median_delta is not None and ctx.norms[c] > 0 and ctx.median_norm > 0:
+            cos_to_median = float(torch.dot(ctx.deltas[c], ctx.median_delta)) / (ctx.norms[c] * ctx.median_norm)
+        out[c] = {"cos_to_median": cos_to_median}
     return out
 
 
 def _cosine_summary(ctx):
-    return {"auc_update_cos_to_mean": _auc(ctx.col("update_cos_to_mean"), ctx.labels),
-            "auc_mean_cos_to_others": _auc(ctx.col("mean_cos_to_others"), ctx.labels)}
+    # Attackers deviate from the benign consensus direction, so their cos_to_median
+    # is LOWER -> AUC below 0.5. Read separability as |AUC - 0.5| (or 1 - AUC).
+    return {"auc_cos_to_median": _auc(ctx.col("cos_to_median"), ctx.labels),
+            "cohens_d_cos_to_median": _cohens_d(ctx.col("cos_to_median"), ctx.labels)}
 
 
 def _krum_per_client(ctx):
@@ -355,8 +412,10 @@ def _krum_summary(ctx):
 
 
 def _median_per_client(ctx):
-    md = median_distance(ctx.deltas)
-    return {c: {"dist_to_median": md.get(c, float("nan"))} for c in ctx.cids}
+    if ctx.median_delta is None:
+        return {c: {"dist_to_median": float("nan")} for c in ctx.cids}
+    return {c: {"dist_to_median": float(torch.norm(ctx.deltas[c] - ctx.median_delta))}
+            for c in ctx.cids}
 
 
 def _median_summary(ctx):
@@ -395,7 +454,8 @@ class MetricBlock:
     the orchestrator can skip that pass when no enabled block needs it.
     per_client_cols is a callable(name_to_bucket) -> [col names] (only the energy
     block actually varies with granularity; the rest ignore the argument).
-    summary may be None for blocks with no label-aware grading (energy).
+    summary may be None for a block with no label-aware grading (all current
+    blocks provide one).
     """
 
     def __init__(self, name, needs_pairwise, per_client, summary,
@@ -414,10 +474,9 @@ _BLOCKS = [
     MetricBlock("norm", False, _norm_per_client, _norm_summary,
                 lambda m: ["update_l2"],
                 ["auc_update_l2", "cohens_d_update_l2"]),
-    MetricBlock("cosine", True, _cosine_per_client, _cosine_summary,
-                lambda m: ["update_cos_to_mean", "mean_cos_to_others",
-                           "mean_cos_to_attackers", "mean_cos_to_benign"],
-                ["auc_update_cos_to_mean", "auc_mean_cos_to_others"]),
+    MetricBlock("cosine", False, _cosine_per_client, _cosine_summary,
+                lambda m: ["cos_to_median"],
+                ["auc_cos_to_median", "cohens_d_cos_to_median"]),
     MetricBlock("krum", True, _krum_per_client, _krum_summary,
                 lambda m: ["krum_score", "krum_selected", "multikrum_selected"],
                 ["multikrum_tpr", "multikrum_fpr", "auc_krum_score", "cohens_d_krum_score"]),
@@ -430,8 +489,12 @@ _BLOCKS = [
     MetricBlock("cluster", True, _cluster_per_client, _cluster_summary,
                 lambda m: ["cluster_label", "cluster_outlier"],
                 ["cluster_tpr", "cluster_fpr"]),
-    MetricBlock("energy", False, _energy_per_client, None,
-                _energy_columns, []),
+    MetricBlock("energy", False, _energy_per_client, _energy_summary,
+                _energy_columns,
+                ["auc_group_entropy_raw", "auc_top_group_frac",
+                 "cohens_d_group_entropy_raw",
+                 "auc_group_entropy_density",
+                 "cohens_d_group_entropy_density"]),
 ]
 _BLOCK_BY_NAME = {b.name: b for b in _BLOCKS}
 DEFENSE_NAMES = tuple(b.name for b in _BLOCKS)
@@ -472,17 +535,21 @@ def summary_columns(enabled=None):
 # ----------------------------------------------------------------------------
 
 def analyze(round, client_weights, global_weights, attacker_ids,
-            name_to_bucket, num_samples=None, krum_f=1, multikrum_m=None,
+            name_to_bucket, eligible_names, eligible_buckets,
+            num_samples=None, krum_f=1, multikrum_m=None,
             normclip_c=2.0, enabled=None):
     """
     Run the enabled passive metric blocks for one round.
 
-    name_to_bucket: the granularity partition from FL.groups.build_bucket_map.
+    name_to_bucket:   the granularity partition from FL.groups.build_bucket_map.
+    eligible_names:   trainable, non-BN named parameters (FL.groups.build_eligibility).
+                      Every metric's delta is restricted to these coordinates.
+    eligible_buckets: buckets holding >=1 eligible param, canonical order; its
+                      length is the group_entropy_raw normalization denominator.
     enabled: iterable of block names (see DEFENSE_NAMES); None = all on. A
     disabled block contributes NO columns (not NaN columns) to either output.
     Returns (per_client_rows, summary_row) as dicts; pure/observational, inputs
-    not mutated. Column order follows the registry order, so an all-on run keeps
-    the pre-refactor per-client schema.
+    not mutated. Column order follows the registry order.
     """
     enabled = _resolve_enabled(enabled)
     enabled_set = set(enabled)
@@ -494,23 +561,37 @@ def analyze(round, client_weights, global_weights, attacker_ids,
     # Always-cheap shared state: deltas, per-bucket energy, per-client norms.
     deltas, group_l2 = {}, {}
     for c in cids:
-        flat, gl = compute_delta(client_weights[c], global_weights, name_to_bucket)
+        flat, gl = compute_delta(client_weights[c], global_weights, name_to_bucket, eligible_names)
         deltas[c], group_l2[c] = flat, gl
     norms = {c: float(torch.norm(deltas[c])) for c in cids}
+
+    # Per-bucket eligible element count n_g, for the per-parameter energy
+    # normalization in the energy block. Structural (identical every round / every
+    # client), so read once from any participating client's weights — a plain
+    # lookup, no extra plumbing through build_eligibility or the server.
+    group_numel = {b: 0 for b in buckets}
+    if cids:
+        ref = client_weights[cids[0]]
+        for name in eligible_names:
+            if name in ref:
+                group_numel[name_to_bucket.get(name, "other")] += ref[name].numel()
 
     # Expensive shared state, built only when an enabled block needs it.
     need_pairwise = any(_BLOCK_BY_NAME[n].needs_pairwise for n in enabled)
     stats = PairwiseStats(deltas) if need_pairwise else None
 
-    mean_delta, mean_norm = None, 0.0
-    if "cosine" in enabled_set and cids:
-        for c in cids:
-            mean_delta = deltas[c].clone() if mean_delta is None else mean_delta + deltas[c]
-        mean_delta /= len(cids)
-        mean_norm = float(torch.norm(mean_delta))
+    # Coordinate-wise median update: the robust reference shared by the 'median'
+    # (euclidean) and 'cosine' (angular) blocks. Built once, only when needed.
+    median_delta, median_norm = None, 0.0
+    if ("median" in enabled_set or "cosine" in enabled_set) and len(cids) >= 2:
+        stacked = torch.stack([deltas[c] for c in cids], dim=0)
+        median_delta = torch.median(stacked, dim=0).values
+        median_norm = float(torch.norm(median_delta))
+        del stacked
 
     ctx = StealthContext(round, cids, attacker_ids, num_samples, deltas, group_l2,
-                         buckets, norms, mean_delta, mean_norm, stats,
+                         buckets, eligible_buckets, group_numel, norms,
+                         median_delta, median_norm, stats,
                          krum_f, multikrum_m, normclip_c)
 
     # Per-client phase: base identity columns, then each enabled block in order.
@@ -533,5 +614,5 @@ def analyze(round, client_weights, global_weights, attacker_ids,
         if block.summary is not None:
             summary.update(block.summary(ctx))
 
-    del deltas, mean_delta
+    del deltas, median_delta
     return rows, summary

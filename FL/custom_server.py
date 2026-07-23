@@ -5,12 +5,13 @@ from utils.global_settings import ProjectPaths, BackdoorProperties, TrainingSett
 from utils.dataset import CustomCocoDataset
 from utils.round_evaluator import RoundEvaluator
 from FL.stealth_defenses import analyze as stealth_analyze, DEFENSE_NAMES as STEALTH_DEFENSE_NAMES
-from FL.groups import build_bucket_map
+from FL.groups import build_bucket_map, build_eligibility
 
 from torch.utils.data import DataLoader
 
 import torch
 import os
+import math
 
 
 # Attack protocols whose submission is a benign-looking endpoint by design
@@ -47,8 +48,15 @@ class Server:
 
         # name_to_bucket for the stealth harness's dl2_* energy decomposition,
         # built once (the model never changes topology). None when the harness
-        # is off so we pay nothing.
-        self._stealth_bucket_map = self._build_stealth_bucket_map() if FLSettings.DO_STEALTH_EVAL else None
+        # is off so we pay nothing. Eligibility (trainable, non-BN params + the
+        # buckets that hold them) is derived from the same model in the same step.
+        self._stealth_bucket_map = None
+        self._stealth_eligible_names = None
+        self._stealth_eligible_buckets = None
+        if FLSettings.DO_STEALTH_EVAL:
+            self._stealth_bucket_map = self._build_stealth_bucket_map()
+            self._stealth_eligible_names, self._stealth_eligible_buckets = build_eligibility(
+                self.wrapper.model, self._stealth_bucket_map)
         # Fail fast on an unknown --stealth-disable block name. Validated here (not
         # in parse_args) so parse_args needn't import the torch-backed registry.
         _unknown = set(FLSettings.STEALTH_DISABLED) - set(STEALTH_DEFENSE_NAMES)
@@ -170,14 +178,16 @@ class Server:
         Three gates, all must pass:
           - DO_STEALTH_EVAL is on (the kill switch).
           - At least one attacker participated this round — otherwise every
-            label-aware metric is NaN and the row is dead weight.
+            label-aware metric is NaN and the row is dead weight. Overridden by
+            STEALTH_ON_BENIGN_ROUNDS, which keeps benign-only rounds so a
+            no-attacker baseline can gather the benign null distribution.
           - The active protocol isn't observational. PilotA submits a benign
             trajectory's endpoint by design; grading defenses against it
             measures nothing about the attack, just the noise floor.
         """
         if not FLSettings.DO_STEALTH_EVAL:
             return False
-        if not round_attacker_ids:
+        if not round_attacker_ids and not FLSettings.STEALTH_ON_BENIGN_ROUNDS:
             return False
         if FLSettings.ATTACK_PROTOCOL in _OBSERVATIONAL_PROTOCOLS:
             return False
@@ -254,15 +264,12 @@ class Server:
                 multikrum_m=mk_m,
                 normclip_c=FLSettings.NORMCLIP_C,
                 name_to_bucket=self._stealth_bucket_map,
+                eligible_names=self._stealth_eligible_names,
+                eligible_buckets=self._stealth_eligible_buckets,
                 enabled=[n for n in STEALTH_DEFENSE_NAMES if n not in set(FLSettings.STEALTH_DISABLED)],
             )
             self.logger.log_stealth_per_client(per_client_rows)
             self.logger.log_stealth_summary(summary_row)
-
-        # Persist the round's checkpoint. Per-client update metrics are no longer
-        # logged here — the passive stealth harness above (stealth_per_client /
-        # stealth_summary) supersedes the old client_update_log.
-        self._save_latest_model(round=round)
 
         # Evaluate the model on ASR and mAP (unless skipped — see SKIP_ROUND_EVAL).
         self.wrapper.set_weights(new_global_weights)
@@ -286,22 +293,49 @@ class Server:
             self.logger.log_round_evaluation(eval_results=eval_results, num_attackers=num_attackers)
             # No save_if_best_model: best-model selection requires a real mAP_50.
         else:
-            clean_results = self.round_evaluator.run_clean_eval(dataloader=self.clean_val_dl)
-            poison_results = self.round_evaluator.run_poison_eval(dataloader=self.poison_val_dl)
+            # The mAP and ASR halves are independently skippable
+            # (--skip-map-eval / --skip-asr-eval) to cut compute; a skipped half
+            # is logged as NaN so the CSV keeps its fixed column shape.
+            if not FLSettings.SKIP_MAP_EVAL:
+                clean_results = self.round_evaluator.run_clean_eval(dataloader=self.clean_val_dl)
+                map_50, map_50_95 = clean_results["AP_50"], clean_results["AP_50_95"]
+            else:
+                map_50 = map_50_95 = math.nan
+
+            if not FLSettings.SKIP_ASR_EVAL:
+                poison_results = self.round_evaluator.run_poison_eval(dataloader=self.poison_val_dl)
+                asr, fail_rate, avg_conf_fail = poison_results["ASR"], poison_results["fail_rate"], poison_results["avg_conf_fail"]
+            else:
+                asr = fail_rate = avg_conf_fail = math.nan
 
             eval_results = {
                 "round": round,
-                "mAP_50": clean_results["AP_50"],
-                "mAP_50_95": clean_results["AP_50_95"],
-                "ASR": poison_results["ASR"],
-                "fail_rate": poison_results["fail_rate"],
-                "avg_conf_fail": poison_results["avg_conf_fail"],
+                "mAP_50": map_50,
+                "mAP_50_95": map_50_95,
+                "ASR": asr,
+                "fail_rate": fail_rate,
+                "avg_conf_fail": avg_conf_fail,
             }
 
             # Write evaluation metrics to the pytorch tensorboards, log the evaluation to a csv & save if the model is evaluated as the best
             # self.logger.log_epoch(round, eval_results)
             self.logger.log_round_evaluation(eval_results=eval_results, num_attackers=num_attackers)# TODO: Pass the correct metrics as arguments
-            self.logger.save_if_best_model(epoch=round, val_loss=-eval_results["mAP_50"], weights=new_global_weights)# Negative value as function originally compares for lowest validation loss
+            # Best-model selection requires a real mAP_50; skip it when mAP wasn't computed.
+            if not FLSettings.SKIP_MAP_EVAL:
+                self.logger.save_if_best_model(epoch=round, val_loss=-map_50, weights=new_global_weights)# Negative value as function originally compares for lowest validation loss
+
+        # Persist the round's checkpoint LAST, after the weights are set and the
+        # round evaluation is logged. Two guarantees follow from this ordering:
+        #   1. The checkpoint holds the freshly-aggregated round-N weights (set
+        #      above), not the pre-aggregation broadcast model.
+        #   2. It is the round's final durable write, so "checkpoint says round N"
+        #      implies "round_evaluations.csv has row N". A mid-evaluation kill
+        #      (e.g. the cluster's 4h wall-clock) leaves both at N-1, so round N
+        #      re-runs cleanly on resume instead of being skipped in the CSV.
+        # Per-client update metrics are no longer logged here — the passive
+        # stealth harness above (stealth_per_client / stealth_summary) supersedes
+        # the old client_update_log.
+        self._save_latest_model(round=round)
 
         # Prepare for another round
         self.round_evaluator.remove_from_gpu()

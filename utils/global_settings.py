@@ -161,6 +161,13 @@ class FLSettings:
     # doesn't choke on a missing-row pattern.
     SKIP_ROUND_EVAL = False
 
+    # Fine-grained per-round eval toggles (only consulted when SKIP_ROUND_EVAL is
+    # False). Each skips its half of the round evaluation to cut compute; the
+    # skipped metrics are written as NaN so the CSV keeps a fixed column shape.
+    # When mAP is skipped, save_if_best_model is also skipped (it needs a real mAP_50).
+    SKIP_MAP_EVAL = False   # skip run_clean_eval (mAP_50 / mAP_50_95)
+    SKIP_ASR_EVAL = False   # skip run_poison_eval (ASR / fail_rate / avg_conf_fail)
+
     # FedOpt / server-side learning rate. Only consulted when AGGREGATION_STRATEGY == "fedopt"
     # by the strategy itself; the model-replacement scaler always reads it (defaults to 1.0
     # so behavior under fedavg is unchanged). GAMMA_CAP bounds the replacement scaler γ.
@@ -198,6 +205,12 @@ class FLSettings:
     # toggleable defense/signal; see FL.stealth_defenses.DEFENSE_NAMES for the
     # full set (norm, cosine, krum, median, normclip, cluster, energy).
     STEALTH_DISABLED = ()
+    # By default the harness only runs on rounds where at least one attacker
+    # participated (label-aware metrics are NaN otherwise, and it saves the
+    # ~O(n^2 d) pass). Set True to also run it on benign-only rounds so a
+    # no-attacker baseline can gather the benign null distribution for the
+    # stealth metrics (attacker-labelled metrics come back NaN/zero'd there).
+    STEALTH_ON_BENIGN_ROUNDS = False
 
     # flwr specific settings
     FRACTION_CLIENT_EVAL = 0.0# Fraction to determine on how many client instance evaluation is done

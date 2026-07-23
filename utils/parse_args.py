@@ -65,6 +65,8 @@ def parse_args():
     fl_group.add_argument("--use-client-schedule", action="store_true", default=FLSettings.USE_CLIENT_SCHEDULE, help="Instead of randomly, though seeded, selecting clients, takes a client schedule to structure when malicious clients are used.")
     fl_group.add_argument("--client-schedule", type=str, default="", help="Schedule for specific clients. Format: 'round:client,round:client'. Bijv: '10:2,11:3'")
     fl_group.add_argument("--skip-round-eval", action="store_true", default=FLSettings.SKIP_ROUND_EVAL, help="Skip the server's per-round mAP / ASR evaluation and save_if_best_model. Use during the PilotA pilot — pilot measurements live in attack_logs/, not in round_evaluations.csv, and PilotA submits a benign endpoint so ASR is trivially ~0.")
+    fl_group.add_argument("--skip-map-eval", action="store_true", default=FLSettings.SKIP_MAP_EVAL, help="Skip only the clean mAP evaluation (run_clean_eval) to cut compute; mAP_50/mAP_50_95 are logged as NaN and best-model saving is skipped. ASR eval still runs unless --skip-asr-eval. Ignored when --skip-round-eval is set.")
+    fl_group.add_argument("--skip-asr-eval", action="store_true", default=FLSettings.SKIP_ASR_EVAL, help="Skip only the poison ASR evaluation (run_poison_eval) to cut compute; ASR/fail_rate/avg_conf_fail are logged as NaN. mAP eval still runs unless --skip-map-eval. Ignored when --skip-round-eval is set.")
 
 
     # Training Hyperparameters
@@ -97,6 +99,7 @@ def parse_args():
     det_group.add_argument("--normclip-c", type=float, default=FLSettings.NORMCLIP_C, help="Norm-bound detector multiplier: flag updates with L2 norm > C*median.")
     det_group.add_argument("--stealth-granularity", type=str, default=FLSettings.STEALTH_GRANULARITY, choices=["auto", "group", "tensor"], help="Granularity of the dl2_* per-bucket energy decomposition. 'auto' derives it from --attack-protocol (pilot_a->group, pilot_b->tensor); 'group'/'tensor' force it.")
     det_group.add_argument("--stealth-disable", type=str, default="", help="Comma-separated stealth metric blocks to turn OFF (default: all on). Blocks: norm, cosine, krum, median, normclip, cluster, energy. Disabling all of {cosine,krum,cluster} also skips the O(n^2) pairwise pass.")
+    det_group.add_argument("--stealth-on-benign-rounds", action="store_true", default=FLSettings.STEALTH_ON_BENIGN_ROUNDS, help="Also run the stealth harness on rounds with no attacker present. Off by default (those rounds are skipped to save compute since label-aware metrics are NaN). Enable for a no-attacker baseline to gather the benign null distribution for the stealth metrics.")
 
     # Backdoor Properties
     bd_group = parser.add_argument_group('Backdoor Properties')
@@ -156,6 +159,8 @@ def apply_settings(args):
     FLSettings.PARTITIONING_SEED = args.partitioning_seed
     FLSettings.ATTACK_PROTOCOL = args.attack_protocol
     FLSettings.SKIP_ROUND_EVAL = args.skip_round_eval
+    FLSettings.SKIP_MAP_EVAL = args.skip_map_eval
+    FLSettings.SKIP_ASR_EVAL = args.skip_asr_eval
     FLSettings.DO_MODEL_REPLACEMENT = args.enable_model_replacement
     FLSettings.NEUROTOXIN_ENABLED = args.enable_neurotoxin
     FLSettings.NEUROTOXIN_MASK_RATIO = args.neurotoxin_mask_ratio
@@ -173,6 +178,7 @@ def apply_settings(args):
     # Block names are validated at Server init (against the torch-backed registry),
     # so parse_args stays free of a heavy FL.stealth_defenses import.
     FLSettings.STEALTH_DISABLED = tuple(x.strip() for x in args.stealth_disable.split(",") if x.strip())
+    FLSettings.STEALTH_ON_BENIGN_ROUNDS = args.stealth_on_benign_rounds
     
     # Attacker General
     FLSettings.ATTACKER_DATASET_MODE = args.client_train_ds_mode

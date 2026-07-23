@@ -148,6 +148,59 @@ def ordered_buckets(name_to_bucket):
     return seen
 
 
+def _batchnorm_param_names(model):
+    """Names of the learnable parameters that live inside a batch-norm module.
+
+    Identifies BN by MODULE TYPE (torch's _BatchNorm base + torchvision's
+    FrozenBatchNorm2d), not by a name substring, so it is robust to torchvision's
+    irregular naming (bn1/bn2/bn3, downsample.1, ...). FrozenBatchNorm2d keeps its
+    scale/shift/running stats as BUFFERS rather than parameters, so those never
+    appear in named_parameters() anyway; this set additionally captures the
+    scale/shift of any *learnable* BN a variant backbone might use.
+    """
+    from torch.nn.modules.batchnorm import _BatchNorm
+    bn_types = [_BatchNorm]
+    try:
+        from torchvision.ops import FrozenBatchNorm2d
+        bn_types.append(FrozenBatchNorm2d)
+    except Exception:
+        pass
+    bn_types = tuple(bn_types)
+
+    bn_names = set()
+    for mod_name, module in model.named_modules():
+        if isinstance(module, bn_types):
+            for pname, _ in module.named_parameters(recurse=False):
+                bn_names.add(f"{mod_name}.{pname}" if mod_name else pname)
+    return bn_names
+
+
+def build_eligibility(model, name_to_bucket):
+    """Eligible-parameter set + eligible-bucket list for the stealth energy metric.
+
+    A parameter is ELIGIBLE iff it is (a) TRAINABLE (requires_grad=True, i.e. not a
+    frozen backbone layer) and (b) NOT a batch-norm scale/shift. Restricting to
+    named_parameters() already drops BN *buffers* (running_mean/var/num_batches_tracked)
+    and every other non-parameter state; this additionally drops frozen params and
+    learnable BN params. The result is the set of coordinates that actually receive
+    a gradient update and carry comparable "update energy".
+
+    Returns:
+        eligible_names:   set[str] of eligible named-parameter names.
+        eligible_buckets: the subset of ordered_buckets(name_to_bucket) holding
+                          >=1 eligible param, in canonical order. len(eligible_buckets)
+                          is the entropy-normalization denominator — a client that
+                          spreads its update energy evenly across all trainable,
+                          non-BN buckets reaches density = 1.0.
+    """
+    bn_names = _batchnorm_param_names(model)
+    eligible_names = {n for n, p in model.named_parameters()
+                      if p.requires_grad and n not in bn_names}
+    eligible_bucket_set = {name_to_bucket[n] for n in eligible_names if n in name_to_bucket}
+    eligible_buckets = [b for b in ordered_buckets(name_to_bucket) if b in eligible_bucket_set]
+    return eligible_names, eligible_buckets
+
+
 def per_tensor_l1(state_a, state_b, tensor_list):
     """{name -> ||a - b||_1} over tensor_list. Additive across tensors.
 
