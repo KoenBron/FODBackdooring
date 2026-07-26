@@ -142,15 +142,26 @@ class FLSettings:
     # AttackProtocol subclasses with their own per-round procedures:
     #   - "pilot_a"   : observational two-trajectory pilot, no penalty applied
     #   - "laysel_fl" : Li et al. CVPR 2026 baseline (SLI + CT + TC)
-    #   - "ours"      : per-group benign-anchored constrain-and-scale
-    # Phase 0b wires only "composable" — the other three raise NotImplementedError
-    # in the dispatcher until their AttackProtocol files land in later phases.
+    #   - "partial"   : dynamic per-tensor carrying-layer selection + amplification
+    # "composable", "pilot_a", "pilot_b" and "partial" are wired; "laysel_fl"
+    # still raises NotImplementedError in the dispatcher until it lands.
     #
     # For per-round gating ("attack only on rounds 16-17") use the existing
     # --use-client-schedule + --client-schedule machinery: select_clients
     # already draws random fills from benign-only when the schedule is on,
     # so attackers are never randomly selected on unscheduled rounds.
     ATTACK_PROTOCOL = "composable"
+
+    # Partial-amplification attack (--attack-protocol partial). Carrying-layer
+    # selection runs at PER-TENSOR granularity over the ELIGIBLE (trainable,
+    # non-batch-norm) tensors, then only the carrying tensors' update is amplified.
+    # Floor is always the per-tensor ben1-vs-ben2 PRNG-noise floor (3 trajectories/
+    # round); the cheap cross-tensor sigma floor was dropped after the pilots showed
+    # it does not separate carriers.
+    PARTIAL_SELECT_MODE = "cutoff"  # "cutoff" (div > cutoff*floor, variable size) | "topk" (fixed k by rho)
+    PARTIAL_CUTOFF = 1.0            # cutoff mode: keep tensors with div > PARTIAL_CUTOFF * floor (1.0 == rho>0 gate)
+    PARTIAL_TOPK = 20              # topk mode: size of the per-tensor carrying set C
+    PARTIAL_AMP_GAMMA = 1.0        # amplify Delta_C = theta_mal - theta_t on carrying tensors by this factor (1.0 = no-op)
 
     # When True, the server skips per-round mAP / ASR evaluation and
     # save_if_best_model. Useful for the PilotA pilot where the submitted

@@ -32,7 +32,7 @@ _PROTOCOL_STEALTH_GRANULARITY = {
     "pilot_a": "group",
     "pilot_b": "tensor",
     "laysel_fl": "tensor",
-    "ours": "group",
+    "partial": "tensor",
     "composable": "group",
 }
 

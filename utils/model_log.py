@@ -12,6 +12,7 @@ from evaluation import BatchEvaluator
 from FL.attack_state import AttackState
 from FL.attack_protocols.pilot_a import PilotALogger
 from FL.attack_protocols.pilot_b import PilotBLogger
+from FL.attack_protocols.partial import PartialLogger
 
 class ModelLogger:
     def __init__(self, custom_path=None, config_dict=None, args=None):
@@ -90,6 +91,7 @@ class ModelLogger:
         # protocol code straight-line (no None checks in dispatchers).
         self.pilot_a = PilotALogger(attack_logs_dir)
         self.pilot_b = PilotBLogger(attack_logs_dir)
+        self.partial = PartialLogger(attack_logs_dir)
 
         # Write the script containing the training settings there
         self.log_training_script()

@@ -241,9 +241,12 @@ class ClientManager:
         if protocol == "pilot_b":
             from FL.attack_protocols.pilot_b import PilotBProtocol
             return PilotBProtocol(self).run(server_weights, client_config)
+        if protocol == "partial":
+            from FL.attack_protocols.partial import PartialAmplificationProtocol
+            return PartialAmplificationProtocol(self).run(server_weights, client_config)
         raise NotImplementedError(
             f"--attack-protocol {protocol!r} selected but not yet wired. "
-            f"LaySelFL and Ours land in Phase 2 and Phase 3."
+            f"LaySelFL lands in a later phase."
         )
 
     # ---- Benign and composable-attacker paths ----
