@@ -40,8 +40,7 @@ from FL.scoring.l2_based import (
     squared_divergence_per_tensor,
     identity_partition,
     normalized_l2_divergence,
-    rho,
-    select_topk,
+    select_topk_signed,
     select_cutoff,
 )
 from models.fasterrcnn.wrapper import FasterRCNNWrapper
@@ -191,7 +190,9 @@ class PartialAmplificationProtocol(AttackProtocol):
             select:
               'cutoff' -> { t : div_t > PARTIAL_CUTOFF * b_t }        (variable-size; PilotB's selector;
                                                                        cutoff=1.0 is exactly the rho>0 gate)
-              'topk'   -> { top-PARTIAL_TOPK t by rho_t = max(0, div_t - b_t), gated rho > 0 }
+              'topk'   -> { top-PARTIAL_TOPK t by SIGNED rho_t = div_t - b_t (unclamped,
+                                                       ungated) — floor still subtracted,
+                                                       but always returns exactly k }
 
         The floor is the per-tensor PRNG-noise floor from a second benign trajectory
         (ben1 vs ben2). The cheap cross-tensor sigma floor was dropped: the pilots
@@ -229,8 +230,14 @@ class PartialAmplificationProtocol(AttackProtocol):
             # div_t > cutoff * b_t; variable-size set. cutoff=1.0 == the rho>0 gate.
             ranked = select_cutoff(div_t, b_t, FLSettings.PARTIAL_CUTOFF)   # [(name, div)] desc
         elif mode == "topk":
-            rho_t = rho(div_t, b_t)
-            ranked = select_topk(rho_t, FLSettings.PARTIAL_TOPK)           # [(name, rho)] desc
+            # SIGNED rho = div_t - b_t, UNCLAMPED and UNGATED: still subtracts the
+            # benign-to-benign floor b_t (denoising preserved), but keeps a full total
+            # order so select_topk_signed always returns exactly k carriers instead of
+            # collapsing to the (possibly < k) rho>0 survivors. Frozen/BN tensors are
+            # already absent (div_t/b_t are keyed on elig_list), so the "pre-exclude
+            # frozen" contract of select_topk_signed is satisfied here.
+            signed_rho = {t: div_t[t] - b_t[t] for t in div_t}
+            ranked = select_topk_signed(signed_rho, FLSettings.PARTIAL_TOPK)  # [(name, signed rho)] desc
         else:
             raise ValueError(f"Unknown PARTIAL_SELECT_MODE {mode!r}; expected 'cutoff' or 'topk'.")
 
