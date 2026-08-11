@@ -15,10 +15,12 @@ from FL.attack_protocols.pilot_b import PilotBLogger
 from FL.attack_protocols.partial import PartialLogger
 
 class ModelLogger:
-    def __init__(self, custom_path=None, config_dict=None, args=None):
+    def __init__(self, custom_path=None, args=None):
         """
         custom_path: The path to the directory from which logging should be resumed
-        config_dict: The training configurations used
+        args:        Parsed CLI args; their raw dump is appended under the structured
+                     config summary in config.txt (the summary itself is built from the
+                     global settings via parse_args.render_config_sections).
         """
         if custom_path is None:
             # Create a new model directory to write logs to and save the best model in
@@ -99,22 +101,22 @@ class ModelLogger:
         # Initiate log writer
         self.writer = SummaryWriter(self.output_path)
 
-        # Write training configuarion params to txt file
-        if config_dict:
-            with open(os.path.join(self.output_path, "config.txt"), "a") as f, redirect_stdout(f):
-                if BackdoorProperties.BACKDOOR_ACTIVE: 
+        # Write the run configuration to config.txt: a neatly grouped, relevant-
+        # settings summary at the TOP (single source shared with the stdout summary),
+        # then the raw commandline arguments beneath it (as before).
+        from utils.parse_args import render_config_sections  # local import: avoids any import cycle
+        with open(os.path.join(self.output_path, "config.txt"), "a") as f:
+            f.write("==================== RUN CONFIGURATION ====================\n")
+            if BackdoorProperties.BACKDOOR_ACTIVE:
+                with redirect_stdout(f):
                     BatchEvaluator.print_poison_properties()
-                print("\n----------------------TRAINING CONFIGURATION SUMMARY----------------------")
-                for k, v in config_dict.items():
-                    f.write(f"{k}: {v}\n")
+            render_config_sections(f.write)
 
-                # Also write all commandline args
-                print("\n----------------------TRAINING ARGUMENTS----------------------")
-                args_dict = vars(args)
-                for k, v in args_dict.items():
+            if args is not None:
+                f.write("\n==================== RAW ARGUMENTS ====================\n")
+                for k, v in vars(args).items():
                     f.write(f"{k}: {v}\n")
-
-                print("\n----------------------END OF SUMMARY----------------------\n")
+            f.write("\n==================== END OF CONFIGURATION ====================\n")
                     
     def log_training_script(self):
         """

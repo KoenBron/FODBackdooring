@@ -1,7 +1,7 @@
 import random
 
 from utils.parse_args import parse_args, apply_settings
-from utils.global_settings import FLSettings, TrainingSettings, BackdoorProperties
+from utils.global_settings import FLSettings
 from utils.model_log import ModelLogger
 from utils.select_clients import select_clients, fast_forward_client_selection
 from FL.custom_server import Server
@@ -11,33 +11,12 @@ def start_fl_simulation(args):
     """
     Main body for running the simultation
     """
-    # Setup logger
-    config_dict = {
-        # === FL Settings ===
-        "num_rounds": FLSettings.NUM_ROUNDS,
-        "total_clients": FLSettings.TOTAL_CLIENTS,
-        "clients_per_round": FLSettings.CLIENTS_PER_ROUND,
-        "attacker_ids": list(FLSettings.ATTACKER_IDS),
-        "random_seed": FLSettings.SEED,
-        "attacker_fraction": FLSettings.ATTACKER_FRACTION,
-        "client_train_ds_mode": FLSettings.ATTACKER_DATASET_MODE,
-        "aggregation_strategy": FLSettings.AGGREGATION_STRATEGY,
-        "server_lr": FLSettings.SERVER_LR,
-        "gamma_cap": FLSettings.GAMMA_CAP,
-        "do_stealth_eval": FLSettings.DO_STEALTH_EVAL,
-        "attack_type": BackdoorProperties.ATTACK_TYPE.name,
-        "box_transform_mode": BackdoorProperties.BOX_TRANSFORM_MODE.value if BackdoorProperties.BOX_TRANSFORM_MODE else None,
-        "box_transform_params": BackdoorProperties.BOX_TRANSFORM_PARAMS,
-        # === Training Settings ===
-        "benign_client_local_epochs": TrainingSettings.BENIGN_CLIENT_LOCAL_EPOCHS,
-        "malicious_client_local_epochs": TrainingSettings.MALICIOUS_CLIENT_LOCAL_EPOCHS,
-        "training_batch_size": TrainingSettings.TRAINING_BATCH_SIZE,
-    }
-
     # ModelLogger owns the attack-state path + per-protocol sub-loggers
     # (logger.pilot_a etc.) and calls AttackState.load() during construction,
-    # so cross-shift carrying-set resume happens silently here.
-    logger = ModelLogger(custom_path=FLSettings.RESUME_FROM, config_dict=config_dict, args=args)
+    # so cross-shift carrying-set resume happens silently here. The run's settings
+    # are written to config.txt from the global settings (structured summary) plus
+    # `args` (raw dump) — see ModelLogger / parse_args.build_config_sections.
+    logger = ModelLogger(custom_path=FLSettings.RESUME_FROM, args=args)
 
     # Setup the server
     server = Server(strategy=FLSettings.AGGREGATION_STRATEGY, logger=logger, checkpoint_id=FLSettings.RESUME_FROM)

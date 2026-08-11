@@ -166,3 +166,26 @@ def select_topk_signed(score, k):
     """
     ranked = sorted(score.items(), key=lambda kv: (-kv[1], kv[0]))
     return ranked[:k]
+
+
+def select_by_mode(div, b, mode, cutoff, topk):
+    """Route a (div, b) score pair to the configured carrying-layer selector.
+
+    SINGLE source of the cutoff-vs-topk decision, so the per-round path and the
+    plastic-phase freeze select IDENTICALLY -- they differ only in whether div/b are
+    one round's raw scores or the pooled plastic means:
+
+        'cutoff' -> select_cutoff(div, b, cutoff)         # variable size, div > cutoff*b
+        'topk'   -> select_topk_signed(div - b, topk)     # fixed k by SIGNED denoised rho
+
+    Both subtract the benign-to-benign floor b (denoising preserved). Returns ranked
+    [(name, score)] descending. div/b keys MUST be pre-restricted to eligible tensors
+    (frozen/BN excluded) -- select_topk_signed relies on that (its 0-signed frozen
+    entries would otherwise pad the top-k).
+    """
+    if mode == "cutoff":
+        return select_cutoff(div, b, cutoff)
+    if mode == "topk":
+        signed = {n: div[n] - b[n] for n in div}
+        return select_topk_signed(signed, topk)
+    raise ValueError(f"Unknown select mode {mode!r}; expected 'cutoff' or 'topk'.")

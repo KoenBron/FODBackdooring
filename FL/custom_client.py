@@ -150,6 +150,28 @@ class ClientManager:
             self._neurotoxin_mask_logged = True
         return mask
 
+    def _replacement_gamma(self, m):
+        """Bagdasaryan model-replacement scale  γ = k / (η · m),  clamped at
+        FLSettings.GAMMA_CAP (None = uncapped).
+
+        SINGLE SOURCE OF TRUTH for the replacement factor, shared by full model
+        replacement (_do_model_replacement, whole state dict) and partial
+        amplification (Partial protocol, carrying-set only). Both then apply the
+        SAME  γ·local − (γ−1)·global  formula; they differ only in WHICH tensors
+        it touches, not in how γ is derived.
+
+        m: number of malicious clients that round.
+        """
+        k = FLSettings.CLIENTS_PER_ROUND
+        eta = FLSettings.SERVER_LR
+
+        gamma_uncapped = k / (eta * m)
+        # GAMMA_CAP=None means "no cap" — honor it instead of crashing inside min().
+        gamma = gamma_uncapped if FLSettings.GAMMA_CAP is None else min(gamma_uncapped, FLSettings.GAMMA_CAP)
+        if FLSettings.GAMMA_CAP and gamma_uncapped > FLSettings.GAMMA_CAP:
+            print(f"[MODEL REPLACEMENT] gamma capped: {gamma_uncapped:.3f} -> {gamma:.3f} (k={k}, eta={eta}, m={m})")
+        return gamma
+
     def _do_model_replacement(self, local_weights, global_weights, m):
         """
         Scales the local weights so that — after server-side FedOpt aggregation with
@@ -167,14 +189,7 @@ class ClientManager:
         global_weights: tensor with the original server provided weights
         m: number of malicious clients that round
         """
-        k = FLSettings.CLIENTS_PER_ROUND
-        eta = FLSettings.SERVER_LR
-
-        gamma_uncapped = k / (eta * m)
-        # GAMMA_CAP=None means "no cap" — honor it instead of crashing inside min().
-        gamma = gamma_uncapped if FLSettings.GAMMA_CAP is None else min(gamma_uncapped, FLSettings.GAMMA_CAP)
-        if FLSettings.GAMMA_CAP and gamma_uncapped > FLSettings.GAMMA_CAP:
-            print(f"[MODEL REPLACEMENT] gamma capped: {gamma_uncapped:.3f} -> {gamma:.3f} (k={k}, eta={eta}, m={m})")
+        gamma = self._replacement_gamma(m)
 
         if gamma == 1.0:
             # No-op: η = 1 and m = k means submitting the local weights as-is reaches w_X

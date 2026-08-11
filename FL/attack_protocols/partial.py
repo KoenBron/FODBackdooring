@@ -40,8 +40,7 @@ from FL.scoring.l2_based import (
     squared_divergence_per_tensor,
     identity_partition,
     normalized_l2_divergence,
-    select_topk_signed,
-    select_cutoff,
+    select_by_mode,
 )
 from models.fasterrcnn.wrapper import FasterRCNNWrapper
 from utils.global_settings import FLSettings, TrainingSettings
@@ -76,20 +75,26 @@ class PartialLogger:
         self.dir = os.path.join(attack_logs_dir, "partial")
         os.makedirs(self.dir, exist_ok=True)
 
-    def write_round(self, current_round, client_id, select_mode, select_param, gamma,
-                    carrying, carrying_by_group, top_carriers, norms):
+    def write_round(self, current_round, client_id, phase, select_mode, select_param,
+                    gamma, gamma_source, carrying, carrying_by_group, top_carriers,
+                    norms, freeze=None):
         target = os.path.join(self.dir, f"round_{current_round}_client_{client_id}.json")
         payload = {
             "round": current_round,
             "client_id": client_id,
+            "phase": phase,                           # 'disabled' | 'plastic' | 'exploit'
             "select_mode": select_mode,
             "select_param": select_param,
             "gamma": gamma,
+            "gamma_source": gamma_source,             # 'plastic_no_amp' | 'replacement' | 'fixed'
             "carrying_size": len(carrying),
             "carrying": sorted(carrying),
             "carrying_by_group": carrying_by_group,   # {group_name: #carrying tensors}
-            "top_carriers": top_carriers,             # [[name, score], ...] (div or rho)
+            "top_carriers": top_carriers,             # this round's per-round ranking (drift check in exploit)
             "norms": norms,                           # see _norm_diagnostics
+            # Present ONLY on the round the plastic phase freezes; records how the
+            # single shared carrying set was chosen from the pooled means. None otherwise.
+            "freeze": freeze,
         }
         with open(target, "w") as f:
             json.dump(payload, f, indent=2, sort_keys=True)
@@ -225,30 +230,83 @@ class PartialAmplificationProtocol(AttackProtocol):
         sq_b = squared_divergence_per_tensor(theta_ben1, theta_ben2, elig_list)
         b_t = normalized_l2_divergence(sq_b, numel, id_part)
 
-        mode = FLSettings.PARTIAL_SELECT_MODE
-        if mode == "cutoff":
-            # div_t > cutoff * b_t; variable-size set. cutoff=1.0 == the rho>0 gate.
-            ranked = select_cutoff(div_t, b_t, FLSettings.PARTIAL_CUTOFF)   # [(name, div)] desc
-        elif mode == "topk":
-            # SIGNED rho = div_t - b_t, UNCLAMPED and UNGATED: still subtracts the
-            # benign-to-benign floor b_t (denoising preserved), but keeps a full total
-            # order so select_topk_signed always returns exactly k carriers instead of
-            # collapsing to the (possibly < k) rho>0 survivors. Frozen/BN tensors are
-            # already absent (div_t/b_t are keyed on elig_list), so the "pre-exclude
-            # frozen" contract of select_topk_signed is satisfied here.
-            signed_rho = {t: div_t[t] - b_t[t] for t in div_t}
-            ranked = select_topk_signed(signed_rho, FLSettings.PARTIAL_TOPK)  # [(name, signed rho)] desc
-        else:
-            raise ValueError(f"Unknown PARTIAL_SELECT_MODE {mode!r}; expected 'cutoff' or 'topk'.")
+        # Selector dispatch lives in l2_based.select_by_mode so the per-round path and
+        # the plastic freeze pick carriers IDENTICALLY (only the div/b inputs differ).
+        ranked = select_by_mode(
+            div_t, b_t,
+            FLSettings.PARTIAL_SELECT_MODE,
+            FLSettings.PARTIAL_CUTOFF,
+            FLSettings.PARTIAL_TOPK,
+        )
 
         carrying = {name for name, _ in ranked}
         return {
             "carrying": carrying,
             "ranked": ranked,
             "div_t": div_t,
+            "b_t": b_t,   # per-bucket benign floor — needed by the plastic accumulator
             "elig_list": elig_list,
             "tensor_to_group": tensor_to_group,
         }
+
+    # ---- plastic phase (which carrying set) ----
+
+    def _resolve_carrying(self, sel, in_plastic, plastic_on):
+        """Pick THIS round's carrying set and drive the pooled plastic accumulator.
+
+            plastic disabled -> per-round selection (unchanged legacy behavior)
+            plastic, frozen  -> the single shared frozen set (exploit)
+            plastic, active  -> accumulate this round's div/b into the pooled means,
+                                use the per-round set, and freeze once the pooled
+                                injection count reaches PARTIAL_PLASTIC_ROUNDS.
+        """
+        if not plastic_on:
+            return sel["carrying"]
+        if not in_plastic:
+            return AttackState.plastic_frozen_set
+        AttackState.accumulate_plastic(sel["div_t"], sel["b_t"])
+        if AttackState.plastic_count >= FLSettings.PARTIAL_PLASTIC_ROUNDS:
+            self._freeze()
+        return sel["carrying"]
+
+    def _freeze(self):
+        """Reduce the pooled accumulator to ONE shared carrying set: mean(div) -
+        mean(b) -> select_by_mode (the SAME cutoff/topk selector as the per-round
+        path) -> stored in AttackState for every later round."""
+        mean_div, mean_b = AttackState.plastic_means()
+        ranked = select_by_mode(
+            mean_div, mean_b,
+            FLSettings.PARTIAL_SELECT_MODE,
+            FLSettings.PARTIAL_CUTOFF,
+            FLSettings.PARTIAL_TOPK,
+        )
+        AttackState.set_plastic_frozen({name for name, _ in ranked})
+        print(
+            f"  [partial] PLASTIC PHASE FROZEN after {AttackState.plastic_count} pooled "
+            f"injection(s): |C|={len(AttackState.plastic_frozen_set)} via "
+            f"{FLSettings.PARTIAL_SELECT_MODE}",
+            flush=True,
+        )
+
+    # ---- gamma source (how much amplification) — orthogonal to carrying set ----
+
+    def _resolve_gamma(self, client_config, in_plastic):
+        """Amplification factor for this round, plus a short source label for logging.
+
+        During the plastic phase with PARTIAL_PLASTIC_NO_AMP, submit UNAMPLIFIED
+        (gamma=1) so the localizer observes on an un-deformed global. Otherwise draw
+        gamma from PARTIAL_GAMMA_MODE: 'replacement' = k/(eta*m) capped (identical to
+        full model replacement, carriers land on theta_mal post-aggregation); 'fixed'
+        = the hand-set PARTIAL_AMP_GAMMA sweep knob.
+
+        Returns (gamma, source) where source is one of 'plastic_no_amp' | 'replacement'
+        | 'fixed'.
+        """
+        if in_plastic and FLSettings.PARTIAL_PLASTIC_NO_AMP:
+            return 1.0, "plastic_no_amp"
+        if FLSettings.PARTIAL_GAMMA_MODE == "replacement":
+            return self.manager._replacement_gamma(client_config["n_mal_clients"]), "replacement"
+        return FLSettings.PARTIAL_AMP_GAMMA, "fixed"
 
     # ---- orchestration ----
 
@@ -283,15 +341,41 @@ class PartialAmplificationProtocol(AttackProtocol):
             server_weights, cid, is_attacker=False, n_epochs=n_epochs, seed=seed_ben2)
 
         sel = self._select_carrying(theta_mal, theta_ben1, theta_ben2)
-        carrying, ranked = sel["carrying"], sel["ranked"]
-        AttackState.set_carrying_set(cid, carrying)
-        self._print_selection(cid, current_round, carrying, ranked)
+        ranked = sel["ranked"]
 
-        # Amplify ONLY the carrying tensors' update Delta_C = theta_mal - theta_t by
-        # PARTIAL_AMP_GAMMA; non-carrying params submit as theta_mal. gamma=1.0 is an
-        # exact no-op (submission == theta_mal).
-        gamma = FLSettings.PARTIAL_AMP_GAMMA
+        # Phase captured BEFORE any accumulate/freeze mutation, so the round that
+        # TRIGGERS the freeze is still treated as plastic (its sample counts, and it
+        # stays unamplified under --partial-plastic-no-amp); the freeze affects the
+        # NEXT round onward. Which carrying set (chunk: plastic phase) and how much
+        # amplification (chunk: gamma source) are resolved independently.
+        plastic_on = FLSettings.PARTIAL_PLASTIC_ROUNDS > 0
+        in_plastic = plastic_on and not AttackState.is_plastic_frozen()
+
+        carrying = self._resolve_carrying(sel, in_plastic, plastic_on)
+        # in_plastic was captured pre-mutation; if we're now frozen, the freeze fired
+        # THIS round (its sample was the Nth). phase names the round for the logs.
+        froze_this_round = in_plastic and AttackState.is_plastic_frozen()
+        phase = "disabled" if not plastic_on else ("plastic" if in_plastic else "exploit")
+        gamma, gamma_source = self._resolve_gamma(client_config, in_plastic)
+        AttackState.set_carrying_set(cid, carrying)
+        self._print_selection(cid, current_round, carrying, ranked, gamma, phase)
+
+        # Amplify ONLY the carrying tensors' update Delta_C = theta_mal - theta_t.
+        # partial_amplify applies theta_t + gamma*(theta_mal - theta_t), i.e. exactly
+        # the model-replacement form  gamma*theta_mal - (gamma-1)*theta_t  restricted to C.
         submission = partial_amplify(server_weights, theta_mal, carrying, gamma)
+
+        # When the freeze fires THIS round, capture the pooled decision so the log
+        # records exactly how the frozen set was chosen (set + top denoised means).
+        freeze = None
+        if froze_this_round:
+            mdiv, mb = AttackState.plastic_means()
+            signed = sorted(((n, mdiv[n] - mb[n]) for n in mdiv), key=lambda x: (-x[1], x[0]))
+            freeze = {
+                "pooled_injections": AttackState.plastic_count,
+                "frozen_set": sorted(AttackState.plastic_frozen_set),
+                "top_mean_carriers": [[n, float(s)] for n, s in signed[:10]],  # mean(div)-mean(b)
+            }
 
         # Per-round diagnostics JSON (attack_logs/partial/): selection, group rollup,
         # and the norm inflation the amplification produced.
@@ -302,34 +386,39 @@ class PartialAmplificationProtocol(AttackProtocol):
         log_path = self.manager.logger.partial.write_round(
             current_round=current_round,
             client_id=cid,
+            phase=phase,
             select_mode=mode,
             select_param=select_param,
             gamma=gamma,
+            gamma_source=gamma_source,
             carrying=carrying,
             carrying_by_group=self._carrying_by_group(carrying, sel["tensor_to_group"]),
             top_carriers=[[n, float(s)] for n, s in ranked[:10]],
             norms=norms,
+            freeze=freeze,
         )
 
         num_samples = len(self.manager.subsets_mal[cid])
         metrics = {
             "partition_id": cid,
             "protocol": "partial",
+            "phase": phase,
             "select_mode": mode,
             "select_param": select_param,
             "carrying_size": len(carrying),
             "amp_gamma": gamma,
+            "gamma_source": gamma_source,
             "partial_log": log_path,
         }
         return submission, num_samples, metrics
 
-    def _print_selection(self, cid, current_round, carrying, ranked):
+    def _print_selection(self, cid, current_round, carrying, ranked, gamma, phase):
         mode = FLSettings.PARTIAL_SELECT_MODE
         param = FLSettings.PARTIAL_CUTOFF if mode == "cutoff" else FLSettings.PARTIAL_TOPK
         top = ", ".join(f"{name}={score:.3g}" for name, score in ranked[:5]) or "(none)"
         print(
-            f"[partial client={cid} round={current_round}] carrying set |C|={len(carrying)} "
-            f"(mode={mode}, param={param}, gamma={FLSettings.PARTIAL_AMP_GAMMA})",
+            f"[partial client={cid} round={current_round}] phase={phase} carrying set "
+            f"|C|={len(carrying)} (mode={mode}, param={param}, gamma={gamma:.3g})",
             flush=True,
         )
         print(f"    top carriers ({'div' if mode == 'cutoff' else 'rho'}): {top}", flush=True)

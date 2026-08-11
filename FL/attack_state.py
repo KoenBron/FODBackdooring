@@ -44,6 +44,17 @@ class _AttackState:
         # LaySelFL stores per-tensor names; ours stores per-group names.
         self.carrying_set: dict[int, set[str]] = {}
 
+        # ---- Plastic phase (Partial protocol) — POOLED across attackers ----
+        # The plastic phase observes the per-round localizer for the first N pooled
+        # injection rounds, then FREEZES one shared carrying set. Pooling is fair
+        # because the client partitions are IID (exchangeable). All fields are
+        # persisted so a 4h cluster shift landing mid-plastic resumes correctly.
+        self.plastic_div_sum: dict[str, float] = {}  # name -> Σ div_t over plastic rounds
+        self.plastic_b_sum: dict[str, float] = {}    # name -> Σ b_t   over plastic rounds
+        self.plastic_count: int = 0                  # pooled injection rounds accumulated
+        self.plastic_frozen: bool = False            # has the freeze happened?
+        self.plastic_frozen_set: set[str] = set()    # the single shared post-freeze carrying set
+
         # ---- In-memory only (reset on every fresh process) ----
 
         # Counter that increments each time THIS attacker actually attacks.
@@ -91,6 +102,36 @@ class _AttackState:
         """How many times has this attacker attacked so far. 0 if never."""
         return self.attack_round_idx.get(client_id, 0)
 
+    # ---- Plastic-phase accumulator (pooled across attackers) ----
+
+    def accumulate_plastic(self, div, b) -> None:
+        """Add one round's per-bucket div_t / b_t into the pooled running sums and
+        bump the pooled injection count. div and b are name->float dicts over the
+        same (eligible) key set, so the sums stay aligned across rounds."""
+        for n, v in div.items():
+            self.plastic_div_sum[n] = self.plastic_div_sum.get(n, 0.0) + v
+        for n, v in b.items():
+            self.plastic_b_sum[n] = self.plastic_b_sum.get(n, 0.0) + v
+        self.plastic_count += 1
+
+    def plastic_means(self):
+        """Pooled means (mean_div, mean_b) = sum / count. Empty dicts if no samples."""
+        c = self.plastic_count
+        if c == 0:
+            return {}, {}
+        return (
+            {n: s / c for n, s in self.plastic_div_sum.items()},
+            {n: s / c for n, s in self.plastic_b_sum.items()},
+        )
+
+    def is_plastic_frozen(self) -> bool:
+        return self.plastic_frozen
+
+    def set_plastic_frozen(self, frozen_set) -> None:
+        """Commit the single shared frozen carrying set and close the plastic phase."""
+        self.plastic_frozen_set = set(frozen_set)
+        self.plastic_frozen = True
+
     def reset(self) -> None:
         """Wipe every field. Used between in-process simulations and by tests."""
         self.carrying_set.clear()
@@ -98,6 +139,11 @@ class _AttackState:
         self.lhat.clear()
         self.benign_anchor.clear()
         self.beta_max.clear()
+        self.plastic_div_sum.clear()
+        self.plastic_b_sum.clear()
+        self.plastic_count = 0
+        self.plastic_frozen = False
+        self.plastic_frozen_set.clear()
 
     # ---- Persistence ----
 
@@ -116,6 +162,15 @@ class _AttackState:
                 # JSON keys must be strings; sort the set members so diffs are stable.
                 str(cid): sorted(s) for cid, s in self.carrying_set.items()
             },
+            # Pooled plastic accumulator — persisted so a shift mid-plastic resumes
+            # accumulation (rather than freezing on a truncated window).
+            "plastic": {
+                "div_sum": self.plastic_div_sum,
+                "b_sum": self.plastic_b_sum,
+                "count": self.plastic_count,
+                "frozen": self.plastic_frozen,
+                "frozen_set": sorted(self.plastic_frozen_set),
+            },
         }
 
     def from_dict(self, d: dict) -> None:
@@ -127,6 +182,12 @@ class _AttackState:
             int(cid): set(names)
             for cid, names in d.get("carrying_set", {}).items()
         }
+        p = d.get("plastic", {})
+        self.plastic_div_sum = dict(p.get("div_sum", {}))
+        self.plastic_b_sum = dict(p.get("b_sum", {}))
+        self.plastic_count = int(p.get("count", 0))
+        self.plastic_frozen = bool(p.get("frozen", False))
+        self.plastic_frozen_set = set(p.get("frozen_set", ()))
 
     def save(self, path) -> None:
         """Write the snapshot to disk atomically.

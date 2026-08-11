@@ -85,7 +85,14 @@ def parse_args():
     atk_group.add_argument("--partial-select-mode", type=str, default=FLSettings.PARTIAL_SELECT_MODE, choices=["cutoff", "topk"], help="partial protocol: per-tensor carrying-layer selector. 'cutoff' = all eligible tensors with div > (--partial-cutoff)*floor (variable-size; PilotB's selector; cutoff=1 equals the rho>0 gate). 'topk' = fixed --partial-topk tensors by denoised rho.")
     atk_group.add_argument("--partial-cutoff", type=float, default=FLSettings.PARTIAL_CUTOFF, help="partial protocol (cutoff mode): keep per-tensor layers whose normalized divergence exceeds this multiple of the floor (div > cutoff*floor). 1.0 reproduces the rho>0 gate.")
     atk_group.add_argument("--partial-topk", type=int, default=FLSettings.PARTIAL_TOPK, help="partial protocol (topk mode): size of the per-tensor carrying set C (top-k tensors by denoised divergence rho).")
-    atk_group.add_argument("--partial-amp-gamma", type=float, default=FLSettings.PARTIAL_AMP_GAMMA, help="partial protocol: amplification factor on the carrying tensors' update Delta_C = theta_mal - theta_t. gamma=1.0 submits theta_mal unchanged; gamma>1 concentrates energy in C (raises total update norm; the norm budget is a later increment).")
+    atk_group.add_argument("--partial-gamma-mode", type=str, default=FLSettings.PARTIAL_GAMMA_MODE, choices=["fixed", "replacement"], help="partial protocol: source of the carrier-set gamma. 'fixed' = use --partial-amp-gamma (the trade-off sweep knob). 'replacement' = derive gamma = k/(server_lr*n_mal) capped at --gamma-cap, i.e. the SAME Bagdasaryan factor as full model replacement, so the carrying tensors are genuinely model-replaced after aggregation.")
+    atk_group.add_argument("--partial-amp-gamma", type=float, default=FLSettings.PARTIAL_AMP_GAMMA, help="partial protocol (fixed gamma mode): amplification factor on the carrying tensors' update Delta_C = theta_mal - theta_t. gamma=1.0 submits theta_mal unchanged; gamma>1 concentrates energy in C (raises total update norm; the norm budget is a later increment).")
+
+    # Plastic-phase Configuration (Partial protocol)
+    plastic_group = parser.add_argument_group('Plastic-phase Configuration (partial protocol)')
+    plastic_group.add_argument("--partial-plastic-rounds", type=int, default=FLSettings.PARTIAL_PLASTIC_ROUNDS, help="partial protocol: number of (pooled, across-attacker) injection rounds to observe before FREEZING one shared carrying set = select_by_mode(mean(div), mean(b)). The frozen set is reused every later round, removing the per-round |C| oscillation and late-round collapse. 0 = plastic phase OFF (per-round selection every round).")
+    plastic_group.add_argument("--partial-plastic-no-amp", action="store_true", default=FLSettings.PARTIAL_PLASTIC_NO_AMP, help="partial protocol: submit UNAMPLIFIED (gamma=1) during the plastic phase so the localizer observes on an un-deformed global; amplification resumes only after the freeze. Off by default (amplify during plastic to lay the backdoor foundation).")
+
     atk_group.add_argument("--attacker-fraction", type=float, default=FLSettings.ATTACKER_FRACTION, help="Fraction of malicious clients")
     atk_group.add_argument("--client-train-ds-mode", type=str, default=FLSettings.ATTACKER_DATASET_MODE, help="Dataset mode for attackers")
     atk_group.add_argument("--enable-model-replacement", action="store_true", default=FLSettings.DO_MODEL_REPLACEMENT, help="Enable the model replacement strategy for malicious clients to amplify backdoors")
@@ -166,7 +173,10 @@ def apply_settings(args):
     FLSettings.PARTIAL_SELECT_MODE = args.partial_select_mode
     FLSettings.PARTIAL_CUTOFF = args.partial_cutoff
     FLSettings.PARTIAL_TOPK = args.partial_topk
+    FLSettings.PARTIAL_GAMMA_MODE = args.partial_gamma_mode
     FLSettings.PARTIAL_AMP_GAMMA = args.partial_amp_gamma
+    FLSettings.PARTIAL_PLASTIC_ROUNDS = args.partial_plastic_rounds
+    FLSettings.PARTIAL_PLASTIC_NO_AMP = args.partial_plastic_no_amp
     FLSettings.SKIP_ROUND_EVAL = args.skip_round_eval
     FLSettings.SKIP_MAP_EVAL = args.skip_map_eval
     FLSettings.SKIP_ASR_EVAL = args.skip_asr_eval
@@ -273,43 +283,116 @@ def apply_settings(args):
 
     print_configuration_summary()
 
-def print_configuration_summary():
-    if EvaluationSettings.DO_POISON_EVAL or EvaluationSettings.DO_POISON_EVAL:
-        print("\n==================== Evaluation Config ====================")
-    else:
-        print("\n==================== Simulation Config ====================")
+def build_config_sections():
+    """The run's relevant settings, grouped into ordered (title, [(key, value), ...])
+    sections. SINGLE SOURCE for both the stdout summary (print_configuration_summary)
+    and the structured header of config.txt, so the two never drift. Conditional
+    entries (partial/plastic, stealth sub-settings, box-transform, target guarantee)
+    appear only when they apply.
+    """
+    is_partial = FLSettings.ATTACK_PROTOCOL == "partial"
+    sections = []
 
-    print(f"{'OUTPUT_DIR':30}: {ProjectPaths.OUTPUT_DIR}")
-    print(f"{'NUM_ROUNDS':30}: {FLSettings.NUM_ROUNDS}")
-    print(f"{'TOTAL_CLIENTS':30}: {FLSettings.TOTAL_CLIENTS}")
-    print(f"{'CLIENTS_PER_ROUND':30}: {FLSettings.CLIENTS_PER_ROUND}")
-    print(f"{'ATTACKER_FRACTION':30}: {FLSettings.ATTACKER_FRACTION} (Clients: {FLSettings.ATTACKER_IDS})")
-    print(f"{'ATTACK_PROTOCOL':30}: {FLSettings.ATTACK_PROTOCOL}")
-    print(f"{'AGGREGATION_STRATEGY':30}: {FLSettings.AGGREGATION_STRATEGY}")
-    print(f"{'SERVER_LR':30}: {FLSettings.SERVER_LR}")
-    print(f"{'GAMMA_CAP':30}: {FLSettings.GAMMA_CAP}")
-    print(f"{'POISON_RATE':30}: {BackdoorProperties.POISON_RATE}")
-    print(f"{'DO_STEALTH_EVAL':30}: {FLSettings.DO_STEALTH_EVAL}")
-    if FLSettings.DO_STEALTH_EVAL:
-        print(f"{'  KRUM_F':30}: {FLSettings.KRUM_F}")
-        print(f"{'  MULTIKRUM_M':30}: {FLSettings.MULTIKRUM_M} (<=0 -> auto n-f)")
-        print(f"{'  NORMCLIP_C':30}: {FLSettings.NORMCLIP_C}")
-        print(f"{'  STEALTH_GRANULARITY':30}: {FLSettings.STEALTH_GRANULARITY}")
-        print(f"{'  STEALTH_DISABLED':30}: {FLSettings.STEALTH_DISABLED or '(none — all on)'}")
-    print(f"{'GUARANTEE_TARGET_OBJECTS':30}: {FLSettings.GUARANTEE_TARGET_OBJECTS}")
-    if FLSettings.GUARANTEE_TARGET_OBJECTS:
-        print(f"{'ATTACKER_TARGET_MIN_FRAC':30}: {FLSettings.ATTACKER_TARGET_MIN_FRACTION}")
-        print(f"{'ATTACKER_TARGET_MIN_COUNT':30}: {FLSettings.ATTACKER_TARGET_MIN_COUNT}")
-        print(f"{'BENIGN_TARGET_FLOOR':30}: {FLSettings.BENIGN_TARGET_FLOOR}")
-    print(f"{'ATTACK_TYPE':30}: {BackdoorProperties.ATTACK_TYPE.name}")
+    run = [
+        ("OUTPUT_DIR", ProjectPaths.OUTPUT_DIR),
+        ("NUM_ROUNDS", FLSettings.NUM_ROUNDS),
+        ("RANDOM_SEED", FLSettings.SEED),
+    ]
+    if getattr(FLSettings, "RESUME_FROM", None):
+        run.append(("RESUME_FROM", FLSettings.RESUME_FROM))
+    if getattr(FLSettings, "EVAL_EVERY", None) is not None:
+        run.append(("EVAL_EVERY", FLSettings.EVAL_EVERY))
+    sections.append(("Run", run))
+
+    sections.append(("Federated setup", [
+        ("TOTAL_CLIENTS", FLSettings.TOTAL_CLIENTS),
+        ("CLIENTS_PER_ROUND", FLSettings.CLIENTS_PER_ROUND),
+        ("AGGREGATION_STRATEGY", FLSettings.AGGREGATION_STRATEGY),
+        ("SERVER_LR", FLSettings.SERVER_LR),
+        ("GAMMA_CAP", FLSettings.GAMMA_CAP),
+    ]))
+
+    attacker = [
+        ("ATTACKER_FRACTION", f"{FLSettings.ATTACKER_FRACTION} (Clients: {FLSettings.ATTACKER_IDS})"),
+        ("ATTACK_PROTOCOL", FLSettings.ATTACK_PROTOCOL),
+        ("ATTACKER_DATASET_MODE", FLSettings.ATTACKER_DATASET_MODE),
+        ("NEUROTOXIN_ENABLED", FLSettings.NEUROTOXIN_ENABLED),
+    ]
+    if FLSettings.NEUROTOXIN_ENABLED:
+        attacker.append(("NEUROTOXIN_MASK_RATIO", FLSettings.NEUROTOXIN_MASK_RATIO))
+    sections.append(("Attacker", attacker))
+
+    if is_partial:
+        partial = [("PARTIAL_SELECT_MODE", FLSettings.PARTIAL_SELECT_MODE)]
+        if FLSettings.PARTIAL_SELECT_MODE == "cutoff":
+            partial.append(("PARTIAL_CUTOFF", FLSettings.PARTIAL_CUTOFF))
+        else:
+            partial.append(("PARTIAL_TOPK", FLSettings.PARTIAL_TOPK))
+        partial.append(("PARTIAL_GAMMA_MODE", FLSettings.PARTIAL_GAMMA_MODE))
+        if FLSettings.PARTIAL_GAMMA_MODE == "fixed":
+            partial.append(("PARTIAL_AMP_GAMMA", FLSettings.PARTIAL_AMP_GAMMA))
+        sections.append(("Partial protocol", partial))
+
+        plastic_on = FLSettings.PARTIAL_PLASTIC_ROUNDS > 0
+        plastic = [("PARTIAL_PLASTIC_ROUNDS",
+                    f"{FLSettings.PARTIAL_PLASTIC_ROUNDS}" + ("" if plastic_on else "  (OFF: per-round every round)"))]
+        if plastic_on:
+            plastic.append(("PARTIAL_PLASTIC_NO_AMP", FLSettings.PARTIAL_PLASTIC_NO_AMP))
+        sections.append(("Plastic phase", plastic))
+
+    backdoor = [
+        ("ATTACK_TYPE", BackdoorProperties.ATTACK_TYPE.name),
+        ("POISON_RATE", BackdoorProperties.POISON_RATE),
+        ("TRIGGER_PATTERN", BackdoorProperties.TRIGGER_PATTERN.name),
+        ("TRIGGER_ALPHA", BackdoorProperties.TRIGGER_ALPHA),
+    ]
     if BackdoorProperties.ATTACK_TYPE == AttackType.TARGETED_BOX_TRANSFORM:
         mode = BackdoorProperties.BOX_TRANSFORM_MODE
-        print(f"{'  BOX_TRANSFORM_MODE':30}: {mode.value if mode else None}")
-        print(f"{'  BOX_TRANSFORM_PARAMS':30}: {BackdoorProperties.BOX_TRANSFORM_PARAMS}")
-    print(f"{'TRIGGER_PATTERN':30}: {BackdoorProperties.TRIGGER_PATTERN.name}")
-    print(f"{'TRIGGER_ALPHA':30}: {BackdoorProperties.TRIGGER_ALPHA}")
+        backdoor.append(("BOX_TRANSFORM_MODE", mode.value if mode else None))
+        backdoor.append(("BOX_TRANSFORM_PARAMS", BackdoorProperties.BOX_TRANSFORM_PARAMS))
     if BackdoorProperties.TRIGGER_PATTERN == TriggerType.FLOATING_CHECKERBOARD:
-        print(f"{'CHECKER_SQUARE_PX':30}: {BackdoorProperties.FLOATING_CHECKER_SQUARE_PX}")
-        print(f"{'TRIGGER_COLOR (BGR)':30}: {BackdoorProperties.TRIGGER_COLOR}")
-        print(f"{'TRIGGER_COLOR_SECONDARY':30}: {BackdoorProperties.TRIGGER_COLOR_SECONDARY}")
-    print("===========================================================\n")
+        backdoor.append(("CHECKER_SQUARE_PX", BackdoorProperties.FLOATING_CHECKER_SQUARE_PX))
+        backdoor.append(("TRIGGER_COLOR (BGR)", BackdoorProperties.TRIGGER_COLOR))
+        backdoor.append(("TRIGGER_COLOR_SECONDARY", BackdoorProperties.TRIGGER_COLOR_SECONDARY))
+    if FLSettings.GUARANTEE_TARGET_OBJECTS:
+        backdoor.append(("GUARANTEE_TARGET_OBJECTS", True))
+        backdoor.append(("ATTACKER_TARGET_MIN_FRACTION", FLSettings.ATTACKER_TARGET_MIN_FRACTION))
+        backdoor.append(("ATTACKER_TARGET_MIN_COUNT", FLSettings.ATTACKER_TARGET_MIN_COUNT))
+        backdoor.append(("BENIGN_TARGET_FLOOR", FLSettings.BENIGN_TARGET_FLOOR))
+    sections.append(("Backdoor / trigger", backdoor))
+
+    stealth = [("DO_STEALTH_EVAL", FLSettings.DO_STEALTH_EVAL)]
+    if FLSettings.DO_STEALTH_EVAL:
+        stealth += [
+            ("KRUM_F", FLSettings.KRUM_F),
+            ("MULTIKRUM_M", f"{FLSettings.MULTIKRUM_M} (<=0 -> auto n-f)"),
+            ("NORMCLIP_C", FLSettings.NORMCLIP_C),
+            ("STEALTH_GRANULARITY", FLSettings.STEALTH_GRANULARITY),
+            ("STEALTH_DISABLED", FLSettings.STEALTH_DISABLED or "(none — all on)"),
+        ]
+    sections.append(("Stealth evaluation", stealth))
+
+    sections.append(("Training", [
+        ("BENIGN_CLIENT_LOCAL_EPOCHS", TrainingSettings.BENIGN_CLIENT_LOCAL_EPOCHS),
+        ("MALICIOUS_CLIENT_LOCAL_EPOCHS", TrainingSettings.MALICIOUS_CLIENT_LOCAL_EPOCHS),
+        ("BENIGN_CLIENT_LEARNING_RATE", TrainingSettings.BENIGN_CLIENT_LEARNING_RATE),
+        ("MALICIOUS_CLIENT_LEARNING_RATE", TrainingSettings.MALICIOUS_CLIENT_LEARNING_RATE),
+        ("TRAINING_BATCH_SIZE", TrainingSettings.TRAINING_BATCH_SIZE),
+    ]))
+    return sections
+
+
+def render_config_sections(write):
+    """Render build_config_sections() through a `write(str)` sink (a print wrapper or
+    file .write). Shared by the stdout summary and config.txt so their layout matches."""
+    for title, rows in build_config_sections():
+        write(f"\n-- {title} --\n")
+        for k, v in rows:
+            write(f"  {k:32}: {v}\n")
+
+
+def print_configuration_summary():
+    header = "Evaluation Config" if EvaluationSettings.DO_POISON_EVAL else "Simulation Config"
+    print(f"\n==================== {header} ====================")
+    render_config_sections(lambda s: print(s, end=""))
+    print("\n===========================================================\n")

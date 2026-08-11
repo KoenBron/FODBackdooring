@@ -161,7 +161,23 @@ class FLSettings:
     PARTIAL_SELECT_MODE = "cutoff"  # "cutoff" (div > cutoff*floor, variable size) | "topk" (fixed k by rho)
     PARTIAL_CUTOFF = 1.0            # cutoff mode: keep tensors with div > PARTIAL_CUTOFF * floor (1.0 == rho>0 gate)
     PARTIAL_TOPK = 20              # topk mode: size of the per-tensor carrying set C
-    PARTIAL_AMP_GAMMA = 1.0        # amplify Delta_C = theta_mal - theta_t on carrying tensors by this factor (1.0 = no-op)
+    # Source of the carrier-set amplification factor gamma. Both modes apply the
+    # SAME  gamma*theta_mal - (gamma-1)*theta_t  replacement formula to C; they only
+    # differ in where gamma comes from:
+    #   "fixed"        -> gamma = PARTIAL_AMP_GAMMA (hand-set; the trade-off sweep knob)
+    #   "replacement"  -> gamma = k/(eta*m) capped at GAMMA_CAP (same as full model
+    #                     replacement, so C is genuinely model-replaced post-aggregation)
+    PARTIAL_GAMMA_MODE = "fixed"
+    PARTIAL_AMP_GAMMA = 1.0        # fixed mode: amplify Delta_C = theta_mal - theta_t on carrying tensors by this factor (1.0 = no-op)
+
+    # ---- Plastic-phase options (Partial protocol) ----
+    # The plastic phase runs the per-round localizer for the first N injection rounds,
+    # POOLING div_t/b_t across attackers (IID -> exchangeable partitions), then FREEZES
+    # one shared carrying set = select_by_mode(mean(div), mean(b)) reused for every
+    # later (exploit) round. Freezing kills the round-to-round |C| oscillation and the
+    # late-round carrier collapse. State is persisted, so a mid-plastic shift resumes.
+    PARTIAL_PLASTIC_ROUNDS = 0     # pooled injection rounds to observe before freezing; 0 = plastic phase OFF (legacy per-round every round)
+    PARTIAL_PLASTIC_NO_AMP = False # if True, submit unamplified (gamma=1) DURING the plastic phase; amplification resumes only after the freeze
 
     # When True, the server skips per-round mAP / ASR evaluation and
     # save_if_best_model. Useful for the PilotA pilot where the submitted

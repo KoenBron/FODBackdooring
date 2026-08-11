@@ -196,24 +196,9 @@ def start_fl_simulation():
         "num_gpus": FLSettings.FRACTION_GPU if torch.cuda.is_available() else 0.0
     }
     
-    config_dict = {
-        # === FL Settings ===
-        "num_rounds": FLSettings.NUM_ROUNDS,
-        "total_clients": FLSettings.TOTAL_CLIENTS,
-        "min_fit_clients": FLSettings.MIN_FIT_CLIENTS,
-        "fraction_fit_clients": FLSettings.FRACTION_FIT,
-        "fraction_client_eval": FLSettings.FRACTION_CLIENT_EVAL,
-        "fraction_gpu_per_client": FLSettings.FRACTION_GPU,
-        "attacker_ids": list(FLSettings.ATTACKER_IDS),
-        "random_seed": FLSettings.SEED,
-        "attacker_fraction": FLSettings.ATTACKER_FRACTION,
-        "client_train_ds_mode": FLSettings.ATTACKER_DATASET_MODE,
-        # === Training Settings ===
-        "local_epochs": TrainingSettings.LOCAL_EPOCHS,
-        "training_batch_size": TrainingSettings.TRAINING_BATCH_SIZE,
-    }
-    # Remaining backdoor information is logged by the logger from reading the global_settings module
-    logger = ModelLogger(custom_path=FLSettings.RESUME_FROM, config_dict=config_dict)
+    # config.txt is written by the logger from the global settings (structured summary);
+    # this legacy path passes no CLI args object, so it gets the summary without a raw dump.
+    logger = ModelLogger(custom_path=FLSettings.RESUME_FROM)
     strategy = get_strategy(logger)
 
 
