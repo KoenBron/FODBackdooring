@@ -200,18 +200,31 @@ class PartialAmplificationProtocol(AttackProtocol):
         return elig_list, tensor_to_group, id_part
 
     def _exploit_sel(self):
-        """The `sel` dict for an exploit round, built WITHOUT the benign anchors. The
-        carrying set comes from the frozen set (via _resolve_carrying), so no div/b is
-        computed; ranked is empty (the per-round drift ranking is forfeited with the
-        anchors). Only elig_list/tensor_to_group are needed downstream, for the norm
-        diagnostics and the group rollup.
+        """The `sel` dict for an exploit round, built WITHOUT the benign anchors.
+
+        No new trajectories run, but the frozen set was itself selected from the POOLED
+        per-bucket divergence scores accumulated during the plastic phase — and those
+        means are persisted in AttackState. So we can still rank the frozen layers by
+        the exact scores that selected them: re-run the SAME select_by_mode(mean_div,
+        mean_b, ...) call _freeze used. `ranked` is therefore the frozen carrying set
+        with its normalized divergence score per layer (div in cutoff mode, denoised
+        rho in topk mode), descending. It is STATIC across exploit rounds (it's the
+        frozen decision, not a per-round remeasurement). div_t/b_t carry the pooled
+        means for reference; they are unused downstream in exploit (accumulation is
+        closed, _norm_diagnostics doesn't read them).
         """
         elig_list, tensor_to_group, _ = self._eligible_tensors()
+        mean_div, mean_b = AttackState.plastic_means()
+        ranked = select_by_mode(
+            mean_div, mean_b,
+            FLSettings.PARTIAL_SELECT_MODE,
+            FLSettings.PARTIAL_CUTOFF, FLSettings.PARTIAL_TOPK,
+        )
         return {
             "carrying": AttackState.plastic_frozen_set,
-            "ranked": [],
-            "div_t": {},
-            "b_t": {},
+            "ranked": ranked,
+            "div_t": mean_div,
+            "b_t": mean_b,
             "elig_list": elig_list,
             "tensor_to_group": tensor_to_group,
         }
