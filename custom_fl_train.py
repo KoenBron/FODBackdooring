@@ -79,12 +79,10 @@ def start_fl_simulation(args):
             )
 
 
-        # Perform aggregation of client updates after
+        # Perform aggregation of client updates after. This also persists the round
+        # checkpoint and, back-to-back with it, the attacker state (AttackState.save,
+        # atomic tmp+rename) — see aggregate_and_evaluate for the ordering rationale.
         server.aggregate_and_evaluate(round=current_round, num_attackers=n_mal_clients)
-
-        # Persist attacker state after the round commits. The logger owns
-        # the path and forwards to AttackState.save (atomic tmp+rename).
-        logger.save_attack_state()
 
     print("\n________________________SIMULATION COMPLETE________________________")
 

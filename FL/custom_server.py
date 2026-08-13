@@ -336,6 +336,15 @@ class Server:
         # stealth harness above (stealth_per_client / stealth_summary) supersedes
         # the old client_update_log.
         self._save_latest_model(round=round)
+        # Persist attacker state immediately after the checkpoint, back-to-back, so
+        # nothing (notably the remove_from_gpu CUDA sync below) sits in the window
+        # between the two durable round-writes. A kill in that window leaves the
+        # checkpoint at round N but attack_state at N-1; since resume starts at N+1
+        # (round N is not replayed), that round's pooled plastic sample would be
+        # dropped. Checkpoint-first is deliberate: the residual failure is a dropped
+        # sample (graceful — the pool is one short), never a replayed round that
+        # double-counts the pooled sums.
+        self.logger.save_attack_state()
 
         # Prepare for another round
         self.round_evaluator.remove_from_gpu()

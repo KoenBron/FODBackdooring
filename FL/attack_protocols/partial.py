@@ -186,6 +186,36 @@ class PartialAmplificationProtocol(AttackProtocol):
 
     # ---- layer selection (PilotB math; imported atoms) ----
 
+    def _eligible_tensors(self):
+        """Eligible (trainable, non-batch-norm) tensor names + the tensor->group map
+        and identity partition, derived from the model alone (no trajectories). Shared
+        by the per-round localizer (_select_carrying) and the exploit path (_exploit_sel),
+        which needs the same coordinate set for logging/diagnostics but skips the anchors.
+        """
+        model = self.manager.wrapper.model
+        tensor_list, tensor_to_group, _ = build_group_map(model)
+        id_part = identity_partition(tensor_list)
+        eligible_names, _eligible_buckets = build_eligibility(model, id_part)
+        elig_list = [t for t in tensor_list if t in eligible_names]
+        return elig_list, tensor_to_group, id_part
+
+    def _exploit_sel(self):
+        """The `sel` dict for an exploit round, built WITHOUT the benign anchors. The
+        carrying set comes from the frozen set (via _resolve_carrying), so no div/b is
+        computed; ranked is empty (the per-round drift ranking is forfeited with the
+        anchors). Only elig_list/tensor_to_group are needed downstream, for the norm
+        diagnostics and the group rollup.
+        """
+        elig_list, tensor_to_group, _ = self._eligible_tensors()
+        return {
+            "carrying": AttackState.plastic_frozen_set,
+            "ranked": [],
+            "div_t": {},
+            "b_t": {},
+            "elig_list": elig_list,
+            "tensor_to_group": tensor_to_group,
+        }
+
     def _select_carrying(self, theta_mal, theta_ben1, theta_ben2):
         """Per-tensor carrying-layer selection (PilotB math), restricted to ELIGIBLE
         tensors (trainable, non-batch-norm) via FL.groups.build_eligibility.
@@ -215,12 +245,8 @@ class PartialAmplificationProtocol(AttackProtocol):
         score is div in cutoff mode, rho in topk mode), div_t, elig_list (eligible
         tensor names, for the norm diagnostics), tensor_to_group (for the group rollup).
         """
-        model = self.manager.wrapper.model
-        tensor_list, tensor_to_group, _ = build_group_map(model)
-        numel = numel_per_tensor(model)
-        id_part = identity_partition(tensor_list)
-        eligible_names, _eligible_buckets = build_eligibility(model, id_part)
-        elig_list = [t for t in tensor_list if t in eligible_names]
+        elig_list, tensor_to_group, id_part = self._eligible_tensors()
+        numel = numel_per_tensor(self.manager.wrapper.model)
 
         # div_t over ELIGIBLE tensors only (BN + frozen never enter the selection).
         sq_div = squared_divergence_per_tensor(theta_mal, theta_ben1, elig_list)
@@ -327,20 +353,36 @@ class PartialAmplificationProtocol(AttackProtocol):
         seed_ben1 = seed_mal
         seed_ben2 = seed_mal + 1
 
-        print(
-            f"  [partial client={cid} round={current_round}] trajectories on "
-            f"partition {cid}: ben1(seed={seed_ben1}) / mal(seed={seed_mal}) / ben2(seed={seed_ben2})",
-            flush=True,
-        )
+        # Once the carrying set is frozen (exploit), the benign anchors are unused:
+        # the frozen set drives amplification and the per-round localizer is only a
+        # (now forfeited) drift check. Skip BOTH benign trajectories then and train
+        # only the poisoned run. Each trajectory re-seeds all its RNGs and starts from
+        # theta_t with a fresh optimizer, so theta_mal is identical whether or not the
+        # anchors ran before it.
+        in_exploit = FLSettings.PARTIAL_PLASTIC_ROUNDS > 0 and AttackState.is_plastic_frozen()
 
-        theta_ben1 = self._run_trajectory(
-            server_weights, cid, is_attacker=False, n_epochs=n_epochs, seed=seed_ben1)
-        theta_mal = self._run_trajectory(
-            server_weights, cid, is_attacker=True, n_epochs=n_epochs, seed=seed_mal)
-        theta_ben2 = self._run_trajectory(
-            server_weights, cid, is_attacker=False, n_epochs=n_epochs, seed=seed_ben2)
-
-        sel = self._select_carrying(theta_mal, theta_ben1, theta_ben2)
+        if in_exploit:
+            print(
+                f"  [partial client={cid} round={current_round}] exploit: mal-only "
+                f"trajectory on partition {cid} (seed={seed_mal}); benign anchors skipped",
+                flush=True,
+            )
+            theta_mal = self._run_trajectory(
+                server_weights, cid, is_attacker=True, n_epochs=n_epochs, seed=seed_mal)
+            sel = self._exploit_sel()
+        else:
+            print(
+                f"  [partial client={cid} round={current_round}] trajectories on "
+                f"partition {cid}: ben1(seed={seed_ben1}) / mal(seed={seed_mal}) / ben2(seed={seed_ben2})",
+                flush=True,
+            )
+            theta_ben1 = self._run_trajectory(
+                server_weights, cid, is_attacker=False, n_epochs=n_epochs, seed=seed_ben1)
+            theta_mal = self._run_trajectory(
+                server_weights, cid, is_attacker=True, n_epochs=n_epochs, seed=seed_mal)
+            theta_ben2 = self._run_trajectory(
+                server_weights, cid, is_attacker=False, n_epochs=n_epochs, seed=seed_ben2)
+            sel = self._select_carrying(theta_mal, theta_ben1, theta_ben2)
         ranked = sel["ranked"]
 
         # Phase captured BEFORE any accumulate/freeze mutation, so the round that
