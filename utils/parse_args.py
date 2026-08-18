@@ -93,6 +93,11 @@ def parse_args():
     plastic_group.add_argument("--partial-plastic-rounds", type=int, default=FLSettings.PARTIAL_PLASTIC_ROUNDS, help="partial protocol: number of (pooled, across-attacker) injection rounds to observe before FREEZING one shared carrying set = select_by_mode(mean(div), mean(b)). The frozen set is reused every later round, removing the per-round |C| oscillation and late-round collapse. 0 = plastic phase OFF (per-round selection every round).")
     plastic_group.add_argument("--partial-plastic-no-amp", action="store_true", default=FLSettings.PARTIAL_PLASTIC_NO_AMP, help="partial protocol: submit UNAMPLIFIED (gamma=1) during the plastic phase so the localizer observes on an un-deformed global; amplification resumes only after the freeze. Off by default (amplify during plastic to lay the backdoor foundation).")
 
+    # Constrain-phase Configuration (Partial protocol, exploit-only)
+    constrain_group = parser.add_argument_group('Constrain-phase Configuration (partial protocol)')
+    constrain_group.add_argument("--partial-constrain", action="store_true", default=FLSettings.PARTIAL_CONSTRAIN, help="partial protocol: during EXPLOIT rounds, add L_constrain = (--partial-constrain-lambda) * sum_{p not in C} ||theta_p - theta_t,p||^2 (unnormalized SSE) to the malicious trajectory's loss, pulling the NON-carrying params back toward the broadcast model theta_t so the update stays in the benign cluster (L2/Krum can otherwise separate it even at gamma=1). Carrying params are excluded so the backdoor is preserved. Requires a frozen carrying set (--partial-plastic-rounds > 0); no-op before the freeze.")
+    constrain_group.add_argument("--partial-constrain-lambda", type=float, default=FLSettings.PARTIAL_CONSTRAIN_LAMBDA, help="partial protocol: coefficient LAMBDA on the summed-squared-error non-carrying-to-broadcast constrain penalty (see --partial-constrain). SSE (not a mean) so LAMBDA ~ O(1) is effective; 0.0 disables the penalty even if --partial-constrain is set.")
+
     atk_group.add_argument("--attacker-fraction", type=float, default=FLSettings.ATTACKER_FRACTION, help="Fraction of malicious clients")
     atk_group.add_argument("--client-train-ds-mode", type=str, default=FLSettings.ATTACKER_DATASET_MODE, help="Dataset mode for attackers")
     atk_group.add_argument("--enable-model-replacement", action="store_true", default=FLSettings.DO_MODEL_REPLACEMENT, help="Enable the model replacement strategy for malicious clients to amplify backdoors")
@@ -177,6 +182,8 @@ def apply_settings(args):
     FLSettings.PARTIAL_AMP_GAMMA = args.partial_amp_gamma
     FLSettings.PARTIAL_PLASTIC_ROUNDS = args.partial_plastic_rounds
     FLSettings.PARTIAL_PLASTIC_NO_AMP = args.partial_plastic_no_amp
+    FLSettings.PARTIAL_CONSTRAIN = args.partial_constrain
+    FLSettings.PARTIAL_CONSTRAIN_LAMBDA = args.partial_constrain_lambda
     FLSettings.SKIP_ROUND_EVAL = args.skip_round_eval
     FLSettings.SKIP_MAP_EVAL = args.skip_map_eval
     FLSettings.SKIP_ASR_EVAL = args.skip_asr_eval
@@ -339,6 +346,16 @@ def build_config_sections():
         if plastic_on:
             plastic.append(("PARTIAL_PLASTIC_NO_AMP", FLSettings.PARTIAL_PLASTIC_NO_AMP))
         sections.append(("Plastic phase", plastic))
+
+        constrain_on = FLSettings.PARTIAL_CONSTRAIN and FLSettings.PARTIAL_CONSTRAIN_LAMBDA > 0
+        constrain = [("PARTIAL_CONSTRAIN",
+                      f"{FLSettings.PARTIAL_CONSTRAIN}"
+                      + ("" if constrain_on else "  (OFF: no exploit-phase penalty)"))]
+        if FLSettings.PARTIAL_CONSTRAIN:
+            constrain.append(("PARTIAL_CONSTRAIN_LAMBDA", FLSettings.PARTIAL_CONSTRAIN_LAMBDA))
+            if not plastic_on:
+                constrain.append(("(note)", "constrain needs a frozen set; set --partial-plastic-rounds > 0"))
+        sections.append(("Constrain phase", constrain))
 
     backdoor = [
         ("ATTACK_TYPE", BackdoorProperties.ATTACK_TYPE.name),

@@ -77,7 +77,7 @@ class PartialLogger:
 
     def write_round(self, current_round, client_id, phase, select_mode, select_param,
                     gamma, gamma_source, carrying, carrying_by_group, top_carriers,
-                    norms, freeze=None):
+                    norms, freeze=None, constrain=None):
         target = os.path.join(self.dir, f"round_{current_round}_client_{client_id}.json")
         payload = {
             "round": current_round,
@@ -95,6 +95,9 @@ class PartialLogger:
             # Present ONLY on the round the plastic phase freezes; records how the
             # single shared carrying set was chosen from the pooled means. None otherwise.
             "freeze": freeze,
+            # Present ONLY on exploit rounds where the constrain penalty was applied
+            # (lambda + #non-carrying tensors pulled toward theta_t). None otherwise.
+            "constrain": constrain,
         }
         with open(target, "w") as f:
             json.dump(payload, f, indent=2, sort_keys=True)
@@ -141,7 +144,8 @@ class PartialAmplificationProtocol(AttackProtocol):
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(int(seed))
 
-    def _run_trajectory(self, server_weights, partition_id, is_attacker, n_epochs, seed):
+    def _run_trajectory(self, server_weights, partition_id, is_attacker, n_epochs, seed,
+                        loss_augment_fn=None):
         """One N-epoch SGD trajectory from theta_t; returns the FINAL CPU state_dict.
 
         Only the endpoint is needed — this protocol does no per-epoch analysis — so the
@@ -152,6 +156,10 @@ class PartialAmplificationProtocol(AttackProtocol):
         trajectories MUST train at the same LR: a mal/ben LR gap would confound the
         per-tensor divergence (theta_mal vs T_ben) with LR-induced movement rather
         than the poison — the same invariant the pilots rely on.
+
+        loss_augment_fn: optional (model -> scalar Tensor) added to the task loss each
+        step (wrapper.train_step's fp32-outside-autocast hook). Used by the exploit-phase
+        constrain penalty; None for the benign anchors and for unconstrained mal runs.
         """
         assert (
             TrainingSettings.MALICIOUS_CLIENT_LEARNING_RATE
@@ -177,7 +185,7 @@ class PartialAmplificationProtocol(AttackProtocol):
             partition_id=partition_id,
             optimizer=None,
             grad_mask=None,
-            loss_augment_fn=None,
+            loss_augment_fn=loss_augment_fn,
             freeze_groups=None,
         )
         # train_step leaves the trained model on CPU; get_weights() returns a fresh
@@ -347,6 +355,56 @@ class PartialAmplificationProtocol(AttackProtocol):
             return self.manager._replacement_gamma(client_config["n_mal_clients"]), "replacement"
         return FLSettings.PARTIAL_AMP_GAMMA, "fixed"
 
+    # ---- constrain phase (pull non-carrying params back to the broadcast model) ----
+
+    def _constrain_penalty_fn(self, theta_t, carrying, elig_list):
+        """Build the exploit-phase constrain penalty, or None when it's inactive.
+
+        Returns a closure (model -> scalar Tensor) computing
+
+            LAMBDA * sum_{p in (eligible \\ C)} || theta_p - theta_t,p ||^2
+
+        i.e. the UNNORMALIZED sum of squared errors between the NON-carrying eligible
+        params and the broadcast model theta_t (server_weights), scaled by
+        PARTIAL_CONSTRAIN_LAMBDA. Carrying params C are excluded so the backdoor moves
+        freely; the penalty pulls the rest of the update back onto theta_t (the benign
+        cluster). BN/frozen params are already outside `elig_list`, so they never enter.
+
+        SSE, not a mean: dividing by the non-carrying element count (~1e7) shrinks the
+        term ~7 orders of magnitude below the task loss, so at any sane LAMBDA it would
+        be negligible. The SSE keeps the penalty in the SAME magnitude regime as the task
+        loss (LAMBDA ~ O(1) actually bites), matching PilotA's _calibrate_beta_max
+        (penalty = sum_p ||theta_p - anchor_p||^2) and the deferred beta_max auto-sizing
+        that is defined on that SSE.
+
+        Returns None (no penalty) when the switch is off, LAMBDA <= 0, or there are no
+        non-carrying eligible params — so run() can pass the result straight through to
+        _run_trajectory without a guard.
+
+        The reference tensors are materialized as fp32 constants on the training device
+        ONCE here; the closure re-reads them every step. Same fp32 reasoning as
+        wrapper.train_step's loss_augment_fn cast — a small penalty rounds to zero in
+        fp16 and would silently vanish.
+        """
+        lam = FLSettings.PARTIAL_CONSTRAIN_LAMBDA
+        if not FLSettings.PARTIAL_CONSTRAIN or lam <= 0:
+            return None
+        constrained = [n for n in elig_list if n not in carrying]
+        if not constrained:
+            return None
+
+        device = self.manager.device
+        ref = {n: theta_t[n].to(device).float() for n in constrained}
+
+        def penalty(model):
+            acc = torch.zeros((), device=device)
+            for name, p in model.named_parameters():
+                if name in ref:
+                    acc = acc + (p.float() - ref[name]).pow(2).sum()
+            return lam * acc
+
+        return penalty
+
     # ---- orchestration ----
 
     def run(self, server_weights, client_config):
@@ -375,15 +433,27 @@ class PartialAmplificationProtocol(AttackProtocol):
         in_exploit = FLSettings.PARTIAL_PLASTIC_ROUNDS > 0 and AttackState.is_plastic_frozen()
 
         if in_exploit:
+            # sel is trajectory-free (model + persisted frozen scores), so it's resolved
+            # BEFORE the mal run — the frozen carrying set is what the constrain penalty
+            # needs to know which params to exclude.
+            sel = self._exploit_sel()
+            constrain_fn = self._constrain_penalty_fn(
+                server_weights, sel["carrying"], sel["elig_list"])
             print(
                 f"  [partial client={cid} round={current_round}] exploit: mal-only "
-                f"trajectory on partition {cid} (seed={seed_mal}); benign anchors skipped",
+                f"trajectory on partition {cid} (seed={seed_mal}); benign anchors skipped"
+                + (f"; constrain lambda={FLSettings.PARTIAL_CONSTRAIN_LAMBDA:g} "
+                   f"on {len(sel['elig_list']) - len(sel['carrying'])} non-carrying tensors"
+                   if constrain_fn else ""),
                 flush=True,
             )
             theta_mal = self._run_trajectory(
-                server_weights, cid, is_attacker=True, n_epochs=n_epochs, seed=seed_mal)
-            sel = self._exploit_sel()
+                server_weights, cid, is_attacker=True, n_epochs=n_epochs, seed=seed_mal,
+                loss_augment_fn=constrain_fn)
         else:
+            # Constrain needs a frozen set (see _constrain_penalty_fn); the plastic/
+            # disabled phases select AFTER training, so no penalty applies here.
+            constrain_fn = None
             print(
                 f"  [partial client={cid} round={current_round}] trajectories on "
                 f"partition {cid}: ben1(seed={seed_ben1}) / mal(seed={seed_mal}) / ben2(seed={seed_ben2})",
@@ -432,6 +502,17 @@ class PartialAmplificationProtocol(AttackProtocol):
                 "top_mean_carriers": [[n, float(s)] for n, s in signed[:10]],  # mean(div)-mean(b)
             }
 
+        # Constrain block: non-None only when the exploit-phase penalty was applied to
+        # this round's mal trajectory. Records the coefficient and how many non-carrying
+        # tensors it pulled toward theta_t (norms.delta_noncarrying_l2_submitted shows
+        # the residual drift the penalty left behind).
+        constrain = None
+        if constrain_fn is not None:
+            constrain = {
+                "lambda": FLSettings.PARTIAL_CONSTRAIN_LAMBDA,
+                "constrained_tensors": len(sel["elig_list"]) - len(carrying),
+            }
+
         # Per-round diagnostics JSON (attack_logs/partial/): selection, group rollup,
         # and the norm inflation the amplification produced.
         mode = FLSettings.PARTIAL_SELECT_MODE
@@ -451,6 +532,7 @@ class PartialAmplificationProtocol(AttackProtocol):
             top_carriers=[[n, float(s)] for n, s in ranked[:10]],
             norms=norms,
             freeze=freeze,
+            constrain=constrain,
         )
 
         num_samples = len(self.manager.subsets_mal[cid])
@@ -463,6 +545,7 @@ class PartialAmplificationProtocol(AttackProtocol):
             "carrying_size": len(carrying),
             "amp_gamma": gamma,
             "gamma_source": gamma_source,
+            "constrain_lambda": FLSettings.PARTIAL_CONSTRAIN_LAMBDA if constrain_fn is not None else 0.0,
             "partial_log": log_path,
         }
         return submission, num_samples, metrics
@@ -500,13 +583,19 @@ class PartialAmplificationProtocol(AttackProtocol):
             return math.sqrt(s)
 
         carrying_list = [n for n in elig_list if n in carrying]
+        noncarrying_list = [n for n in elig_list if n not in carrying]
         dC_pre = l2(theta_mal, theta_t, carrying_list)       # ||Delta_C|| pre-amplification
         d_pre = l2(theta_mal, theta_t, elig_list)            # unamplified total (== theta_mal update)
         d_post = l2(submission, theta_t, elig_list)          # submitted total (post-amplification)
+        # Non-carrying drift from theta_t. partial_amplify only touches C, so this is
+        # identical in theta_mal and submission — it is exactly what the constrain
+        # penalty drives toward 0 (smaller => the update hides better under L2 / Krum).
+        d_nonC = l2(submission, theta_t, noncarrying_list)
         return {
             "delta_carrying_l2_pre": dC_pre,
             "delta_carrying_l2_post": gamma * dC_pre,        # amplification scales Delta_C by gamma
             "delta_total_l2_unamplified": d_pre,
             "delta_total_l2_submitted": d_post,
+            "delta_noncarrying_l2_submitted": d_nonC,        # constrain target (-> 0)
             "norm_inflation_ratio": (d_post / d_pre) if d_pre > 0 else float("nan"),
         }

@@ -179,6 +179,21 @@ class FLSettings:
     PARTIAL_PLASTIC_ROUNDS = 0     # pooled injection rounds to observe before freezing; 0 = plastic phase OFF (legacy per-round every round)
     PARTIAL_PLASTIC_NO_AMP = False # if True, submit unamplified (gamma=1) DURING the plastic phase; amplification resumes only after the freeze
 
+    # ---- Constrain phase (Partial protocol, exploit-only) ----
+    # Adds an L2-to-broadcast penalty to the malicious trajectory's loss during EXPLOIT
+    # rounds: L_constrain(theta) = LAMBDA * sum_{p not in C} ||theta_p - theta_t,p||^2,
+    # i.e. the UNNORMALIZED sum of squared errors between the NON-carrying eligible params
+    # and the broadcast model theta_t. The carrying set C is excluded so the backdoor
+    # moves freely while the bulk of the update is nudged back onto the benign cluster
+    # (where plain L2 / Krum otherwise separate it, even at gamma=1). SSE (not a mean):
+    # dividing by the ~1e7 non-carrying element count would push the term far below the
+    # task loss; the SSE keeps LAMBDA ~ O(1) effective and matches PilotA's beta_max
+    # calibration convention. Requires a FROZEN carrying set (needs C before training
+    # theta_mal), so it only applies once the plastic phase has frozen — a no-op in the
+    # disabled/plastic phases. Orthogonal to gamma.
+    PARTIAL_CONSTRAIN = False       # master switch for the exploit-phase constrain penalty
+    PARTIAL_CONSTRAIN_LAMBDA = 0.0  # coefficient LAMBDA on the summed-squared-error non-carrying-to-broadcast penalty
+
     # When True, the server skips per-round mAP / ASR evaluation and
     # save_if_best_model. Useful for the PilotA pilot where the submitted
     # weights are a benign trajectory's endpoint (ASR ≈ 0 by construction)

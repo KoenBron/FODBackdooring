@@ -150,7 +150,22 @@ def main():
     _expect(AttackState.plastic_count == 0 and not AttackState.plastic_frozen, "reset must clear count/flag")
     _expect(AttackState.plastic_frozen_set == set(), "reset must clear frozen set")
 
-    print("  PASS: plastic-phase accumulator, freeze, selector reuse, and persistence all OK")
+    # 8. Constrain-phase target set (mirror of _constrain_penalty_fn's exclusion rule):
+    #    the penalty covers exactly the ELIGIBLE non-carrying params -- carrying params
+    #    are excluded (backdoor moves freely) and BN/frozen (never in elig_list) never
+    #    enter. This is the pure-Python half; the fp32 torch penalty runs on the cluster.
+    elig_list = ["conv1.weight", "conv2.weight", "fc.weight", "head.weight"]
+    carrying = {"fc.weight", "head.weight"}
+    bn_or_frozen = {"bn1.weight", "bn1.bias"}  # NOT in elig_list -> must never appear
+    constrained = [n for n in elig_list if n not in carrying]  # exact copy of the protocol rule
+    _expect(set(constrained) == {"conv1.weight", "conv2.weight"},
+            f"constrained set must be eligible minus carrying, got {constrained}")
+    _expect(set(constrained).isdisjoint(carrying), "constrained set must exclude every carrying param")
+    _expect(set(constrained) | carrying == set(elig_list),
+            "constrained set + carrying must exactly cover the eligible set")
+    _expect(set(constrained).isdisjoint(bn_or_frozen), "constrained set must never include BN/frozen params")
+
+    print("  PASS: plastic-phase accumulator, freeze, selector reuse, persistence, and constrain set all OK")
 
 
 if __name__ == "__main__":
