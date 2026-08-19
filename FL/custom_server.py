@@ -6,6 +6,7 @@ from utils.dataset import CustomCocoDataset
 from utils.round_evaluator import RoundEvaluator
 from FL.stealth_defenses import analyze as stealth_analyze, DEFENSE_NAMES as STEALTH_DEFENSE_NAMES
 from FL.groups import build_bucket_map, build_eligibility
+from FL.attack_state import AttackState
 
 from torch.utils.data import DataLoader
 
@@ -57,6 +58,7 @@ class Server:
             self._stealth_bucket_map = self._build_stealth_bucket_map()
             self._stealth_eligible_names, self._stealth_eligible_buckets = build_eligibility(
                 self.wrapper.model, self._stealth_bucket_map)
+
         # Fail fast on an unknown --stealth-disable block name. Validated here (not
         # in parse_args) so parse_args needn't import the torch-backed registry.
         _unknown = set(FLSettings.STEALTH_DISABLED) - set(STEALTH_DEFENSE_NAMES)
@@ -270,6 +272,26 @@ class Server:
             )
             self.logger.log_stealth_per_client(per_client_rows)
             self.logger.log_stealth_summary(summary_row)
+
+        # Observational norm-clip report (never alters aggregation). One row per malicious
+        # client: does its submitted-update L2 norm exceed x*(benign-trajectory ref) or
+        # x*(round median), across the x sweep. Reads the same raw client updates and the
+        # broadcast global as the stealth harness; the benign reference comes from the
+        # Partial protocol via AttackState (live in plastic/disabled, frozen in exploit).
+        if FLSettings.DO_NORMCLIP_REPORT and round_attacker_ids:
+            from FL.normclip_report import update_norm, build_report_rows
+            norms = {cid: update_norm(u["weights"], broadcast_global)
+                     for cid, u in self.client_round_updates.items()}
+            ctx = {cid: (AttackState.get_normclip_ctx(cid) or {}) for cid in round_attacker_ids}
+            rows = build_report_rows(
+                current_round=round,
+                norms=norms,
+                attacker_ids=round_attacker_ids,
+                benign_ref_by_cid={cid: c.get("benign_ref") for cid, c in ctx.items()},
+                phase_by_cid={cid: c.get("phase", "") for cid, c in ctx.items()},
+                x_values=FLSettings.NORMCLIP_REPORT_X,
+            )
+            self.logger.log_normclip_report(rows)
 
         # Evaluate the model on ASR and mAP (unless skipped — see SKIP_ROUND_EVAL).
         self.wrapper.set_weights(new_global_weights)

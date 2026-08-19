@@ -50,6 +50,10 @@ class ModelLogger:
                 # knows at construction.
                 self.stealth_per_client_path = os.path.join(self.output_path, "stealth_per_client.csv")
                 self.stealth_summary_path = os.path.join(self.output_path, "stealth_summary.csv")
+
+                # Observational norm-clip report (top-level, lazy header — its columns
+                # depend on the --normclip-report-x sweep, unknown until the first row).
+                self.normclip_report_path = os.path.join(self.output_path, "normclip_report.csv")
         else:
             # Load a checkpoint and write logs to that output path
             model_dir_path = os.path.join(ProjectPaths.OUTPUT_DIR, custom_path)
@@ -63,6 +67,7 @@ class ModelLogger:
                 self.round_eval_path = os.path.join(self.output_path, "round_evaluations.csv")
                 self.stealth_per_client_path = os.path.join(self.output_path, "stealth_per_client.csv")
                 self.stealth_summary_path = os.path.join(self.output_path, "stealth_summary.csv")
+                self.normclip_report_path = os.path.join(self.output_path, "normclip_report.csv")
 
                 # Validate if checkpoint of best recorded model is there
                 best_model_path = os.path.join(model_dir_path, "best_model.pth")
@@ -210,6 +215,24 @@ class ModelLogger:
             if write_header:
                 writer.writeheader()
             writer.writerow(summary_row)
+
+    def log_normclip_report(self, rows):
+        """Append the observational norm-clip rows (one per malicious client this round).
+        rows: list of dicts from FL.normclip_report.build_report_rows. Header written
+        lazily from the first row's keys — the exceeds_*@x columns depend on the
+        --normclip-report-x sweep, which the logger doesn't know at construction. The
+        sweep is fixed per run, so the keys stay consistent across rounds; on resume the
+        file already has a header and is not rewritten."""
+        if not rows:
+            return
+        write_header = (not os.path.isfile(self.normclip_report_path)
+                        or os.path.getsize(self.normclip_report_path) == 0)
+        with open(self.normclip_report_path, 'a', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+            if write_header:
+                writer.writeheader()
+            for row in rows:
+                writer.writerow(row)
 
     def save_attack_state(self):
         """Persist the current AttackState snapshot to this run's attack_logs/.

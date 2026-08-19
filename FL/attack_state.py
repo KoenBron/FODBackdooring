@@ -30,6 +30,7 @@ direction.
 from pathlib import Path
 from typing import Any
 import json
+import statistics
 
 
 class _AttackState:
@@ -54,6 +55,19 @@ class _AttackState:
         self.plastic_count: int = 0                  # pooled injection rounds accumulated
         self.plastic_frozen: bool = False            # has the freeze happened?
         self.plastic_frozen_set: set[str] = set()    # the single shared post-freeze carrying set
+
+        # ---- Benign-norm baseline (norm-clip report) — POOLED across attackers ----
+        # ||theta_ben1 - theta_t|| collected over the plastic injection rounds (when the
+        # benign anchor is still trained); at the plastic freeze their MEDIAN becomes the
+        # single reference the exploit-phase norm-clip report uses (the anchors are skipped
+        # there). Both persist so the frozen reference survives a resume.
+        self.plastic_benign_norms: list = []               # per-round ||theta_ben1 - theta_t||
+        self.plastic_benign_norm_ref: float | None = None  # frozen median (None until freeze)
+
+        # ---- Norm-clip report context (ephemeral, NOT persisted) ----
+        # Per-cid {benign_ref, phase} the protocol stashes each round for the server-side
+        # reporter to read (the server can't see the per-round ben1 norm otherwise).
+        self.normclip_ctx: dict[int, dict] = {}
 
         # ---- In-memory only (reset on every fresh process) ----
 
@@ -132,6 +146,27 @@ class _AttackState:
         self.plastic_frozen_set = set(frozen_set)
         self.plastic_frozen = True
 
+    # ---- Benign-norm baseline (norm-clip report) ----
+
+    def accumulate_benign_norm(self, norm) -> None:
+        """Collect one plastic round's benign-anchor update norm ||theta_ben1 - theta_t||."""
+        self.plastic_benign_norms.append(float(norm))
+
+    def freeze_benign_norm(self) -> None:
+        """Freeze the MEDIAN of the collected benign norms as the exploit-phase reference
+        (None if none were collected — e.g. the report was off during the plastic phase)."""
+        self.plastic_benign_norm_ref = (
+            statistics.median(self.plastic_benign_norms) if self.plastic_benign_norms else None
+        )
+
+    def set_normclip_ctx(self, cid: int, benign_ref, phase: str) -> None:
+        """Stash this round's reporter context for an attacker (read by the server)."""
+        self.normclip_ctx[cid] = {"benign_ref": benign_ref, "phase": phase}
+
+    def get_normclip_ctx(self, cid: int):
+        """The stashed reporter context for an attacker this round, or None."""
+        return self.normclip_ctx.get(cid)
+
     def reset(self) -> None:
         """Wipe every field. Used between in-process simulations and by tests."""
         self.carrying_set.clear()
@@ -144,6 +179,9 @@ class _AttackState:
         self.plastic_count = 0
         self.plastic_frozen = False
         self.plastic_frozen_set.clear()
+        self.plastic_benign_norms.clear()
+        self.plastic_benign_norm_ref = None
+        self.normclip_ctx.clear()
 
     # ---- Persistence ----
 
@@ -170,6 +208,10 @@ class _AttackState:
                 "count": self.plastic_count,
                 "frozen": self.plastic_frozen,
                 "frozen_set": sorted(self.plastic_frozen_set),
+                # Benign-norm baseline for the norm-clip report (persisted so the frozen
+                # reference survives a resume; ephemeral normclip_ctx is NOT persisted).
+                "benign_norms": list(self.plastic_benign_norms),
+                "benign_norm_ref": self.plastic_benign_norm_ref,
             },
         }
 
@@ -188,6 +230,9 @@ class _AttackState:
         self.plastic_count = int(p.get("count", 0))
         self.plastic_frozen = bool(p.get("frozen", False))
         self.plastic_frozen_set = set(p.get("frozen_set", ()))
+        self.plastic_benign_norms = [float(v) for v in p.get("benign_norms", [])]
+        _ref = p.get("benign_norm_ref", None)
+        self.plastic_benign_norm_ref = None if _ref is None else float(_ref)
 
     def save(self, path) -> None:
         """Write the snapshot to disk atomically.

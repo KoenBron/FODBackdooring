@@ -34,6 +34,7 @@ from torch.utils.data import DataLoader
 from FL.attack_protocols.base import AttackProtocol
 from FL.attack_protocols.amplify import partial_amplify
 from FL.attack_state import AttackState
+from FL.normclip_report import update_norm
 from FL.groups import build_group_map, build_eligibility
 from FL.scoring.l2_based import (
     numel_per_tensor,
@@ -322,7 +323,7 @@ class PartialAmplificationProtocol(AttackProtocol):
 
     # ---- plastic phase (which carrying set) ----
 
-    def _resolve_carrying(self, sel, in_plastic, plastic_on):
+    def _resolve_carrying(self, sel, in_plastic, plastic_on, benign_norm=None):
         """Pick THIS round's carrying set and drive the pooled plastic accumulator.
 
             plastic disabled -> per-round selection (unchanged legacy behavior)
@@ -330,12 +331,18 @@ class PartialAmplificationProtocol(AttackProtocol):
             plastic, active  -> accumulate this round's div/b into the pooled means,
                                 use the per-round set, and freeze once the pooled
                                 injection count reaches PARTIAL_PLASTIC_ROUNDS.
+
+        benign_norm (norm-clip report only): this round's ||theta_ben1 - theta_t|| is
+        pooled alongside div/b so its mean is frozen as the exploit-phase benign
+        reference (None when the report is off — nothing is pooled).
         """
         if not plastic_on:
             return sel["carrying"]
         if not in_plastic:
             return AttackState.plastic_frozen_set
         AttackState.accumulate_plastic(sel["div_t"], sel["b_t"])
+        if benign_norm is not None:
+            AttackState.accumulate_benign_norm(benign_norm)
         if AttackState.plastic_count >= FLSettings.PARTIAL_PLASTIC_ROUNDS:
             self._freeze()
         return sel["carrying"]
@@ -352,6 +359,9 @@ class PartialAmplificationProtocol(AttackProtocol):
             FLSettings.PARTIAL_TOPK,
         )
         AttackState.set_plastic_frozen({name for name, _ in ranked})
+        # Freeze the pooled benign-norm baseline too (no-op reference when the norm-clip
+        # report was off during the plastic phase, i.e. nothing was pooled).
+        AttackState.freeze_benign_norm()
         print(
             f"  [partial] PLASTIC PHASE FROZEN after {AttackState.plastic_count} pooled "
             f"injection(s): |C|={len(AttackState.plastic_frozen_set)} via "
@@ -489,6 +499,7 @@ class PartialAmplificationProtocol(AttackProtocol):
             constrain_fn = self._constrain_penalty_fn(
                 server_weights, sel["carrying"], sel["elig_list"])
             freeze_names = self._noncarrying_freeze_names(sel["carrying"], sel["elig_list"])
+            benign_norm = None   # exploit: no ben1 -> the report uses the frozen baseline
             n_noncarrying = len(sel["elig_list"]) - len(sel["carrying"])
             extra = ""
             if constrain_fn:
@@ -521,6 +532,12 @@ class PartialAmplificationProtocol(AttackProtocol):
             theta_ben2 = self._run_trajectory(
                 server_weights, cid, is_attacker=False, n_epochs=n_epochs, seed=seed_ben2)
             sel = self._select_carrying(theta_mal, theta_ben1, theta_ben2)
+            # Benign-anchor update norm ||theta_ben1 - theta_t|| for the norm-clip report
+            # (the live reference this round). Same whole-update L2 the server scores every
+            # submission with. Only when the report is on — paid only when needed.
+            benign_norm = None
+            if FLSettings.DO_NORMCLIP_REPORT:
+                benign_norm = update_norm(theta_ben1, server_weights)
         ranked = sel["ranked"]
 
         # Phase captured BEFORE any accumulate/freeze mutation, so the round that
@@ -531,12 +548,21 @@ class PartialAmplificationProtocol(AttackProtocol):
         plastic_on = FLSettings.PARTIAL_PLASTIC_ROUNDS > 0
         in_plastic = plastic_on and not AttackState.is_plastic_frozen()
 
-        carrying = self._resolve_carrying(sel, in_plastic, plastic_on)
+        carrying = self._resolve_carrying(sel, in_plastic, plastic_on, benign_norm)
         # in_plastic was captured pre-mutation; if we're now frozen, the freeze fired
         # THIS round (its sample was the Nth). phase names the round for the logs.
         froze_this_round = in_plastic and AttackState.is_plastic_frozen()
         phase = "disabled" if not plastic_on else ("plastic" if in_plastic else "exploit")
         gamma, gamma_source = self._resolve_gamma(client_config, in_plastic)
+
+        # Stash this round's norm-clip-report context for the server-side reporter: the
+        # benign reference is the LIVE ben1 norm while it's still computed (plastic /
+        # disabled), and the FROZEN pooled baseline in the exploit phase. Ephemeral —
+        # the server reads it this round, nothing is persisted.
+        if FLSettings.DO_NORMCLIP_REPORT:
+            report_benign_ref = (AttackState.plastic_benign_norm_ref
+                                 if in_exploit else benign_norm)
+            AttackState.set_normclip_ctx(cid, report_benign_ref, phase)
         AttackState.set_carrying_set(cid, carrying)
         self._print_selection(cid, current_round, carrying, ranked, gamma, phase)
 

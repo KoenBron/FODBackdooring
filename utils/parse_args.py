@@ -118,6 +118,8 @@ def parse_args():
     det_group.add_argument("--stealth-granularity", type=str, default=FLSettings.STEALTH_GRANULARITY, choices=["auto", "group", "tensor"], help="Granularity of the dl2_* per-bucket energy decomposition. 'auto' derives it from --attack-protocol (pilot_a->group, pilot_b->tensor); 'group'/'tensor' force it.")
     det_group.add_argument("--stealth-disable", type=str, default="", help="Comma-separated stealth metric blocks to turn OFF (default: all on). Blocks: norm, cosine, krum, median, normclip, cluster, energy. Disabling all of {cosine,krum,cluster} also skips the O(n^2) pairwise pass.")
     det_group.add_argument("--stealth-on-benign-rounds", action="store_true", default=FLSettings.STEALTH_ON_BENIGN_ROUNDS, help="Also run the stealth harness on rounds with no attacker present. Off by default (those rounds are skipped to save compute since label-aware metrics are NaN). Enable for a no-attacker baseline to gather the benign null distribution for the stealth metrics.")
+    det_group.add_argument("--do-normclip-report", action="store_true", default=FLSettings.DO_NORMCLIP_REPORT, help="OBSERVATIONAL (never alters aggregation): for each malicious update, record in a top-level normclip_report.csv whether its L2 norm exceeds x*(benign-trajectory norm) or x*(median submitted norm), across the --normclip-report-x sweep. The benign reference is the attacker's ben1 anchor norm: live in the plastic/disabled phases, a frozen pooled baseline in the exploit phase. Partial protocol.")
+    det_group.add_argument("--normclip-report-x", type=str, default=",".join(f"{v:g}" for v in FLSettings.NORMCLIP_REPORT_X), help="Comma-separated x sweep for --do-normclip-report (e.g. '1.0,1.5,2.0,3.0'). Each x adds exceeds_median@x and exceeds_benign@x columns (flagged when norm > x*reference).")
 
     # Backdoor Properties
     bd_group = parser.add_argument_group('Backdoor Properties')
@@ -221,6 +223,8 @@ def apply_settings(args):
     # so parse_args stays free of a heavy FL.stealth_defenses import.
     FLSettings.STEALTH_DISABLED = tuple(x.strip() for x in args.stealth_disable.split(",") if x.strip())
     FLSettings.STEALTH_ON_BENIGN_ROUNDS = args.stealth_on_benign_rounds
+    FLSettings.DO_NORMCLIP_REPORT = args.do_normclip_report
+    FLSettings.NORMCLIP_REPORT_X = tuple(float(v) for v in args.normclip_report_x.split(",") if v.strip())
     
     # Attacker General
     FLSettings.ATTACKER_DATASET_MODE = args.client_train_ds_mode
@@ -403,6 +407,9 @@ def build_config_sections():
             ("STEALTH_GRANULARITY", FLSettings.STEALTH_GRANULARITY),
             ("STEALTH_DISABLED", FLSettings.STEALTH_DISABLED or "(none — all on)"),
         ]
+    stealth.append(("DO_NORMCLIP_REPORT", FLSettings.DO_NORMCLIP_REPORT))
+    if FLSettings.DO_NORMCLIP_REPORT:
+        stealth.append(("NORMCLIP_REPORT_X", ", ".join(f"{v:g}" for v in FLSettings.NORMCLIP_REPORT_X)))
     sections.append(("Stealth evaluation", stealth))
 
     sections.append(("Training", [

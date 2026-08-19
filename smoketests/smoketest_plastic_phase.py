@@ -37,9 +37,11 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import json
+import math
 
 from FL.attack_state import AttackState
 from FL.scoring.l2_based import select_by_mode
+from FL.normclip_report import build_report_rows
 
 
 def _expect(cond, msg):
@@ -175,7 +177,35 @@ def main():
     _expect(freeze_names == set(noncarrying),
             "freeze set must equal the constrain coordinate set")
 
-    print("  PASS: plastic-phase accumulator, freeze, selector reuse, persistence, and non-carrying set all OK")
+    # 9. Norm-clip report row builder (pure-Python half of FL.normclip_report). One row
+    #    per attacker, median taken over ALL clients, strict > exceedance, benign flags
+    #    off when the reference is missing.
+    norms = {0: 6.0, 1: 3.0, 2: 3.0}          # cid 0 is the attacker; median over all = 3.0
+    rows = build_report_rows(
+        current_round=29, norms=norms, attacker_ids={0},
+        benign_ref_by_cid={0: 3.0}, phase_by_cid={0: "exploit"},
+        x_values=(1.0, 1.5, 2.0, 3.0))
+    _expect(len(rows) == 1, f"exactly one attacker row expected, got {len(rows)}")
+    r = rows[0]
+    _expect(r["cid"] == 0 and r["phase"] == "exploit", "row identity/phase wrong")
+    _expect(abs(r["median_norm"] - 3.0) < 1e-9, "median must be over ALL clients (=3.0)")
+    _expect(abs(r["ratio_to_median"] - 2.0) < 1e-9 and abs(r["ratio_to_benign"] - 2.0) < 1e-9,
+            f"ratios wrong: {r['ratio_to_median']}, {r['ratio_to_benign']}")
+    _expect(r["exceeds_median@1.0"] and r["exceeds_median@1.5"], "should exceed median at 1.0/1.5")
+    _expect(not r["exceeds_median@2.0"], "exceedance is STRICT: 6.0 > 2.0*3.0 must be False")
+    _expect(r["exceeds_benign@1.5"] and not r["exceeds_benign@3.0"], "benign flags wrong")
+
+    # missing benign reference -> ratio NaN, all benign flags False (median still works).
+    rows2 = build_report_rows(
+        current_round=30, norms={0: 9.0, 1: 3.0, 2: 3.0}, attacker_ids={0},
+        benign_ref_by_cid={0: None}, phase_by_cid={0: "plastic"},
+        x_values=(1.0, 2.0))
+    r2 = rows2[0]
+    _expect(math.isnan(r2["ratio_to_benign"]), "missing benign ref must give NaN ratio")
+    _expect(not r2["exceeds_benign@1.0"] and not r2["exceeds_benign@2.0"], "no benign ref -> no benign flags")
+    _expect(r2["exceeds_median@2.0"], "median flags still work without a benign ref (9 > 2*3)")
+
+    print("  PASS: plastic-phase accumulator, freeze, selector reuse, persistence, non-carrying set, and normclip report all OK")
 
 
 if __name__ == "__main__":

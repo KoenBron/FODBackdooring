@@ -244,6 +244,16 @@ class FLSettings:
     ATTACKER_TARGET_MIN_COUNT = 0
     BENIGN_TARGET_FLOOR = 0
 
+    # Observational norm-clip report (Partial protocol). OBSERVATIONAL only: for each
+    # malicious update, records whether its L2 norm exceeds x * (benign-trajectory norm)
+    # or x * (median submitted norm), across a sweep of x, into a top-level
+    # normclip_report.csv. Never alters training/aggregation. The benign-trajectory
+    # reference is the attacker's own ben1 anchor norm: live during the plastic/disabled
+    # phases, and a FROZEN pooled baseline (persisted at the plastic freeze) during the
+    # exploit phase where the anchors are skipped. See FL/normclip_report.py.
+    DO_NORMCLIP_REPORT = False
+    NORMCLIP_REPORT_X = (1.0, 1.5, 2.0, 3.0)   # x sweep for the exceed-threshold columns
+
     # Passive backdoor-detectability harness (B1). OBSERVATIONAL only: logs
     # detection scores/decisions (Krum, norm-clip, cosine clustering, median
     # distance) without altering aggregation. See FL/stealth_defenses.py.
