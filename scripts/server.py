@@ -133,6 +133,7 @@ def build_index_html(base: Path, scan_root: Path, active, collections) -> str:
         "  .toc a { display: inline-block; margin-right: 1em; }",
         "  .controls { margin: 1em 0; }",
         "  .controls button { padding: 0.4em 0.8em; margin-right: 0.5em; cursor: pointer; }",
+        "  .status { color: #888; font-size: 0.85em; margin-left: 0.8em; }",
         "  /* collapsible per-subdirectory sections */",
         "  details.section { background: white; border: 1px solid #ddd; border-radius: 6px; ",
         "                    margin: 1em 0; padding: 0 0.9em 0.4em; }",
@@ -165,17 +166,24 @@ def build_index_html(base: Path, scan_root: Path, active, collections) -> str:
         parts.append("</div>")
 
     parts += [
-        f"<p class='meta'>Showing: <code>{html.escape(str(scan_root.resolve()))}</code><br>",
+        "<p class='meta' id='meta'>",
+        f"Showing: <code>{html.escape(str(scan_root.resolve()))}</code><br>",
         f"Found <b>{total}</b> PNG file(s) across <b>{len(groups)}</b> "
         f"subdirector{'y' if len(groups)==1 else 'ies'}.<br>",
         f"Page generated: {now}</p>",
         "<div class='controls'>",
-        "  <button onclick='location.reload()'>&#8635; Refresh</button>",
+        "  <button onclick='refreshNow()'>&#8635; Refresh</button>",
         "  <button onclick='setAll(true)'>Expand all</button>",
         "  <button onclick='setAll(false)'>Collapse all</button>",
         "  <label><input type='checkbox' id='autoRefresh'> Auto-refresh every 30s</label>",
+        "  <span class='status' id='refreshStatus'></span>",
         "</div>",
     ]
+
+    # Everything inside #content is what an auto-refresh swaps in place. Keeping
+    # it in one container means a refresh never touches the nav, the controls or
+    # the lightbox, so no client-side state outside it can be destroyed.
+    parts.append("<div id='content'>")
 
     if not groups:
         parts.append("<p><em>No PNG files found in this collection.</em></p>")
@@ -227,6 +235,8 @@ def build_index_html(base: Path, scan_root: Path, active, collections) -> str:
                 parts.append("</div>")
             parts.append("</details>")
 
+    parts.append("</div>")  # #content
+
     # Lightbox + collapse controls + auto-refresh JS
     parts.append("""
 <div class='lightbox' id='lightbox' onclick='this.classList.remove("active")'>
@@ -250,21 +260,94 @@ def build_index_html(base: Path, scan_root: Path, active, collections) -> str:
     if (el && el.tagName === 'DETAILS') { el.open = true; el.scrollIntoView(); }
   }
   window.addEventListener('hashchange', openTarget);
-  openTarget();
+
+  // --- which sections are expanded, remembered across refreshes -------------
+  // Sections render collapsed, so without this a refresh would silently close
+  // everything the user had opened. Keyed per collection (?dir=) so switching
+  // collections does not inherit the other one's layout.
+  const OPEN_KEY = 'plotgallery_open:' + (new URLSearchParams(location.search).get('dir') || '');
+  function loadOpen() {
+    try { return new Set(JSON.parse(localStorage.getItem(OPEN_KEY) || '[]')); }
+    catch (e) { return new Set(); }
+  }
+  function saveOpen() {
+    const ids = [...document.querySelectorAll('details.section')]
+                  .filter(d => d.open).map(d => d.id);
+    localStorage.setItem(OPEN_KEY, JSON.stringify(ids));
+  }
+  function restoreOpen() {
+    const open = loadOpen();
+    document.querySelectorAll('details.section').forEach(d => d.open = open.has(d.id));
+  }
+  // 'toggle' does not bubble, so listen in the capture phase; this survives the
+  // #content swap because the listener sits on the document, not on a section.
+  document.addEventListener('toggle', e => {
+    if (e.target.classList && e.target.classList.contains('section')) saveOpen();
+  }, true);
+
+  // --- non-destructive refresh ---------------------------------------------
+  // Fetch the same URL, and swap in ONLY #content (and the meta line) when the
+  // markup actually changed. location.reload() used to be called here, which
+  // tore down the lightbox, collapsed every section, reset the scroll position
+  // and re-requested every visible PNG -- the periodic GET storm in the log.
+  const status = document.getElementById('refreshStatus');
+  let refreshing = false;
+  async function refreshNow() {
+    if (refreshing) return;
+    refreshing = true;
+    status.textContent = 'checking...';
+    try {
+      const resp = await fetch(location.href, { cache: 'no-store' });
+      const doc = new DOMParser().parseFromString(await resp.text(), 'text/html');
+      const fresh = doc.getElementById('content');
+      const here = document.getElementById('content');
+      if (fresh && here && fresh.innerHTML !== here.innerHTML) {
+        // Only now do the images get re-requested -- i.e. when a plot actually
+        // appeared or changed, not once every 30 seconds.
+        here.innerHTML = fresh.innerHTML;
+        restoreOpen();
+        status.textContent = 'updated ' + new Date().toLocaleTimeString();
+      } else {
+        status.textContent = 'no change ' + new Date().toLocaleTimeString();
+      }
+      const freshMeta = doc.getElementById('meta');
+      if (freshMeta) document.getElementById('meta').innerHTML = freshMeta.innerHTML;
+    } catch (e) {
+      status.textContent = 'refresh failed: ' + e;
+    } finally {
+      refreshing = false;
+    }
+  }
+
   const cb = document.getElementById('autoRefresh');
   const KEY = 'plotgallery_autorefresh';
   if (localStorage.getItem(KEY) === '1') cb.checked = true;
   let timer = null;
+  function tick() {
+    // Never yank the page out from under someone who is looking at an image or
+    // has the tab in the background.
+    if (document.getElementById('lightbox').classList.contains('active')) {
+      status.textContent = 'paused (image open)';
+      return;
+    }
+    if (document.hidden) return;
+    refreshNow();
+  }
   function applyAutoRefresh() {
+    if (timer) { clearInterval(timer); timer = null; }
     if (cb.checked) {
       localStorage.setItem(KEY, '1');
-      timer = setTimeout(() => location.reload(), 30000);
+      timer = setInterval(tick, 30000);
+      status.textContent = 'auto-refresh on';
     } else {
       localStorage.setItem(KEY, '0');
-      if (timer) clearTimeout(timer);
+      status.textContent = '';
     }
   }
   cb.addEventListener('change', applyAutoRefresh);
+
+  restoreOpen();
+  openTarget();
   applyAutoRefresh();
 </script>
 </body></html>""")

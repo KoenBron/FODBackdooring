@@ -108,6 +108,63 @@ class PartialLogger:
         print(f"  [partial client={client_id} round={current_round}] log written: {target}", flush=True)
         return os.path.join("attack_logs", "partial", os.path.basename(target))
 
+    def write_freeze_summary(self, current_round, select_mode, select_param,
+                             pooled_injections, frozen_set, rows):
+        """Write the one-look summary of the frozen carrying set: frozen_set.md.
+
+        Called ONCE, on the round the plastic phase freezes. The same facts are
+        recoverable from round_<freeze>_client_<id>.json's 'freeze' block and from
+        attack_state.json, but only interleaved with the full 72-tensor div/b dumps;
+        this file exists so the decision can be read at a glance.
+
+        rows: one dict per ELIGIBLE tensor, with keys name, group, mean_div, mean_b,
+        ratio (mean_div/mean_b -- the quantity compared against a cutoff), signed
+        (mean_div - mean_b -- the quantity ranked by topk), selected (bool).
+
+        Tensors are listed by ratio descending and split at the selection boundary,
+        so the rejected near-misses are visible too: that is what says whether the
+        chosen threshold sits on a cliff or on a plateau of the rho distribution.
+        """
+        target = os.path.join(self.dir, "frozen_set.md")
+        ranked = sorted(rows, key=lambda r: (-r["ratio"], r["name"]))
+        sel = [r for r in ranked if r["selected"]]
+        rej = [r for r in ranked if not r["selected"]]
+
+        by_group = {}
+        for r in sel:
+            by_group[r["group"]] = by_group.get(r["group"], 0) + 1
+
+        def table(entries):
+            out = ["| rho = div/b | signed = div-b | group | tensor |",
+                   "|---:|---:|---|---|"]
+            for r in entries:
+                out.append(f"| {r['ratio']:.3f} | {r['signed']:.3e} | "
+                           f"{r['group']} | `{r['name']}` |")
+            return out
+
+        lines = [
+            "# Frozen carrying set",
+            "",
+            f"- froze on round: **{current_round}** (after {pooled_injections} pooled injection(s))",
+            f"- selector: **{select_mode}**, param **{select_param}**",
+            f"- |C| = **{len(frozen_set)}** of {len(rows)} eligible tensors",
+            f"- by group: {', '.join(f'{g}={n}' for g, n in sorted(by_group.items())) or '(none)'}",
+            "",
+            "## Selected (the frozen set)",
+            "",
+        ]
+        lines += table(sel) if sel else ["_(empty)_"]
+        # Only the near-misses matter for threshold sensitivity; the long negative
+        # tail is already in attack_state.json for anyone who wants all of it.
+        lines += ["", "## Rejected — 15 nearest the boundary", ""]
+        lines += table(rej[:15]) if rej else ["_(none)_"]
+        lines += [""]
+
+        with open(target, "w") as f:
+            f.write("\n".join(lines))
+        print(f"  [partial] frozen-set summary written: {target}", flush=True)
+        return os.path.join("attack_logs", "partial", "frozen_set.md")
+
 
 class PartialAmplificationProtocol(AttackProtocol):
     """Dynamic per-tensor carrying-layer selection (+ amplification, Increment 2)."""
@@ -582,6 +639,31 @@ class PartialAmplificationProtocol(AttackProtocol):
                 "frozen_set": sorted(AttackState.plastic_frozen_set),
                 "top_mean_carriers": [[n, float(s)] for n, s in signed[:10]],  # mean(div)-mean(b)
             }
+            # Standalone one-look summary of the same decision, ranked by the ratio
+            # the cutoff actually tests, with the rejected near-misses alongside.
+            self.manager.logger.partial.write_freeze_summary(
+                current_round=current_round,
+                select_mode=FLSettings.PARTIAL_SELECT_MODE,
+                select_param=(FLSettings.PARTIAL_CUTOFF
+                              if FLSettings.PARTIAL_SELECT_MODE == "cutoff"
+                              else FLSettings.PARTIAL_TOPK),
+                pooled_injections=AttackState.plastic_count,
+                frozen_set=AttackState.plastic_frozen_set,
+                rows=[
+                    {
+                        "name": n,
+                        "group": sel["tensor_to_group"].get(n, "other"),
+                        "mean_div": float(mdiv[n]),
+                        "mean_b": float(mb[n]),
+                        # b is a PRNG-noise floor and is only 0 for frozen tensors,
+                        # which are excluded from eligibility -- guard anyway.
+                        "ratio": (float(mdiv[n] / mb[n]) if mb[n] > 0 else float("inf")),
+                        "signed": float(mdiv[n] - mb[n]),
+                        "selected": n in AttackState.plastic_frozen_set,
+                    }
+                    for n in mdiv
+                ],
+            )
 
         # Constrain block: non-None only when the exploit-phase penalty was applied to
         # this round's mal trajectory. Records the coefficient and how many non-carrying
