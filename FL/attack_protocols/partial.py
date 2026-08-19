@@ -77,7 +77,7 @@ class PartialLogger:
 
     def write_round(self, current_round, client_id, phase, select_mode, select_param,
                     gamma, gamma_source, carrying, carrying_by_group, top_carriers,
-                    norms, freeze=None, constrain=None):
+                    norms, freeze=None, constrain=None, freeze_noncarrying=None):
         target = os.path.join(self.dir, f"round_{current_round}_client_{client_id}.json")
         payload = {
             "round": current_round,
@@ -98,6 +98,9 @@ class PartialLogger:
             # Present ONLY on exploit rounds where the constrain penalty was applied
             # (lambda + #non-carrying tensors pulled toward theta_t). None otherwise.
             "constrain": constrain,
+            # Present ONLY on exploit rounds where the non-carrying gradient freeze was
+            # applied (#tensors whose gradient was zeroed). None otherwise.
+            "freeze_noncarrying": freeze_noncarrying,
         }
         with open(target, "w") as f:
             json.dump(payload, f, indent=2, sort_keys=True)
@@ -145,7 +148,7 @@ class PartialAmplificationProtocol(AttackProtocol):
             torch.cuda.manual_seed_all(int(seed))
 
     def _run_trajectory(self, server_weights, partition_id, is_attacker, n_epochs, seed,
-                        loss_augment_fn=None):
+                        loss_augment_fn=None, freeze_names=None):
         """One N-epoch SGD trajectory from theta_t; returns the FINAL CPU state_dict.
 
         Only the endpoint is needed — this protocol does no per-epoch analysis — so the
@@ -160,6 +163,13 @@ class PartialAmplificationProtocol(AttackProtocol):
         loss_augment_fn: optional (model -> scalar Tensor) added to the task loss each
         step (wrapper.train_step's fp32-outside-autocast hook). Used by the exploit-phase
         constrain penalty; None for the benign anchors and for unconstrained mal runs.
+
+        freeze_names: optional iterable of parameter names to hard-freeze for this
+        trajectory by setting requires_grad=False (the exploit-phase non-carrying freeze).
+        A frozen leaf gets no gradient at all, so SGD skips it entirely — including weight
+        decay — and it stays bit-exact at theta_t while the carriers co-adapt. requires_grad
+        is PERSISTENT state on the shared wrapper.model, so it is set here and ALWAYS
+        restored in a finally, or it would leak into later trajectories/rounds.
         """
         assert (
             TrainingSettings.MALICIOUS_CLIENT_LEARNING_RATE
@@ -177,17 +187,31 @@ class PartialAmplificationProtocol(AttackProtocol):
         )
         self._seed_model_rngs(seed)
 
-        self.manager.wrapper.train_step(
-            dataloader=dl,
-            epochs=n_epochs,
-            device=self.manager.device,
-            optimizer_config={"lr": lr},
-            partition_id=partition_id,
-            optimizer=None,
-            grad_mask=None,
-            loss_augment_fn=loss_augment_fn,
-            freeze_groups=None,
-        )
+        # Hard-freeze the requested params for the duration of this trajectory only.
+        # requires_grad lives on the shared wrapper.model and survives set_weights(), so
+        # the toggle MUST be undone in the finally even if train_step raises.
+        frozen_params = []
+        if freeze_names:
+            wanted = set(freeze_names)
+            frozen_params = [p for n, p in self.manager.wrapper.model.named_parameters()
+                             if n in wanted]
+            for p in frozen_params:
+                p.requires_grad_(False)
+        try:
+            self.manager.wrapper.train_step(
+                dataloader=dl,
+                epochs=n_epochs,
+                device=self.manager.device,
+                optimizer_config={"lr": lr},
+                partition_id=partition_id,
+                optimizer=None,
+                grad_mask=None,
+                loss_augment_fn=loss_augment_fn,
+                freeze_groups=None,
+            )
+        finally:
+            for p in frozen_params:
+                p.requires_grad_(True)
         # train_step leaves the trained model on CPU; get_weights() returns a fresh
         # CPU-cloned full state_dict — the trajectory endpoint.
         return self.manager.wrapper.get_weights()
@@ -355,7 +379,15 @@ class PartialAmplificationProtocol(AttackProtocol):
             return self.manager._replacement_gamma(client_config["n_mal_clients"]), "replacement"
         return FLSettings.PARTIAL_AMP_GAMMA, "fixed"
 
-    # ---- constrain phase (pull non-carrying params back to the broadcast model) ----
+    # ---- non-carrying handling (constrain penalty / gradient freeze) ----
+
+    @staticmethod
+    def _noncarrying_names(carrying, elig_list):
+        """The eligible tensors NOT in the carrying set — the shared coordinate set for
+        both non-carrying interventions (the constrain penalty and the gradient freeze),
+        so they always agree on which params count as 'non-carrying'. BN/frozen params
+        are outside elig_list and so are never included."""
+        return [n for n in elig_list if n not in carrying]
 
     def _constrain_penalty_fn(self, theta_t, carrying, elig_list):
         """Build the exploit-phase constrain penalty, or None when it's inactive.
@@ -389,7 +421,7 @@ class PartialAmplificationProtocol(AttackProtocol):
         lam = FLSettings.PARTIAL_CONSTRAIN_LAMBDA
         if not FLSettings.PARTIAL_CONSTRAIN or lam <= 0:
             return None
-        constrained = [n for n in elig_list if n not in carrying]
+        constrained = self._noncarrying_names(carrying, elig_list)
         if not constrained:
             return None
 
@@ -404,6 +436,23 @@ class PartialAmplificationProtocol(AttackProtocol):
             return lam * acc
 
         return penalty
+
+    def _noncarrying_freeze_names(self, carrying, elig_list):
+        """The names to hard-freeze for the exploit-phase non-carrying freeze, or None.
+
+        Returns the non-carrying eligible tensor names (`eligible \\ C`); _run_trajectory
+        sets requires_grad=False on exactly these for the mal trajectory. A frozen leaf
+        gets NO gradient, so SGD skips it entirely — weight decay included — and it stays
+        bit-exact at theta_t while the carriers co-adapt. Carrying tensors are absent (they
+        train normally); BN/frozen are outside elig_list.
+
+        Returns None (unfrozen training) when the switch is off or there are no non-carrying
+        eligible params, so run() can pass the result straight through.
+        """
+        if not FLSettings.PARTIAL_FREEZE_NONCARRYING:
+            return None
+        frozen = self._noncarrying_names(carrying, elig_list)
+        return frozen or None
 
     # ---- orchestration ----
 
@@ -439,21 +488,27 @@ class PartialAmplificationProtocol(AttackProtocol):
             sel = self._exploit_sel()
             constrain_fn = self._constrain_penalty_fn(
                 server_weights, sel["carrying"], sel["elig_list"])
+            freeze_names = self._noncarrying_freeze_names(sel["carrying"], sel["elig_list"])
+            n_noncarrying = len(sel["elig_list"]) - len(sel["carrying"])
+            extra = ""
+            if constrain_fn:
+                extra = f"; constrain lambda={FLSettings.PARTIAL_CONSTRAIN_LAMBDA:g} on {n_noncarrying} non-carrying tensors"
+            elif freeze_names:
+                extra = f"; freeze (requires_grad=False) {n_noncarrying} non-carrying tensors"
             print(
                 f"  [partial client={cid} round={current_round}] exploit: mal-only "
                 f"trajectory on partition {cid} (seed={seed_mal}); benign anchors skipped"
-                + (f"; constrain lambda={FLSettings.PARTIAL_CONSTRAIN_LAMBDA:g} "
-                   f"on {len(sel['elig_list']) - len(sel['carrying'])} non-carrying tensors"
-                   if constrain_fn else ""),
+                + extra,
                 flush=True,
             )
             theta_mal = self._run_trajectory(
                 server_weights, cid, is_attacker=True, n_epochs=n_epochs, seed=seed_mal,
-                loss_augment_fn=constrain_fn)
+                loss_augment_fn=constrain_fn, freeze_names=freeze_names)
         else:
-            # Constrain needs a frozen set (see _constrain_penalty_fn); the plastic/
-            # disabled phases select AFTER training, so no penalty applies here.
+            # Constrain / freeze both need a frozen set (they exclude C); the plastic/
+            # disabled phases select AFTER training, so neither applies here.
             constrain_fn = None
+            freeze_names = None
             print(
                 f"  [partial client={cid} round={current_round}] trajectories on "
                 f"partition {cid}: ben1(seed={seed_ben1}) / mal(seed={seed_mal}) / ben2(seed={seed_ben2})",
@@ -513,6 +568,14 @@ class PartialAmplificationProtocol(AttackProtocol):
                 "constrained_tensors": len(sel["elig_list"]) - len(carrying),
             }
 
+        # Freeze block: non-None only when the non-carrying freeze was applied this round
+        # (exploit + --partial-freeze-noncarrying). frozen_tensors is how many eligible
+        # tensors were pinned via requires_grad=False; norms.delta_noncarrying_l2_submitted
+        # then shows the residual non-carrying drift (0 — a hard freeze, no weight decay).
+        freeze_noncarrying = None
+        if freeze_names is not None:
+            freeze_noncarrying = {"frozen_tensors": len(freeze_names)}
+
         # Per-round diagnostics JSON (attack_logs/partial/): selection, group rollup,
         # and the norm inflation the amplification produced.
         mode = FLSettings.PARTIAL_SELECT_MODE
@@ -533,6 +596,7 @@ class PartialAmplificationProtocol(AttackProtocol):
             norms=norms,
             freeze=freeze,
             constrain=constrain,
+            freeze_noncarrying=freeze_noncarrying,
         )
 
         num_samples = len(self.manager.subsets_mal[cid])
@@ -546,6 +610,7 @@ class PartialAmplificationProtocol(AttackProtocol):
             "amp_gamma": gamma,
             "gamma_source": gamma_source,
             "constrain_lambda": FLSettings.PARTIAL_CONSTRAIN_LAMBDA if constrain_fn is not None else 0.0,
+            "freeze_noncarrying": freeze_names is not None,
             "partial_log": log_path,
         }
         return submission, num_samples, metrics

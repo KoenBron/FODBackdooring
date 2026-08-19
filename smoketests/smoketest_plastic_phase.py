@@ -150,22 +150,32 @@ def main():
     _expect(AttackState.plastic_count == 0 and not AttackState.plastic_frozen, "reset must clear count/flag")
     _expect(AttackState.plastic_frozen_set == set(), "reset must clear frozen set")
 
-    # 8. Constrain-phase target set (mirror of _constrain_penalty_fn's exclusion rule):
-    #    the penalty covers exactly the ELIGIBLE non-carrying params -- carrying params
-    #    are excluded (backdoor moves freely) and BN/frozen (never in elig_list) never
-    #    enter. This is the pure-Python half; the fp32 torch penalty runs on the cluster.
+    # 8. Non-carrying target set (mirror of _noncarrying_names, the SHARED rule behind
+    #    both the constrain penalty and the gradient freeze): exactly the ELIGIBLE
+    #    non-carrying params -- carrying params are excluded (backdoor moves freely) and
+    #    BN/frozen (never in elig_list) never enter. Pure-Python half; the fp32 penalty
+    #    and the torch grad-mask both run on the cluster.
     elig_list = ["conv1.weight", "conv2.weight", "fc.weight", "head.weight"]
     carrying = {"fc.weight", "head.weight"}
     bn_or_frozen = {"bn1.weight", "bn1.bias"}  # NOT in elig_list -> must never appear
-    constrained = [n for n in elig_list if n not in carrying]  # exact copy of the protocol rule
-    _expect(set(constrained) == {"conv1.weight", "conv2.weight"},
-            f"constrained set must be eligible minus carrying, got {constrained}")
-    _expect(set(constrained).isdisjoint(carrying), "constrained set must exclude every carrying param")
-    _expect(set(constrained) | carrying == set(elig_list),
-            "constrained set + carrying must exactly cover the eligible set")
-    _expect(set(constrained).isdisjoint(bn_or_frozen), "constrained set must never include BN/frozen params")
+    noncarrying = [n for n in elig_list if n not in carrying]  # exact copy of _noncarrying_names
+    _expect(set(noncarrying) == {"conv1.weight", "conv2.weight"},
+            f"non-carrying set must be eligible minus carrying, got {noncarrying}")
+    _expect(set(noncarrying).isdisjoint(carrying), "non-carrying set must exclude every carrying param")
+    _expect(set(noncarrying) | carrying == set(elig_list),
+            "non-carrying set + carrying must exactly cover the eligible set")
+    _expect(set(noncarrying).isdisjoint(bn_or_frozen), "non-carrying set must never include BN/frozen params")
+    # The freeze set (requires_grad=False targets) and the penalty coordinate set
+    # (constrain) are the SAME non-carrying set -- carriers keep requires_grad=True,
+    # BN/frozen never appear. This is what makes freeze and constrain act on identical
+    # coordinates.
+    freeze_names = set(noncarrying)
+    _expect(freeze_names.isdisjoint(carrying),
+            "freeze set must leave carrying params trainable (requires_grad stays True)")
+    _expect(freeze_names == set(noncarrying),
+            "freeze set must equal the constrain coordinate set")
 
-    print("  PASS: plastic-phase accumulator, freeze, selector reuse, persistence, and constrain set all OK")
+    print("  PASS: plastic-phase accumulator, freeze, selector reuse, persistence, and non-carrying set all OK")
 
 
 if __name__ == "__main__":

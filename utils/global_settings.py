@@ -194,6 +194,18 @@ class FLSettings:
     PARTIAL_CONSTRAIN = False       # master switch for the exploit-phase constrain penalty
     PARTIAL_CONSTRAIN_LAMBDA = 0.0  # coefficient LAMBDA on the summed-squared-error non-carrying-to-broadcast penalty
 
+    # ---- Freeze non-carrying (Partial protocol, exploit-only) ----
+    # During EXPLOIT rounds, zero the GRADIENTS of the non-carrying eligible tensors for
+    # the whole mal trajectory (via train_step's grad_mask hook). Since the trajectory
+    # starts from theta_t, the pinned non-carrying params stay at theta_t while the
+    # carriers co-adapt to them under the task loss — the gradient analogue of the
+    # constrain penalty, and a stronger form than zeroing the pseudo-gradients only at
+    # submission. Requires a FROZEN carrying set (needs C before training), so it only
+    # applies in the exploit phase. MUTUALLY EXCLUSIVE with PARTIAL_CONSTRAIN: the mask
+    # would zero the penalty's (non-carrying-only) gradient, making constrain inert —
+    # enabling both raises at startup. Orthogonal to gamma.
+    PARTIAL_FREEZE_NONCARRYING = False  # zero non-carrying gradients during exploit-phase mal training
+
     # When True, the server skips per-round mAP / ASR evaluation and
     # save_if_best_model. Useful for the PilotA pilot where the submitted
     # weights are a benign trajectory's endpoint (ASR ≈ 0 by construction)
