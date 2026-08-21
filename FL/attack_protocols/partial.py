@@ -109,7 +109,8 @@ class PartialLogger:
         return os.path.join("attack_logs", "partial", os.path.basename(target))
 
     def write_freeze_summary(self, current_round, select_mode, select_param,
-                             pooled_injections, frozen_set, rows):
+                             pooled_injections, frozen_set, rows,
+                             carrying_params=None, total_params=None):
         """Write the one-look summary of the frozen carrying set: frozen_set.md.
 
         Called ONCE, on the round the plastic phase freezes. The same facts are
@@ -120,6 +121,10 @@ class PartialLogger:
         rows: one dict per ELIGIBLE tensor, with keys name, group, mean_div, mean_b,
         ratio (mean_div/mean_b -- the quantity compared against a cutoff), signed
         (mean_div - mean_b -- the quantity ranked by topk), selected (bool).
+
+        carrying_params / total_params: element counts (numel) of the frozen set and of
+        the whole model, so the header reports the carrying set's size as a fraction of
+        the model's parameters (not just its tensor count).
 
         Tensors are listed by ratio descending and split at the selection boundary,
         so the rejected near-misses are visible too: that is what says whether the
@@ -148,6 +153,9 @@ class PartialLogger:
             f"- froze on round: **{current_round}** (after {pooled_injections} pooled injection(s))",
             f"- selector: **{select_mode}**, param **{select_param}**",
             f"- |C| = **{len(frozen_set)}** of {len(rows)} eligible tensors",
+            f"- carrying params: **{carrying_params:,}** of {total_params:,} model params "
+            f"(**{100.0 * carrying_params / total_params:.3f}%**)"
+            if carrying_params is not None and total_params else "- carrying params: (n/a)",
             f"- by group: {', '.join(f'{g}={n}' for g, n in sorted(by_group.items())) or '(none)'}",
             "",
             "## Selected (the frozen set)",
@@ -641,29 +649,35 @@ class PartialAmplificationProtocol(AttackProtocol):
             }
             # Standalone one-look summary of the same decision, ranked by the ratio
             # the cutoff actually tests, with the rejected near-misses alongside.
-            self.manager.logger.partial.write_freeze_summary(
-                current_round=current_round,
-                select_mode=FLSettings.PARTIAL_SELECT_MODE,
-                select_param=(FLSettings.PARTIAL_CUTOFF
-                              if FLSettings.PARTIAL_SELECT_MODE == "cutoff"
-                              else FLSettings.PARTIAL_TOPK),
-                pooled_injections=AttackState.plastic_count,
-                frozen_set=AttackState.plastic_frozen_set,
-                rows=[
-                    {
-                        "name": n,
-                        "group": sel["tensor_to_group"].get(n, "other"),
-                        "mean_div": float(mdiv[n]),
-                        "mean_b": float(mb[n]),
-                        # b is a PRNG-noise floor and is only 0 for frozen tensors,
-                        # which are excluded from eligibility -- guard anyway.
-                        "ratio": (float(mdiv[n] / mb[n]) if mb[n] > 0 else float("inf")),
-                        "signed": float(mdiv[n] - mb[n]),
-                        "selected": n in AttackState.plastic_frozen_set,
-                    }
-                    for n in mdiv
-                ],
-            )
+            if FLSettings.LOG_FROZEN_SET_SUMMARY:
+                numel = numel_per_tensor(self.manager.wrapper.model)
+                total_params = sum(numel.values())
+                carrying_params = sum(numel.get(n, 0) for n in AttackState.plastic_frozen_set)
+                self.manager.logger.partial.write_freeze_summary(
+                    current_round=current_round,
+                    select_mode=FLSettings.PARTIAL_SELECT_MODE,
+                    select_param=(FLSettings.PARTIAL_CUTOFF
+                                  if FLSettings.PARTIAL_SELECT_MODE == "cutoff"
+                                  else FLSettings.PARTIAL_TOPK),
+                    pooled_injections=AttackState.plastic_count,
+                    frozen_set=AttackState.plastic_frozen_set,
+                    carrying_params=carrying_params,
+                    total_params=total_params,
+                    rows=[
+                        {
+                            "name": n,
+                            "group": sel["tensor_to_group"].get(n, "other"),
+                            "mean_div": float(mdiv[n]),
+                            "mean_b": float(mb[n]),
+                            # b is a PRNG-noise floor and is only 0 for frozen tensors,
+                            # which are excluded from eligibility -- guard anyway.
+                            "ratio": (float(mdiv[n] / mb[n]) if mb[n] > 0 else float("inf")),
+                            "signed": float(mdiv[n] - mb[n]),
+                            "selected": n in AttackState.plastic_frozen_set,
+                        }
+                        for n in mdiv
+                    ],
+                )
 
         # Constrain block: non-None only when the exploit-phase penalty was applied to
         # this round's mal trajectory. Records the coefficient and how many non-carrying
@@ -748,6 +762,11 @@ class PartialAmplificationProtocol(AttackProtocol):
         (the stealth harness's coordinate set). norm_inflation_ratio =
         ||submission - theta_t|| / ||theta_mal - theta_t|| is the exact quantity a
         future norm budget will drive back toward 1.0.
+
+        Also reports how the update's L2 ENERGY (||.||^2) splits between the carrying and
+        non-carrying sets BEFORE vs AFTER amplification, as percentages side by side —
+        the direct read on how much amplification concentrated (blew up) the update in C.
+        And the carrying set's size as a fraction of the model's parameters.
         """
         def l2(a, b, names):
             s = 0.0
@@ -764,6 +783,24 @@ class PartialAmplificationProtocol(AttackProtocol):
         # identical in theta_mal and submission — it is exactly what the constrain
         # penalty drives toward 0 (smaller => the update hides better under L2 / Krum).
         d_nonC = l2(submission, theta_t, noncarrying_list)
+
+        # Energy split (%). Energy = L2^2, so the carrying/non-carrying energies add up to
+        # the total (carrying_list and noncarrying_list partition elig_list). Amplification
+        # scales ONLY the carrying energy by gamma^2; the non-carrying energy is unchanged,
+        # so pre vs post shows exactly how gamma shifted the update's mass into C.
+        e_carry_pre = dC_pre ** 2
+        e_nonc = d_nonC ** 2                                  # unchanged by amplification
+        e_carry_post = (gamma * dC_pre) ** 2
+        tot_pre = e_carry_pre + e_nonc                        # == d_pre^2
+        tot_post = e_carry_post + e_nonc                      # == d_post^2
+        def pct(part, tot):
+            return (100.0 * part / tot) if tot > 0 else float("nan")
+
+        # Carrying-set size as a fraction of ALL model parameters (not just tensor count).
+        numel = numel_per_tensor(self.manager.wrapper.model)
+        total_params = sum(numel.values())
+        carrying_params = sum(numel.get(n, 0) for n in carrying_list)
+
         return {
             "delta_carrying_l2_pre": dC_pre,
             "delta_carrying_l2_post": gamma * dC_pre,        # amplification scales Delta_C by gamma
@@ -771,4 +808,15 @@ class PartialAmplificationProtocol(AttackProtocol):
             "delta_total_l2_submitted": d_post,
             "delta_noncarrying_l2_submitted": d_nonC,        # constrain target (-> 0)
             "norm_inflation_ratio": (d_post / d_pre) if d_pre > 0 else float("nan"),
+            # Carrying set size vs the whole model.
+            "carrying_params": carrying_params,
+            "total_params": total_params,
+            "carrying_params_pct": pct(carrying_params, total_params),
+            # Energy split before vs after amplification, side by side.
+            "energy_pct": {
+                "carrying_pre": pct(e_carry_pre, tot_pre),
+                "noncarrying_pre": pct(e_nonc, tot_pre),
+                "carrying_post": pct(e_carry_post, tot_post),
+                "noncarrying_post": pct(e_nonc, tot_post),
+            },
         }

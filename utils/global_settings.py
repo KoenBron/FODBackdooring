@@ -206,6 +206,11 @@ class FLSettings:
     # enabling both raises at startup. Orthogonal to gamma.
     PARTIAL_FREEZE_NONCARRYING = False  # zero non-carrying gradients during exploit-phase mal training
 
+    # When the plastic phase freezes, write the human-readable one-look summary of the
+    # chosen carrying set (attack_logs/partial/frozen_set.md). On by default; disable with
+    # --no-frozen-set-summary. No-op when the plastic phase never freezes.
+    LOG_FROZEN_SET_SUMMARY = True
+
     # When True, the server skips per-round mAP / ASR evaluation and
     # save_if_best_model. Useful for the PilotA pilot where the submitted
     # weights are a benign trajectory's endpoint (ASR ≈ 0 by construction)
@@ -251,7 +256,7 @@ class FLSettings:
     # reference is the attacker's own ben1 anchor norm: live during the plastic/disabled
     # phases, and a FROZEN pooled baseline (persisted at the plastic freeze) during the
     # exploit phase where the anchors are skipped. See FL/normclip_report.py.
-    DO_NORMCLIP_REPORT = False
+    DO_NORMCLIP_REPORT = True   # on by default; disable with --no-normclip-report
     NORMCLIP_REPORT_X = (1.0, 1.5, 2.0, 3.0)   # x sweep for the exceed-threshold columns
 
     # Passive backdoor-detectability harness (B1). OBSERVATIONAL only: logs

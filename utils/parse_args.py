@@ -92,6 +92,7 @@ def parse_args():
     plastic_group = parser.add_argument_group('Plastic-phase Configuration (partial protocol)')
     plastic_group.add_argument("--partial-plastic-rounds", type=int, default=FLSettings.PARTIAL_PLASTIC_ROUNDS, help="partial protocol: number of (pooled, across-attacker) injection rounds to observe before FREEZING one shared carrying set = select_by_mode(mean(div), mean(b)). The frozen set is reused every later round, removing the per-round |C| oscillation and late-round collapse. 0 = plastic phase OFF (per-round selection every round).")
     plastic_group.add_argument("--partial-plastic-no-amp", action="store_true", default=FLSettings.PARTIAL_PLASTIC_NO_AMP, help="partial protocol: submit UNAMPLIFIED (gamma=1) during the plastic phase so the localizer observes on an un-deformed global; amplification resumes only after the freeze. Off by default (amplify during plastic to lay the backdoor foundation).")
+    plastic_group.add_argument("--no-frozen-set-summary", action="store_false", dest="log_frozen_set_summary", default=FLSettings.LOG_FROZEN_SET_SUMMARY, help="partial protocol: DISABLE the human-readable frozen-set summary (attack_logs/partial/frozen_set.md) written when the plastic phase freezes. On by default.")
 
     # Constrain-phase Configuration (Partial protocol, exploit-only)
     constrain_group = parser.add_argument_group('Constrain-phase Configuration (partial protocol)')
@@ -118,8 +119,11 @@ def parse_args():
     det_group.add_argument("--stealth-granularity", type=str, default=FLSettings.STEALTH_GRANULARITY, choices=["auto", "group", "tensor"], help="Granularity of the dl2_* per-bucket energy decomposition. 'auto' derives it from --attack-protocol (pilot_a->group, pilot_b->tensor); 'group'/'tensor' force it.")
     det_group.add_argument("--stealth-disable", type=str, default="", help="Comma-separated stealth metric blocks to turn OFF (default: all on). Blocks: norm, cosine, krum, median, normclip, cluster, energy. Disabling all of {cosine,krum,cluster} also skips the O(n^2) pairwise pass.")
     det_group.add_argument("--stealth-on-benign-rounds", action="store_true", default=FLSettings.STEALTH_ON_BENIGN_ROUNDS, help="Also run the stealth harness on rounds with no attacker present. Off by default (those rounds are skipped to save compute since label-aware metrics are NaN). Enable for a no-attacker baseline to gather the benign null distribution for the stealth metrics.")
-    det_group.add_argument("--do-normclip-report", action="store_true", default=FLSettings.DO_NORMCLIP_REPORT, help="OBSERVATIONAL (never alters aggregation): for each malicious update, record in a top-level normclip_report.csv whether its L2 norm exceeds x*(benign-trajectory norm) or x*(median submitted norm), across the --normclip-report-x sweep. The benign reference is the attacker's ben1 anchor norm: live in the plastic/disabled phases, a frozen pooled baseline in the exploit phase. Partial protocol.")
-    det_group.add_argument("--normclip-report-x", type=str, default=",".join(f"{v:g}" for v in FLSettings.NORMCLIP_REPORT_X), help="Comma-separated x sweep for --do-normclip-report (e.g. '1.0,1.5,2.0,3.0'). Each x adds exceeds_median@x and exceeds_benign@x columns (flagged when norm > x*reference).")
+    # OBSERVATIONAL norm-clip report — ON by default; disable with --no-normclip-report.
+    # Both flags share dest=do_normclip_report (--do-... kept so existing scripts still work).
+    det_group.add_argument("--do-normclip-report", action="store_true", dest="do_normclip_report", default=FLSettings.DO_NORMCLIP_REPORT, help="OBSERVATIONAL (never alters aggregation): for each malicious update, record in a top-level normclip_report.csv whether its L2 norm exceeds x*(benign-trajectory norm) or x*(median submitted norm), across the --normclip-report-x sweep. The benign reference is the attacker's ben1 anchor norm: live in the plastic/disabled phases, a frozen pooled baseline in the exploit phase. Partial protocol. ON by default (this flag is a no-op kept for explicitness; use --no-normclip-report to turn it off).")
+    det_group.add_argument("--no-normclip-report", action="store_false", dest="do_normclip_report", help="Disable the observational norm-clip report (normclip_report.csv). On by default.")
+    det_group.add_argument("--normclip-report-x", type=str, default=",".join(f"{v:g}" for v in FLSettings.NORMCLIP_REPORT_X), help="Comma-separated x sweep for the norm-clip report (e.g. '1.0,1.5,2.0,3.0'). Each x adds exceeds_median@x and exceeds_benign@x columns (flagged when norm > x*reference).")
 
     # Backdoor Properties
     bd_group = parser.add_argument_group('Backdoor Properties')
@@ -185,6 +189,7 @@ def apply_settings(args):
     FLSettings.PARTIAL_AMP_GAMMA = args.partial_amp_gamma
     FLSettings.PARTIAL_PLASTIC_ROUNDS = args.partial_plastic_rounds
     FLSettings.PARTIAL_PLASTIC_NO_AMP = args.partial_plastic_no_amp
+    FLSettings.LOG_FROZEN_SET_SUMMARY = args.log_frozen_set_summary
     FLSettings.PARTIAL_CONSTRAIN = args.partial_constrain
     FLSettings.PARTIAL_CONSTRAIN_LAMBDA = args.partial_constrain_lambda
     FLSettings.PARTIAL_FREEZE_NONCARRYING = args.partial_freeze_noncarrying
@@ -360,6 +365,7 @@ def build_config_sections():
                     f"{FLSettings.PARTIAL_PLASTIC_ROUNDS}" + ("" if plastic_on else "  (OFF: per-round every round)"))]
         if plastic_on:
             plastic.append(("PARTIAL_PLASTIC_NO_AMP", FLSettings.PARTIAL_PLASTIC_NO_AMP))
+        plastic.append(("LOG_FROZEN_SET_SUMMARY", FLSettings.LOG_FROZEN_SET_SUMMARY))
         sections.append(("Plastic phase", plastic))
 
         constrain_on = FLSettings.PARTIAL_CONSTRAIN and FLSettings.PARTIAL_CONSTRAIN_LAMBDA > 0
