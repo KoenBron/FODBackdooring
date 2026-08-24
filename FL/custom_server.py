@@ -1,5 +1,6 @@
 from FL.strategies.fedavg import FedAvg
 from FL.strategies.fedopt import FedOpt
+from FL.strategies.multikrum import MultiKrum
 from models.fasterrcnn.wrapper import FasterRCNNWrapper
 from utils.global_settings import ProjectPaths, BackdoorProperties, TrainingSettings, FLSettings
 from utils.dataset import CustomCocoDataset
@@ -204,8 +205,11 @@ class Server:
                 return FedAvg(model_state_dict=self.wrapper.get_weights())
             case "fedopt":
                 return FedOpt(server_lr=FLSettings.SERVER_LR, model_state_dict=self.wrapper.get_weights())
+            case "multikrum":
+                return MultiKrum(model_state_dict=self.wrapper.get_weights(),
+                                 f=FLSettings.KRUM_F, m=FLSettings.MULTIKRUM_M)
             case _:
-                raise Exception(f"No valid aggregation strategy name is given: {strategy}. Choices are: ['fedavg', 'fedopt'] ")
+                raise Exception(f"No valid aggregation strategy name is given: {strategy}. Choices are: ['fedavg', 'fedopt', 'multikrum'] ")
 
     def get_global_weights(self):
         """
@@ -236,10 +240,29 @@ class Server:
         # Broadcast (pre-aggregation) global; the reference all client deltas are
         # measured against. self.wrapper still holds it until set_weights() below.
         broadcast_global = self.wrapper.get_weights()
+        # ADVERSARIAL MODEL: the aggregation strategy is the server's view, which cannot
+        # see who is malicious. Strip the "type" (Attacker/Benign) label before handing
+        # updates to aggregate() so no strategy — Multi-Krum today, FoolsGold / norm-clip
+        # later — can cheat by reading ground truth. The observational stealth harness
+        # below still reads self.client_round_updates (with "type") for its own metrics.
+        agg_updates = [{"cid": u["cid"], "weights": u["weights"], "num_samples": u["num_samples"]}
+                       for u in self.client_round_updates.values()]
         new_global_weights = self.strategy.aggregate(
-            client_updates=list(self.client_round_updates.values()),# Expects a list
+            client_updates=agg_updates,# Expects a list; label-free by construction
             global_weights=broadcast_global,# Needed by FedOpt for the (1-η)·w_global + η·w_avg blend; ignored by FedAvg
         )
+
+        # If the strategy filtered clients (robust aggregators), log its decision.
+        # OBSERVATIONAL: comparing the kept/rejected sets against who actually attacked
+        # uses ground truth for EVALUATION only — it never re-enters the aggregation.
+        selection = getattr(self.strategy, "last_selection", None)
+        if selection is not None:
+            attackers = {cid for cid, u in self.client_round_updates.items() if u["type"] == "Attacker"}
+            rejected = set(selection["rejected"])
+            print(f"[ROUND {round}] {self.strategy.__class__.__name__} kept {selection['kept']} "
+                  f"rejected {selection['rejected']} (m={selection['m']}, f={selection['f']}, n={selection['n']}); "
+                  f"attackers this round={sorted(attackers)}, "
+                  f"attackers rejected={sorted(rejected & attackers)}/{len(attackers)}", flush=True)
 
         # Passive backdoor-detectability harness (B1). OBSERVATIONAL ONLY: reads
         # the raw client updates before they are freed below; never alters the

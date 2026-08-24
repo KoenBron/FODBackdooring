@@ -128,7 +128,7 @@ class PartialLogger:
 
         Tensors are listed by ratio descending and split at the selection boundary,
         so the rejected near-misses are visible too: that is what says whether the
-        chosen threshold sits on a cliff or on a plateau of the rho distribution.
+        chosen threshold sits on a cliff or on a plateau of the ratio distribution.
         """
         target = os.path.join(self.dir, "frozen_set.md")
         ranked = sorted(rows, key=lambda r: (-r["ratio"], r["name"]))
@@ -140,7 +140,7 @@ class PartialLogger:
             by_group[r["group"]] = by_group.get(r["group"], 0) + 1
 
         def table(entries):
-            out = ["| rho = div/b | signed = div-b | group | tensor |",
+            out = ["| ratio = div/b | signed = div-b | group | tensor |",
                    "|---:|---:|---|---|"]
             for r in entries:
                 out.append(f"| {r['ratio']:.3f} | {r['signed']:.3e} | "
@@ -305,11 +305,11 @@ class PartialAmplificationProtocol(AttackProtocol):
         means are persisted in AttackState. So we can still rank the frozen layers by
         the exact scores that selected them: re-run the SAME select_by_mode(mean_div,
         mean_b, ...) call _freeze used. `ranked` is therefore the frozen carrying set
-        with its normalized divergence score per layer (div in cutoff mode, denoised
-        rho in topk mode), descending. It is STATIC across exploit rounds (it's the
-        frozen decision, not a per-round remeasurement). div_t/b_t carry the pooled
-        means for reference; they are unused downstream in exploit (accumulation is
-        closed, _norm_diagnostics doesn't read them).
+        ranked by its selection score per layer (the ratio mean_div/mean_b in cutoff
+        mode, signed rho mean_div-mean_b in topk mode), descending. It is STATIC across
+        exploit rounds (it's the frozen decision, not a per-round remeasurement).
+        div_t/b_t carry the pooled means for reference; they are unused downstream in
+        exploit (accumulation is closed, _norm_diagnostics doesn't read them).
         """
         elig_list, tensor_to_group, _ = self._eligible_tensors()
         mean_div, mean_b = AttackState.plastic_means()
@@ -353,8 +353,9 @@ class PartialAmplificationProtocol(AttackProtocol):
         set, so the attack and the measurement agree on what an update is.
 
         Returns a dict with keys: carrying (set), ranked ([(name, score)] descending —
-        score is div in cutoff mode, rho in topk mode), div_t, elig_list (eligible
-        tensor names, for the norm diagnostics), tensor_to_group (for the group rollup).
+        score is the ratio div/b in cutoff mode, signed rho div-b in topk mode), div_t,
+        elig_list (eligible tensor names, for the norm diagnostics), tensor_to_group
+        (for the group rollup).
         """
         elig_list, tensor_to_group, id_part = self._eligible_tensors()
         numel = numel_per_tensor(self.manager.wrapper.model)
@@ -746,7 +747,7 @@ class PartialAmplificationProtocol(AttackProtocol):
             f"|C|={len(carrying)} (mode={mode}, param={param}, gamma={gamma:.3g})",
             flush=True,
         )
-        print(f"    top carriers ({'div' if mode == 'cutoff' else 'rho'}): {top}", flush=True)
+        print(f"    top carriers ({'ratio=div/b' if mode == 'cutoff' else 'rho=div-b'}): {top}", flush=True)
 
     @staticmethod
     def _carrying_by_group(carrying, tensor_to_group):

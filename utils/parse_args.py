@@ -59,7 +59,7 @@ def parse_args():
     fl_group.add_argument("--partitioning-seed", type=int, default=FLSettings.PARTITIONING_SEED, help="Seed value for partitioning the dataset")
     fl_group.add_argument("--resume-from", type=str, default=None, help="Path to checkpoint to resume from")
     fl_group.add_argument("--clients-per-round", type=int, default=FLSettings.CLIENTS_PER_ROUND, help="Number of clients participating each round")
-    fl_group.add_argument("--aggregation-strategy", type=str, default=FLSettings.AGGREGATION_STRATEGY, help="Strategy used to aggregate client weight updates on the server entity")
+    fl_group.add_argument("--aggregation-strategy", type=str, default=FLSettings.AGGREGATION_STRATEGY, help="Server-side aggregation strategy: 'fedavg' (sample-weighted mean), 'fedopt' (server-LR blend, uses --server-lr), or 'multikrum' (robust: keep the m most-central updates by Krum score, then FedAvg them; uses --krum-f / --multikrum-m). Defensive strategies see only the submitted updates, never client labels.")
     fl_group.add_argument("--server-lr", type=float, default=FLSettings.SERVER_LR, help="Server-side learning rate η used by FedOpt: w_new = (1-η)·w_global + η·avg(w_client). η=1 reduces to FedAvg.")
     fl_group.add_argument("--gamma-cap", type=float, default=FLSettings.GAMMA_CAP, help="Upper bound on the model-replacement scaling factor γ = k/(η·m). Prevents γ from exploding when server_lr is small.")
     fl_group.add_argument("--use-client-schedule", action="store_true", default=FLSettings.USE_CLIENT_SCHEDULE, help="Instead of randomly, though seeded, selecting clients, takes a client schedule to structure when malicious clients are used.")
@@ -331,13 +331,17 @@ def build_config_sections():
         run.append(("EVAL_EVERY", FLSettings.EVAL_EVERY))
     sections.append(("Run", run))
 
-    sections.append(("Federated setup", [
+    federated = [
         ("TOTAL_CLIENTS", FLSettings.TOTAL_CLIENTS),
         ("CLIENTS_PER_ROUND", FLSettings.CLIENTS_PER_ROUND),
         ("AGGREGATION_STRATEGY", FLSettings.AGGREGATION_STRATEGY),
         ("SERVER_LR", FLSettings.SERVER_LR),
         ("GAMMA_CAP", FLSettings.GAMMA_CAP),
-    ]))
+    ]
+    if FLSettings.AGGREGATION_STRATEGY.lower() == "multikrum":
+        federated.append(("KRUM_F", FLSettings.KRUM_F))
+        federated.append(("MULTIKRUM_M", f"{FLSettings.MULTIKRUM_M} (<=0 -> auto n-f)"))
+    sections.append(("Federated setup", federated))
 
     attacker = [
         ("ATTACKER_FRACTION", f"{FLSettings.ATTACKER_FRACTION} (Clients: {FLSettings.ATTACKER_IDS})"),

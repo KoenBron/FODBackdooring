@@ -30,6 +30,7 @@ import math
 import torch
 
 from FL.groups import ordered_buckets
+from FL.strategies._robust import krum_select
 
 # ----------------------------------------------------------------------------
 # CSV schema. Identity columns are always present; every other column belongs
@@ -121,21 +122,20 @@ def krum(stats, f, m):
     Krum / Multi-Krum (Blanchard 2017). score_i = sum of the (n-f-2) smallest
     squared distances from i to the other clients. Krum selects argmin; Multi-
     Krum keeps the m lowest-scoring clients. Lower score = more 'central'.
+
+    The scoring/selection is delegated to FL.strategies._robust.krum_select — the
+    SINGLE SOURCE OF TRUTH shared with the Multi-Krum aggregation strategy — so the
+    passive detector and the active defense can never disagree on what Krum does.
+    This wrapper only reshapes the result into the harness's per-client schema.
+    krum_select sorts its own cids, so equal-score ties break by ascending cid — the
+    same order this harness produced before the extraction (PairwiseStats.cids was,
+    and still is, sorted).
     """
-    cids = stats.cids
-    n = len(cids)
-    k = max(1, n - f - 2)
-    score = {}
-    for i in cids:
-        dists = sorted(stats.sqdist[i][j] for j in cids if j != i)
-        score[i] = float(sum(dists[:k]))
-    ranked = sorted(cids, key=lambda c: score[c])
-    selected = ranked[0]
-    m = m if (m is not None and m > 0) else max(1, n - f)
-    keep = set(ranked[:m])
+    res = krum_select(stats.sqdist, stats.cids, f, m)
+    selected, keep, score = res["selected"], res["kept"], res["scores"]
     return {c: {"krum_score": score[c],
                 "krum_selected": (c == selected),
-                "multikrum_selected": (c in keep)} for c in cids}
+                "multikrum_selected": (c in keep)} for c in stats.cids}
 
 
 def norm_clip(norms, cids, c):

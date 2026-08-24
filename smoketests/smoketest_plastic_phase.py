@@ -107,6 +107,21 @@ def main():
     # cutoff keeps every bucket with mean div > mean b (variable size): carrier, fluke, noise all clear.
     _expect(cutoff == {"carrier", "fluke", "noise"}, f"cutoff selection wrong: {cutoff}")
 
+    # 4b. Cutoff RANKING is by the ratio div/b (the quantity the cutoff tests), NOT raw div.
+    #     Crafted so the two disagree: a high-div layer on a high floor is a WEAKER carrier
+    #     than a lower-div layer on a near-zero floor, and must rank below it.
+    div_c = {"weak_highdiv": 10.0, "strong_lowdiv": 8.0}   # raw div: weak > strong
+    b_c   = {"weak_highdiv": 9.0,  "strong_lowdiv": 1.0}   # ratio: 1.11 vs 8.0 -> strong > weak
+    ranked_c = select_by_mode(div_c, b_c, "cutoff", 1.0, None)
+    _expect([n for n, _ in ranked_c] == ["strong_lowdiv", "weak_highdiv"],
+            f"cutoff must rank by div/b ratio, not raw div; got {[n for n, _ in ranked_c]}")
+    _expect(abs(ranked_c[0][1] - 8.0) < 1e-9,
+            f"cutoff score must be the ratio div/b (=8.0), got {ranked_c[0][1]}")
+    # b=0 for an eligible layer -> unbounded clearance -> inf, sorts to the top.
+    inf_rank = select_by_mode({"zero_floor": 0.5, "x": 0.4}, {"zero_floor": 0.0, "x": 0.1}, "cutoff", 1.0, None)
+    _expect(inf_rank[0][0] == "zero_floor" and inf_rank[0][1] == float("inf"),
+            f"b=0 carrier must rank first with inf ratio, got {inf_rank}")
+
     # 5. Persistence round-trip MID-WINDOW (simulate a shift after 2 of 3 rounds).
     AttackState.reset()
     AttackState.accumulate_plastic(*ROUNDS[0])
