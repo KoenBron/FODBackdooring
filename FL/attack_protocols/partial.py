@@ -32,7 +32,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from FL.attack_protocols.base import AttackProtocol
-from FL.attack_protocols.amplify import partial_amplify
+from FL.attack_protocols.amplify import partial_amplify, allocate_norm_budget
 from FL.attack_state import AttackState
 from FL.normclip_report import update_norm
 from FL.groups import build_group_map, build_eligibility
@@ -44,7 +44,7 @@ from FL.scoring.l2_based import (
     select_by_mode,
 )
 from models.fasterrcnn.wrapper import FasterRCNNWrapper
-from utils.global_settings import FLSettings, TrainingSettings
+from utils.global_settings import ANSIColor, FLSettings, TrainingSettings
 
 try:
     import numpy as _np
@@ -78,7 +78,8 @@ class PartialLogger:
 
     def write_round(self, current_round, client_id, phase, select_mode, select_param,
                     gamma, gamma_source, carrying, carrying_by_group, top_carriers,
-                    norms, freeze=None, constrain=None, freeze_noncarrying=None):
+                    norms, freeze=None, constrain=None, freeze_noncarrying=None,
+                    norm_budget=None):
         target = os.path.join(self.dir, f"round_{current_round}_client_{client_id}.json")
         payload = {
             "round": current_round,
@@ -86,8 +87,12 @@ class PartialLogger:
             "phase": phase,                           # 'disabled' | 'plastic' | 'exploit'
             "select_mode": select_mode,
             "select_param": select_param,
+            # The amplification factor applied to every carrier — EXCEPT under
+            # gamma_source 'budgeted', where this is the per-carrier CEILING and the
+            # factor actually applied to each carrier lives in norm_budget below.
             "gamma": gamma,
-            "gamma_source": gamma_source,             # 'plastic_no_amp' | 'replacement' | 'fixed'
+            # 'plastic_no_amp' | 'replacement' | 'fixed' | 'budgeted' | 'budgeted_pre_exploit'
+            "gamma_source": gamma_source,
             "carrying_size": len(carrying),
             "carrying": sorted(carrying),
             "carrying_by_group": carrying_by_group,   # {group_name: #carrying tensors}
@@ -102,6 +107,10 @@ class PartialLogger:
             # Present ONLY on exploit rounds where the non-carrying gradient freeze was
             # applied (#tensors whose gradient was zeroed). None otherwise.
             "freeze_noncarrying": freeze_noncarrying,
+            # Present ONLY on exploit rounds under --partial-gamma-mode budgeted: this
+            # client's budget, how the excess was rationed across carriers (which one it
+            # ran out on, each carrier's applied gamma), and realized vs budget norm.
+            "norm_budget": norm_budget,
         }
         with open(target, "w") as f:
             json.dump(payload, f, indent=2, sort_keys=True)
@@ -389,7 +398,7 @@ class PartialAmplificationProtocol(AttackProtocol):
 
     # ---- plastic phase (which carrying set) ----
 
-    def _resolve_carrying(self, sel, in_plastic, plastic_on, benign_norm=None):
+    def _resolve_carrying(self, sel, in_plastic, plastic_on, cid=None, benign_norms=None):
         """Pick THIS round's carrying set and drive the pooled plastic accumulator.
 
             plastic disabled -> per-round selection (unchanged legacy behavior)
@@ -398,20 +407,32 @@ class PartialAmplificationProtocol(AttackProtocol):
                                 use the per-round set, and freeze once the pooled
                                 injection count reaches PARTIAL_PLASTIC_ROUNDS.
 
-        benign_norm (norm-clip report only): this round's ||theta_ben1 - theta_t|| is
-        pooled alongside div/b so its mean is frozen as the exploit-phase benign
-        reference (None when the report is off — nothing is pooled).
+        benign_norms: this round's benign-anchor update norms (ben1 and ben2) for THIS
+        attacker, recorded under its own cid — never pooled across clients, unlike div/b.
+        None when nothing consumes them (see _needs_benign_refs).
         """
         if not plastic_on:
             return sel["carrying"]
         if not in_plastic:
             return AttackState.plastic_frozen_set
         AttackState.accumulate_plastic(sel["div_t"], sel["b_t"])
-        if benign_norm is not None:
-            AttackState.accumulate_benign_norm(benign_norm)
+        if benign_norms:
+            AttackState.accumulate_benign_norms(cid, benign_norms)
         if AttackState.plastic_count >= FLSettings.PARTIAL_PLASTIC_ROUNDS:
             self._freeze()
         return sel["carrying"]
+
+    @staticmethod
+    def _needs_benign_refs():
+        """Does anything this run consume the per-client benign-anchor references?
+
+        Two independent consumers: the observational norm-clip report (its
+        ratio_to_benign / exceeds_benign columns) and budgeted gamma (the norm budget is
+        B x this client's reference). Collection is gated on the union, NOT on the
+        norm-clip flag alone — otherwise running budgeted mode with the report disabled
+        would silently leave every client without a reference.
+        """
+        return FLSettings.DO_NORMCLIP_REPORT or FLSettings.PARTIAL_GAMMA_MODE == "budgeted"
 
     def _freeze(self):
         """Reduce the pooled accumulator to ONE shared carrying set: mean(div) -
@@ -425,19 +446,52 @@ class PartialAmplificationProtocol(AttackProtocol):
             FLSettings.PARTIAL_TOPK,
         )
         AttackState.set_plastic_frozen({name for name, _ in ranked})
-        # Freeze the pooled benign-norm baseline too (no-op reference when the norm-clip
-        # report was off during the plastic phase, i.e. nothing was pooled).
-        AttackState.freeze_benign_norm()
+        # Freeze each attacker's OWN mean benign-anchor norm (empty when nothing collects
+        # them, i.e. neither the norm-clip report nor budgeted gamma is on).
+        AttackState.freeze_benign_refs()
         print(
             f"  [partial] PLASTIC PHASE FROZEN after {AttackState.plastic_count} pooled "
             f"injection(s): |C|={len(AttackState.plastic_frozen_set)} via "
             f"{FLSettings.PARTIAL_SELECT_MODE}",
             flush=True,
         )
+        if self._needs_benign_refs():
+            self._report_benign_ref_coverage()
+
+    @staticmethod
+    def _report_benign_ref_coverage():
+        """Runtime backstop for the startup coverage check (parse_args).
+
+        parse_args halts before training when a client SCHEDULE proves an attacker never
+        acts during the plastic phase. Under random client selection that is unknowable in
+        advance, so this reports the realised coverage the moment it is fixed — at the
+        freeze — and names any attacker left without a reference.
+
+        Reporting, not enforcement: under budgeted gamma the run WILL fail if such an
+        attacker is later selected (_amplify raises), but it may simply never be selected
+        again, so this is an early heads-up rather than a fatal check.
+        """
+        counts = AttackState.benign_ref_sample_counts()
+        covered = sorted(AttackState.plastic_benign_ref)
+        missing = sorted(set(FLSettings.ATTACKER_IDS) - set(covered))
+        detail = ", ".join(
+            f"cid={c}: ref={AttackState.plastic_benign_ref[c]:.4g} from {counts.get(c, 0)} anchor(s)"
+            for c in covered) or "(none)"
+        print(f"  [partial] benign references frozen (per client, not pooled) -> {detail}", flush=True)
+        if missing:
+            extra = ("; under --partial-gamma-mode budgeted the run will FAIL if any of them "
+                     "is selected for an exploit round (no budget can be sized)"
+                     if FLSettings.PARTIAL_GAMMA_MODE == "budgeted" else
+                     "; their norm-clip ratio_to_benign will be NaN")
+            print(
+                f"  [partial] {ANSIColor.YELLOW}[WARNING]{ANSIColor.RESET} attacker(s) {missing} "
+                f"never acted during the plastic phase and have NO benign reference{extra}.",
+                flush=True,
+            )
 
     # ---- gamma source (how much amplification) — orthogonal to carrying set ----
 
-    def _resolve_gamma(self, client_config, in_plastic):
+    def _resolve_gamma(self, client_config, in_plastic, in_exploit=False):
         """Amplification factor for this round, plus a short source label for logging.
 
         During the plastic phase with PARTIAL_PLASTIC_NO_AMP, submit UNAMPLIFIED
@@ -446,14 +500,91 @@ class PartialAmplificationProtocol(AttackProtocol):
         full model replacement, carriers land on theta_mal post-aggregation); 'fixed'
         = the hand-set PARTIAL_AMP_GAMMA sweep knob.
 
+        In 'budgeted' mode this returns the per-carrier CEILING — the replacement gamma —
+        which _resolve_budgeted_gammas then rations across carriers under the norm budget.
+        Budgeted is exploit-only: before the freeze the carrying set and its ranking still
+        oscillate round to round, and there is no frozen benign reference to size a budget
+        against, so it degrades to gamma=1 rather than guessing.
+
         Returns (gamma, source) where source is one of 'plastic_no_amp' | 'replacement'
-        | 'fixed'.
+        | 'fixed' | 'budgeted' | 'budgeted_pre_exploit'.
         """
         if in_plastic and FLSettings.PARTIAL_PLASTIC_NO_AMP:
             return 1.0, "plastic_no_amp"
+        if FLSettings.PARTIAL_GAMMA_MODE == "budgeted":
+            if not in_exploit:
+                return 1.0, "budgeted_pre_exploit"
+            return self.manager._replacement_gamma(client_config["n_mal_clients"]), "budgeted"
         if FLSettings.PARTIAL_GAMMA_MODE == "replacement":
             return self.manager._replacement_gamma(client_config["n_mal_clients"]), "replacement"
         return FLSettings.PARTIAL_AMP_GAMMA, "fixed"
+
+    @staticmethod
+    def _carrier_energies(theta_t, theta_mal, names):
+        """{name: ||theta_mal_p - theta_t_p||^2} — per-tensor update ENERGY.
+
+        Energy (not norm) because it is additive across the disjoint carrier tensors, so
+        the allocator can ration it with plain subtraction and take one square root at the
+        end.
+        """
+        out = {}
+        for n in names:
+            out[n] = float((theta_mal[n].detach().float() - theta_t[n].detach().float()).pow(2).sum())
+        return out
+
+    def _resolve_budgeted_gammas(self, cid, theta_t, theta_mal, sel, carrying, gamma_full):
+        """Per-carrier gammas under this client's norm budget. Returns (gammas, report).
+
+        The budget is B x THIS client's own frozen mean benign-anchor norm — never a
+        cross-client statistic, so it stays meaningful when partitions go non-IID.
+
+        Coordinate set: the budget is enforced on the WHOLE-update L2 norm (update_norm,
+        every float tensor), because that is what a norm-clip defense measures, what the
+        norm-clip report compares against, and what the server scores. That is consistent
+        even though carriers are a subset of the eligible tensors: partial_amplify
+        perturbs ONLY carrier coordinates, so every non-carrier contributes the same
+        constant to the unamplified norm and to the submitted norm.
+
+        Carrier ORDER is sel["ranked"] (descending selection score). `ranked` is recomputed
+        from the pooled means while `carrying` is the persisted frozen set; they normally
+        agree exactly, but a selector-setting change across a resume can desync them, so
+        ranked is filtered to `carrying` and any carrier missing from ranked is appended at
+        the end (it still gets a gamma, never silently dropped).
+
+        Returns (None, report) with no gammas when this client has no benign reference —
+        the caller (_amplify) treats that as fatal rather than falling back to gamma=1,
+        which would make the attacker's exploit rounds silent no-ops.
+        """
+        ref = AttackState.get_benign_ref(cid)
+        if ref is None or ref <= 0:
+            return None, {"no_benign_ref": True, "cid": cid,
+                          "budget_l2": None, "gamma_full": gamma_full}
+
+        ordered = [n for n, _ in sel["ranked"] if n in carrying]
+        appended = sorted(set(carrying) - set(ordered))
+        if appended:
+            ordered += appended
+
+        energy = self._carrier_energies(theta_t, theta_mal, ordered)
+        unamp_l2 = update_norm(theta_mal, theta_t)      # whole-update, matches `ref`
+        budget = FLSettings.PARTIAL_NORM_BUDGET * ref
+
+        gammas, report = allocate_norm_budget(
+            ranked=[(n, 0.0) for n in ordered],
+            energy=energy,
+            unamplified_energy=unamp_l2 * unamp_l2,
+            budget=budget,
+            gamma_full=gamma_full,
+        )
+        report.update({
+            "no_benign_ref": False,
+            "cid": cid,
+            "B": FLSettings.PARTIAL_NORM_BUDGET,
+            "benign_ref": ref,
+            "benign_ref_samples": len(AttackState.plastic_benign_norms.get(cid, [])),
+            "carriers_not_in_ranked": appended,
+        })
+        return gammas, report
 
     # ---- non-carrying handling (constrain penalty / gradient freeze) ----
 
@@ -532,6 +663,156 @@ class PartialAmplificationProtocol(AttackProtocol):
 
     # ---- orchestration ----
 
+    @staticmethod
+    def _seeds(current_round, cid):
+        """(mal, ben1, ben2). mal and ben1 SHARE a seed so the pair differs ONLY by the
+        poison; ben2 is +1 so ben1-vs-ben2 measures pure PRNG noise."""
+        seed_mal = FLSettings.SEED + 1000 * int(current_round) + int(cid)
+        return seed_mal, seed_mal, seed_mal + 1
+
+    def _exploit_trajectory(self, server_weights, cid, current_round, n_epochs, seed_mal):
+        """Exploit round: train the poisoned run alone against the frozen carrying set.
+
+        Both benign anchors are skipped once the set is frozen (they only fed the
+        per-round localizer) -- roughly a third of the round's training cost. theta_mal is
+        unchanged by the skip: every trajectory re-seeds its RNGs and restarts from
+        theta_t with a fresh optimizer. `sel` is trajectory-free, so it resolves BEFORE
+        the run -- constrain and freeze both need the frozen C to know what to exclude.
+
+        Returns (theta_mal, sel, constrain_fn, freeze_names).
+        """
+        sel = self._exploit_sel()
+        constrain_fn = self._constrain_penalty_fn(server_weights, sel["carrying"], sel["elig_list"])
+        freeze_names = self._noncarrying_freeze_names(sel["carrying"], sel["elig_list"])
+
+        n_nonc = len(sel["elig_list"]) - len(sel["carrying"])
+        if constrain_fn:
+            extra = f"; constrain lambda={FLSettings.PARTIAL_CONSTRAIN_LAMBDA:g} on {n_nonc} non-carrying tensors"
+        elif freeze_names:
+            extra = f"; freeze (requires_grad=False) {n_nonc} non-carrying tensors"
+        else:
+            extra = ""
+        print(f"  [partial client={cid} round={current_round}] exploit: mal-only trajectory "
+              f"on partition {cid} (seed={seed_mal}); benign anchors skipped{extra}", flush=True)
+
+        theta_mal = self._run_trajectory(
+            server_weights, cid, is_attacker=True, n_epochs=n_epochs, seed=seed_mal,
+            loss_augment_fn=constrain_fn, freeze_names=freeze_names)
+        return theta_mal, sel, constrain_fn, freeze_names
+
+    def _plastic_trajectories(self, server_weights, cid, current_round, n_epochs, seeds):
+        """Plastic/disabled round: all three trajectories, then per-round selection.
+
+        Constrain and freeze do not apply here -- both exclude C, which is only known
+        AFTER selection. Both benign anchors are measured for this client's own benign
+        reference; ben2 is already trained for the noise floor, so the second sample is
+        free (2 samples per plastic round this client acts in).
+
+        Returns (theta_mal, sel, benign_norms).
+        """
+        seed_mal, seed_ben1, seed_ben2 = seeds
+        print(f"  [partial client={cid} round={current_round}] trajectories on partition "
+              f"{cid}: ben1(seed={seed_ben1}) / mal(seed={seed_mal}) / ben2(seed={seed_ben2})",
+              flush=True)
+        theta_ben1 = self._run_trajectory(server_weights, cid, is_attacker=False,
+                                          n_epochs=n_epochs, seed=seed_ben1)
+        theta_mal = self._run_trajectory(server_weights, cid, is_attacker=True,
+                                         n_epochs=n_epochs, seed=seed_mal)
+        theta_ben2 = self._run_trajectory(server_weights, cid, is_attacker=False,
+                                          n_epochs=n_epochs, seed=seed_ben2)
+
+        sel = self._select_carrying(theta_mal, theta_ben1, theta_ben2)
+        benign_norms = None
+        if self._needs_benign_refs():
+            benign_norms = [update_norm(theta_ben1, server_weights),
+                            update_norm(theta_ben2, server_weights)]
+        return theta_mal, sel, benign_norms
+
+    def _stash_round_state(self, cid, carrying, benign_norms, phase, in_exploit):
+        """Publish this round's cross-round state: the carrying set, plus (for the
+        server-side norm-clip reporter) this client's benign reference -- the live mean of
+        this round's anchors before the freeze, its own frozen mean after. The reporter
+        context is ephemeral: the server reads it this round and nothing persists it."""
+        if FLSettings.DO_NORMCLIP_REPORT:
+            live = (sum(benign_norms) / len(benign_norms)) if benign_norms else None
+            ref = AttackState.get_benign_ref(cid) if in_exploit else live
+            AttackState.set_normclip_ctx(cid, ref, phase)
+        AttackState.set_carrying_set(cid, carrying)
+
+    def _amplify(self, cid, current_round, server_weights, theta_mal, sel, carrying,
+                 gamma, gamma_source):
+        """Build the submission: theta_t + gamma*(theta_mal - theta_t) on C only, i.e. the
+        model-replacement form restricted to the carriers. Budgeted mode passes a
+        PER-CARRIER gamma map instead of one flat factor.
+
+        RAISES if budgeted mode reaches a client with no benign reference. There is no
+        budget to size, so the only thing this could do is submit unamplified — an attack
+        that runs and does nothing, which is precisely the silent failure the startup
+        check exists to prevent. parse_args catches this ahead of training whenever a
+        client schedule makes coverage predictable; under random selection it is not
+        predictable, so this is where it has to be caught.
+
+        Returns (submission, norm_budget); norm_budget is None outside budgeted mode.
+        """
+        if gamma_source != "budgeted":
+            return partial_amplify(server_weights, theta_mal, carrying, gamma), None
+
+        gamma_map, report = self._resolve_budgeted_gammas(
+            cid, server_weights, theta_mal, sel, carrying, gamma)
+        if gamma_map is None:
+            raise RuntimeError(
+                f"[partial client={cid} round={current_round}] --partial-gamma-mode budgeted "
+                f"needs a benign reference to size the norm budget, but client {cid} has none: "
+                f"it never acted during the plastic phase "
+                f"({AttackState.plastic_count} pooled injection(s) covered clients "
+                f"{sorted(AttackState.plastic_benign_ref)}). References are per client and are "
+                f"never pooled, so there is no fallback. Submitting unamplified would make this "
+                f"attacker's exploit rounds silently no-ops, so the run stops here.\n"
+                f"Fix by raising --partial-plastic-rounds so every attacker acts at least once "
+                f"before the freeze, by using --use-client-schedule to guarantee coverage (which "
+                f"also moves this check to startup), or by narrowing --attacker-fraction."
+            )
+
+        submission = partial_amplify(server_weights, theta_mal, carrying, gamma_map)
+        self._print_budget(cid, current_round, report)
+        return submission, report
+
+    def _freeze_block(self, sel, current_round):
+        """Log record of a freeze that fired THIS round: the pooled decision, plus the
+        standalone frozen_set.md one-look summary unless it is switched off."""
+        mdiv, mb = AttackState.plastic_means()
+        signed = sorted(((n, mdiv[n] - mb[n]) for n in mdiv), key=lambda x: (-x[1], x[0]))
+        block = {
+            "pooled_injections": AttackState.plastic_count,
+            "frozen_set": sorted(AttackState.plastic_frozen_set),
+            "top_mean_carriers": [[n, float(s)] for n, s in signed[:10]],   # mean(div)-mean(b)
+        }
+        if not FLSettings.LOG_FROZEN_SET_SUMMARY:
+            return block
+
+        numel = numel_per_tensor(self.manager.wrapper.model)
+        self.manager.logger.partial.write_freeze_summary(
+            current_round=current_round,
+            select_mode=FLSettings.PARTIAL_SELECT_MODE,
+            select_param=(FLSettings.PARTIAL_CUTOFF if FLSettings.PARTIAL_SELECT_MODE == "cutoff"
+                          else FLSettings.PARTIAL_TOPK),
+            pooled_injections=AttackState.plastic_count,
+            frozen_set=AttackState.plastic_frozen_set,
+            carrying_params=sum(numel.get(n, 0) for n in AttackState.plastic_frozen_set),
+            total_params=sum(numel.values()),
+            rows=[{
+                "name": n,
+                "group": sel["tensor_to_group"].get(n, "other"),
+                "mean_div": float(mdiv[n]),
+                "mean_b": float(mb[n]),
+                # b is a PRNG floor, 0 only for frozen tensors (already ineligible) -- guard anyway.
+                "ratio": (float(mdiv[n] / mb[n]) if mb[n] > 0 else float("inf")),
+                "signed": float(mdiv[n] - mb[n]),
+                "selected": n in AttackState.plastic_frozen_set,
+            } for n in mdiv],
+        )
+        return block
+
     def run(self, server_weights, client_config):
         cid = client_config["index"]
         current_round = client_config.get("round")
@@ -540,189 +821,67 @@ class PartialAmplificationProtocol(AttackProtocol):
                 "PartialAmplificationProtocol requires 'round' in client_config "
                 "(set in custom_fl_train.py's per-client client_config build)."
             )
-
         n_epochs = TrainingSettings.MALICIOUS_CLIENT_LOCAL_EPOCHS
-
-        # mal and ben1 share a seed (they differ ONLY by the poison); ben2 = +1 so
-        # the floor measures pure PRNG noise between two benign runs.
-        seed_mal = FLSettings.SEED + 1000 * int(current_round) + int(cid)
-        seed_ben1 = seed_mal
-        seed_ben2 = seed_mal + 1
-
-        # Once the carrying set is frozen (exploit), the benign anchors are unused:
-        # the frozen set drives amplification and the per-round localizer is only a
-        # (now forfeited) drift check. Skip BOTH benign trajectories then and train
-        # only the poisoned run. Each trajectory re-seeds all its RNGs and starts from
-        # theta_t with a fresh optimizer, so theta_mal is identical whether or not the
-        # anchors ran before it.
+        seeds = self._seeds(current_round, cid)
         in_exploit = FLSettings.PARTIAL_PLASTIC_ROUNDS > 0 and AttackState.is_plastic_frozen()
 
+        # ---- 1. train the trajectories and pick this round's candidate carriers ----
         if in_exploit:
-            # sel is trajectory-free (model + persisted frozen scores), so it's resolved
-            # BEFORE the mal run — the frozen carrying set is what the constrain penalty
-            # needs to know which params to exclude.
-            sel = self._exploit_sel()
-            constrain_fn = self._constrain_penalty_fn(
-                server_weights, sel["carrying"], sel["elig_list"])
-            freeze_names = self._noncarrying_freeze_names(sel["carrying"], sel["elig_list"])
-            benign_norm = None   # exploit: no ben1 -> the report uses the frozen baseline
-            n_noncarrying = len(sel["elig_list"]) - len(sel["carrying"])
-            extra = ""
-            if constrain_fn:
-                extra = f"; constrain lambda={FLSettings.PARTIAL_CONSTRAIN_LAMBDA:g} on {n_noncarrying} non-carrying tensors"
-            elif freeze_names:
-                extra = f"; freeze (requires_grad=False) {n_noncarrying} non-carrying tensors"
-            print(
-                f"  [partial client={cid} round={current_round}] exploit: mal-only "
-                f"trajectory on partition {cid} (seed={seed_mal}); benign anchors skipped"
-                + extra,
-                flush=True,
-            )
-            theta_mal = self._run_trajectory(
-                server_weights, cid, is_attacker=True, n_epochs=n_epochs, seed=seed_mal,
-                loss_augment_fn=constrain_fn, freeze_names=freeze_names)
+            theta_mal, sel, constrain_fn, freeze_names = self._exploit_trajectory(
+                server_weights, cid, current_round, n_epochs, seeds[0])
+            benign_norms = None
         else:
-            # Constrain / freeze both need a frozen set (they exclude C); the plastic/
-            # disabled phases select AFTER training, so neither applies here.
-            constrain_fn = None
-            freeze_names = None
-            print(
-                f"  [partial client={cid} round={current_round}] trajectories on "
-                f"partition {cid}: ben1(seed={seed_ben1}) / mal(seed={seed_mal}) / ben2(seed={seed_ben2})",
-                flush=True,
-            )
-            theta_ben1 = self._run_trajectory(
-                server_weights, cid, is_attacker=False, n_epochs=n_epochs, seed=seed_ben1)
-            theta_mal = self._run_trajectory(
-                server_weights, cid, is_attacker=True, n_epochs=n_epochs, seed=seed_mal)
-            theta_ben2 = self._run_trajectory(
-                server_weights, cid, is_attacker=False, n_epochs=n_epochs, seed=seed_ben2)
-            sel = self._select_carrying(theta_mal, theta_ben1, theta_ben2)
-            # Benign-anchor update norm ||theta_ben1 - theta_t|| for the norm-clip report
-            # (the live reference this round). Same whole-update L2 the server scores every
-            # submission with. Only when the report is on — paid only when needed.
-            benign_norm = None
-            if FLSettings.DO_NORMCLIP_REPORT:
-                benign_norm = update_norm(theta_ben1, server_weights)
-        ranked = sel["ranked"]
+            theta_mal, sel, benign_norms = self._plastic_trajectories(
+                server_weights, cid, current_round, n_epochs, seeds)
+            constrain_fn = freeze_names = None
 
-        # Phase captured BEFORE any accumulate/freeze mutation, so the round that
-        # TRIGGERS the freeze is still treated as plastic (its sample counts, and it
-        # stays unamplified under --partial-plastic-no-amp); the freeze affects the
-        # NEXT round onward. Which carrying set (chunk: plastic phase) and how much
-        # amplification (chunk: gamma source) are resolved independently.
+        # ---- 2. resolve the round: phase, carrying set, gamma ----
+        # Phase is captured BEFORE _resolve_carrying, which may fire the freeze: the
+        # triggering round still counts as plastic and the freeze takes effect next round.
         plastic_on = FLSettings.PARTIAL_PLASTIC_ROUNDS > 0
         in_plastic = plastic_on and not AttackState.is_plastic_frozen()
-
-        carrying = self._resolve_carrying(sel, in_plastic, plastic_on, benign_norm)
-        # in_plastic was captured pre-mutation; if we're now frozen, the freeze fired
-        # THIS round (its sample was the Nth). phase names the round for the logs.
+        carrying = self._resolve_carrying(sel, in_plastic, plastic_on, cid, benign_norms)
         froze_this_round = in_plastic and AttackState.is_plastic_frozen()
         phase = "disabled" if not plastic_on else ("plastic" if in_plastic else "exploit")
-        gamma, gamma_source = self._resolve_gamma(client_config, in_plastic)
+        gamma, gamma_source = self._resolve_gamma(client_config, in_plastic, in_exploit)
 
-        # Stash this round's norm-clip-report context for the server-side reporter: the
-        # benign reference is the LIVE ben1 norm while it's still computed (plastic /
-        # disabled), and the FROZEN pooled baseline in the exploit phase. Ephemeral —
-        # the server reads it this round, nothing is persisted.
-        if FLSettings.DO_NORMCLIP_REPORT:
-            report_benign_ref = (AttackState.plastic_benign_norm_ref
-                                 if in_exploit else benign_norm)
-            AttackState.set_normclip_ctx(cid, report_benign_ref, phase)
-        AttackState.set_carrying_set(cid, carrying)
-        self._print_selection(cid, current_round, carrying, ranked, gamma, phase)
+        # ---- 3. publish cross-round state, then build the submission ----
+        self._stash_round_state(cid, carrying, benign_norms, phase, in_exploit)
+        self._print_selection(cid, current_round, carrying, sel["ranked"], gamma, phase)
+        submission, norm_budget = self._amplify(
+            cid, current_round, server_weights, theta_mal, sel, carrying, gamma, gamma_source)
 
-        # Amplify ONLY the carrying tensors' update Delta_C = theta_mal - theta_t.
-        # partial_amplify applies theta_t + gamma*(theta_mal - theta_t), i.e. exactly
-        # the model-replacement form  gamma*theta_mal - (gamma-1)*theta_t  restricted to C.
-        submission = partial_amplify(server_weights, theta_mal, carrying, gamma)
+        # ---- 4. per-round log blocks; each stays None unless its feature ran ----
+        freeze = self._freeze_block(sel, current_round) if froze_this_round else None
+        constrain = None if constrain_fn is None else {
+            "lambda": FLSettings.PARTIAL_CONSTRAIN_LAMBDA,
+            "constrained_tensors": len(sel["elig_list"]) - len(carrying),
+        }
+        freeze_noncarrying = None if freeze_names is None else {"frozen_tensors": len(freeze_names)}
 
-        # When the freeze fires THIS round, capture the pooled decision so the log
-        # records exactly how the frozen set was chosen (set + top denoised means).
-        freeze = None
-        if froze_this_round:
-            mdiv, mb = AttackState.plastic_means()
-            signed = sorted(((n, mdiv[n] - mb[n]) for n in mdiv), key=lambda x: (-x[1], x[0]))
-            freeze = {
-                "pooled_injections": AttackState.plastic_count,
-                "frozen_set": sorted(AttackState.plastic_frozen_set),
-                "top_mean_carriers": [[n, float(s)] for n, s in signed[:10]],  # mean(div)-mean(b)
-            }
-            # Standalone one-look summary of the same decision, ranked by the ratio
-            # the cutoff actually tests, with the rejected near-misses alongside.
-            if FLSettings.LOG_FROZEN_SET_SUMMARY:
-                numel = numel_per_tensor(self.manager.wrapper.model)
-                total_params = sum(numel.values())
-                carrying_params = sum(numel.get(n, 0) for n in AttackState.plastic_frozen_set)
-                self.manager.logger.partial.write_freeze_summary(
-                    current_round=current_round,
-                    select_mode=FLSettings.PARTIAL_SELECT_MODE,
-                    select_param=(FLSettings.PARTIAL_CUTOFF
-                                  if FLSettings.PARTIAL_SELECT_MODE == "cutoff"
-                                  else FLSettings.PARTIAL_TOPK),
-                    pooled_injections=AttackState.plastic_count,
-                    frozen_set=AttackState.plastic_frozen_set,
-                    carrying_params=carrying_params,
-                    total_params=total_params,
-                    rows=[
-                        {
-                            "name": n,
-                            "group": sel["tensor_to_group"].get(n, "other"),
-                            "mean_div": float(mdiv[n]),
-                            "mean_b": float(mb[n]),
-                            # b is a PRNG-noise floor and is only 0 for frozen tensors,
-                            # which are excluded from eligibility -- guard anyway.
-                            "ratio": (float(mdiv[n] / mb[n]) if mb[n] > 0 else float("inf")),
-                            "signed": float(mdiv[n] - mb[n]),
-                            "selected": n in AttackState.plastic_frozen_set,
-                        }
-                        for n in mdiv
-                    ],
-                )
+        norms = self._norm_diagnostics(server_weights, theta_mal, submission, carrying,
+                                       sel["elig_list"])
+        # realized_l2 is measured off the submission while the allocator's predicted_l2 is
+        # its own arithmetic, so the two agreeing is an independent check on the allocator.
+        if norm_budget is not None and not norm_budget.get("no_benign_ref"):
+            norm_budget["realized_l2"] = update_norm(submission, server_weights)
+            norm_budget["within_budget"] = (
+                norm_budget["realized_l2"] <= norm_budget["budget_l2"] * (1.0 + 1e-6))
 
-        # Constrain block: non-None only when the exploit-phase penalty was applied to
-        # this round's mal trajectory. Records the coefficient and how many non-carrying
-        # tensors it pulled toward theta_t (norms.delta_noncarrying_l2_submitted shows
-        # the residual drift the penalty left behind).
-        constrain = None
-        if constrain_fn is not None:
-            constrain = {
-                "lambda": FLSettings.PARTIAL_CONSTRAIN_LAMBDA,
-                "constrained_tensors": len(sel["elig_list"]) - len(carrying),
-            }
-
-        # Freeze block: non-None only when the non-carrying freeze was applied this round
-        # (exploit + --partial-freeze-noncarrying). frozen_tensors is how many eligible
-        # tensors were pinned via requires_grad=False; norms.delta_noncarrying_l2_submitted
-        # then shows the residual non-carrying drift (0 — a hard freeze, no weight decay).
-        freeze_noncarrying = None
-        if freeze_names is not None:
-            freeze_noncarrying = {"frozen_tensors": len(freeze_names)}
-
-        # Per-round diagnostics JSON (attack_logs/partial/): selection, group rollup,
-        # and the norm inflation the amplification produced.
+        # ---- 5. write the round log and return the submission ----
         mode = FLSettings.PARTIAL_SELECT_MODE
         select_param = FLSettings.PARTIAL_CUTOFF if mode == "cutoff" else FLSettings.PARTIAL_TOPK
-        norms = self._norm_diagnostics(
-            server_weights, theta_mal, submission, carrying, sel["elig_list"], gamma)
         log_path = self.manager.logger.partial.write_round(
-            current_round=current_round,
-            client_id=cid,
-            phase=phase,
-            select_mode=mode,
-            select_param=select_param,
-            gamma=gamma,
-            gamma_source=gamma_source,
+            current_round=current_round, client_id=cid, phase=phase,
+            select_mode=mode, select_param=select_param,
+            gamma=gamma, gamma_source=gamma_source,
             carrying=carrying,
             carrying_by_group=self._carrying_by_group(carrying, sel["tensor_to_group"]),
-            top_carriers=[[n, float(s)] for n, s in ranked[:10]],
-            norms=norms,
-            freeze=freeze,
-            constrain=constrain,
-            freeze_noncarrying=freeze_noncarrying,
+            top_carriers=[[n, float(s)] for n, s in sel["ranked"][:10]],
+            norms=norms, freeze=freeze, constrain=constrain,
+            freeze_noncarrying=freeze_noncarrying, norm_budget=norm_budget,
         )
 
-        num_samples = len(self.manager.subsets_mal[cid])
         metrics = {
             "partition_id": cid,
             "protocol": "partial",
@@ -734,20 +893,51 @@ class PartialAmplificationProtocol(AttackProtocol):
             "gamma_source": gamma_source,
             "constrain_lambda": FLSettings.PARTIAL_CONSTRAIN_LAMBDA if constrain_fn is not None else 0.0,
             "freeze_noncarrying": freeze_names is not None,
+            "norm_budget_l2": (norm_budget or {}).get("budget_l2"),
+            "norm_budget_realized_l2": (norm_budget or {}).get("realized_l2"),
             "partial_log": log_path,
         }
-        return submission, num_samples, metrics
+        return submission, len(self.manager.subsets_mal[cid]), metrics
 
     def _print_selection(self, cid, current_round, carrying, ranked, gamma, phase):
         mode = FLSettings.PARTIAL_SELECT_MODE
         param = FLSettings.PARTIAL_CUTOFF if mode == "cutoff" else FLSettings.PARTIAL_TOPK
         top = ", ".join(f"{name}={score:.3g}" for name, score in ranked[:5]) or "(none)"
+        # In budgeted mode gamma is the per-carrier CEILING, not a factor applied to all
+        # of C — say so, or the line reads as if every carrier got it (the norm-budget
+        # line printed just after shows what was actually spent).
+        g_label = ("gamma<=" if FLSettings.PARTIAL_GAMMA_MODE == "budgeted" else "gamma=")
         print(
             f"[partial client={cid} round={current_round}] phase={phase} carrying set "
-            f"|C|={len(carrying)} (mode={mode}, param={param}, gamma={gamma:.3g})",
+            f"|C|={len(carrying)} (mode={mode}, param={param}, {g_label}{gamma:.3g})",
             flush=True,
         )
         print(f"    top carriers ({'ratio=div/b' if mode == 'cutoff' else 'rho=div-b'}): {top}", flush=True)
+
+    @staticmethod
+    def _print_budget(cid, current_round, rep):
+        """One-look line on how the norm budget was spent this round."""
+        if rep.get("deficit"):
+            over = rep["unamplified_l2"] / rep["budget_l2"] if rep["budget_l2"] else float("nan")
+            print(
+                f"  [partial client={cid} round={current_round}] norm budget DEFICIT: "
+                f"unamplified ||Delta||={rep['unamplified_l2']:.4g} already "
+                f"{over:.2f}x the budget {rep['budget_l2']:.4g} "
+                f"(B={rep['B']:g} x benign_ref={rep['benign_ref']:.4g}) -> no amplification. "
+                f"Lower the update with --partial-constrain / --partial-freeze-noncarrying, "
+                f"or raise --partial-norm-budget.",
+                flush=True,
+            )
+            return
+        where = rep["throttled_at"] or "(budget not exhausted)"
+        print(
+            f"  [partial client={cid} round={current_round}] norm budget: "
+            f"{rep['budget_l2']:.4g} (B={rep['B']:g} x benign_ref={rep['benign_ref']:.4g} from "
+            f"{rep['benign_ref_samples']} anchor(s)); gamma_full={rep['gamma_full']:.3g} to "
+            f"{rep['n_full']} carrier(s), throttled at {where}, {rep['n_unamplified']} left "
+            f"unamplified; predicted ||Delta||={rep['predicted_l2']:.4g}",
+            flush=True,
+        )
 
     @staticmethod
     def _carrying_by_group(carrying, tensor_to_group):
@@ -758,7 +948,7 @@ class PartialAmplificationProtocol(AttackProtocol):
             counts[g] = counts.get(g, 0) + 1
         return counts
 
-    def _norm_diagnostics(self, theta_t, theta_mal, submission, carrying, elig_list, gamma):
+    def _norm_diagnostics(self, theta_t, theta_mal, submission, carrying, elig_list):
         """Norm/energy diagnostics for the submission, all over the ELIGIBLE tensor set
         (the stealth harness's coordinate set). norm_inflation_ratio =
         ||submission - theta_t|| / ||theta_mal - theta_t|| is the exact quantity a
@@ -787,11 +977,17 @@ class PartialAmplificationProtocol(AttackProtocol):
 
         # Energy split (%). Energy = L2^2, so the carrying/non-carrying energies add up to
         # the total (carrying_list and noncarrying_list partition elig_list). Amplification
-        # scales ONLY the carrying energy by gamma^2; the non-carrying energy is unchanged,
-        # so pre vs post shows exactly how gamma shifted the update's mass into C.
+        # scales ONLY the carrying energy; the non-carrying energy is unchanged, so pre vs
+        # post shows exactly how amplification shifted the update's mass into C.
+        #
+        # The post-amplification carrying norm is MEASURED off the submission rather than
+        # derived as gamma*dC_pre. Those agree under a single scalar gamma, but budgeted
+        # mode gives every carrier its own gamma, for which no scalar factor exists — so
+        # measuring keeps this correct for all three gamma modes.
+        dC_post = l2(submission, theta_t, carrying_list)
         e_carry_pre = dC_pre ** 2
         e_nonc = d_nonC ** 2                                  # unchanged by amplification
-        e_carry_post = (gamma * dC_pre) ** 2
+        e_carry_post = dC_post ** 2
         tot_pre = e_carry_pre + e_nonc                        # == d_pre^2
         tot_post = e_carry_post + e_nonc                      # == d_post^2
         def pct(part, tot):
@@ -804,7 +1000,7 @@ class PartialAmplificationProtocol(AttackProtocol):
 
         return {
             "delta_carrying_l2_pre": dC_pre,
-            "delta_carrying_l2_post": gamma * dC_pre,        # amplification scales Delta_C by gamma
+            "delta_carrying_l2_post": dC_post,               # measured, not gamma*dC_pre
             "delta_total_l2_unamplified": d_pre,
             "delta_total_l2_submitted": d_post,
             "delta_noncarrying_l2_submitted": d_nonC,        # constrain target (-> 0)

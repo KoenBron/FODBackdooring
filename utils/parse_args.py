@@ -2,6 +2,7 @@ import argparse
 import re
 from collections import defaultdict
 
+from utils.select_clients import plastic_phase_attacker_coverage
 from utils.global_settings import BackdoorProperties, FLSettings, TrainingSettings, TriggerType, AttackType, FloatingTriggerPos, EvaluationSettings, ANSIColor, ProjectPaths
 from utils.bbox_transform import BoxTransformMode
 
@@ -85,7 +86,8 @@ def parse_args():
     atk_group.add_argument("--partial-select-mode", type=str, default=FLSettings.PARTIAL_SELECT_MODE, choices=["cutoff", "topk"], help="partial protocol: per-tensor carrying-layer selector. 'cutoff' = all eligible tensors with div > (--partial-cutoff)*floor (variable-size; PilotB's selector; cutoff=1 equals the rho>0 gate). 'topk' = fixed --partial-topk tensors by denoised rho.")
     atk_group.add_argument("--partial-cutoff", type=float, default=FLSettings.PARTIAL_CUTOFF, help="partial protocol (cutoff mode): keep per-tensor layers whose normalized divergence exceeds this multiple of the floor (div > cutoff*floor). 1.0 reproduces the rho>0 gate.")
     atk_group.add_argument("--partial-topk", type=int, default=FLSettings.PARTIAL_TOPK, help="partial protocol (topk mode): size of the per-tensor carrying set C (top-k tensors by denoised divergence rho).")
-    atk_group.add_argument("--partial-gamma-mode", type=str, default=FLSettings.PARTIAL_GAMMA_MODE, choices=["fixed", "replacement"], help="partial protocol: source of the carrier-set gamma. 'fixed' = use --partial-amp-gamma (the trade-off sweep knob). 'replacement' = derive gamma = k/(server_lr*n_mal) capped at --gamma-cap, i.e. the SAME Bagdasaryan factor as full model replacement, so the carrying tensors are genuinely model-replaced after aggregation.")
+    atk_group.add_argument("--partial-gamma-mode", type=str, default=FLSettings.PARTIAL_GAMMA_MODE, choices=["fixed", "replacement", "budgeted"], help="partial protocol: source of the carrier-set gamma. 'fixed' = use --partial-amp-gamma (the trade-off sweep knob). 'replacement' = derive gamma = k/(server_lr*n_mal) capped at --gamma-cap, i.e. the SAME Bagdasaryan factor as full model replacement, so the carrying tensors are genuinely model-replaced after aggregation. 'budgeted' = EXPLOIT-ONLY per-carrier gamma from a total-L2 norm budget (--partial-norm-budget x this client's own mean benign-anchor norm): carriers take the replacement gamma in descending selection-score order until the budget is spent, the one that exhausts it is throttled to fit exactly, and later carriers go unamplified. Makes --partial-amp-gamma inert.")
+    atk_group.add_argument("--partial-norm-budget", type=float, default=FLSettings.PARTIAL_NORM_BUDGET, help="partial protocol (budgeted gamma mode): norm-inflation ceiling B. The submitted update's L2 norm is held <= B * (this client's OWN mean benign-anchor norm, frozen at the plastic freeze; never pooled across clients). B=1.0 submits at the benign scale (no excess to spend -> every carrier unamplified); B>1 buys amplification headroom. B<1 is rejected (shrinking the update is the constrain phase's job).")
     atk_group.add_argument("--partial-amp-gamma", type=float, default=FLSettings.PARTIAL_AMP_GAMMA, help="partial protocol (fixed gamma mode): amplification factor on the carrying tensors' update Delta_C = theta_mal - theta_t. gamma=1.0 submits theta_mal unchanged; gamma>1 concentrates energy in C (raises total update norm; the norm budget is a later increment).")
 
     # Plastic-phase Configuration (Partial protocol)
@@ -121,7 +123,7 @@ def parse_args():
     det_group.add_argument("--stealth-on-benign-rounds", action="store_true", default=FLSettings.STEALTH_ON_BENIGN_ROUNDS, help="Also run the stealth harness on rounds with no attacker present. Off by default (those rounds are skipped to save compute since label-aware metrics are NaN). Enable for a no-attacker baseline to gather the benign null distribution for the stealth metrics.")
     # OBSERVATIONAL norm-clip report — ON by default; disable with --no-normclip-report.
     # Both flags share dest=do_normclip_report (--do-... kept so existing scripts still work).
-    det_group.add_argument("--do-normclip-report", action="store_true", dest="do_normclip_report", default=FLSettings.DO_NORMCLIP_REPORT, help="OBSERVATIONAL (never alters aggregation): for each malicious update, record in a top-level normclip_report.csv whether its L2 norm exceeds x*(benign-trajectory norm) or x*(median submitted norm), across the --normclip-report-x sweep. The benign reference is the attacker's ben1 anchor norm: live in the plastic/disabled phases, a frozen pooled baseline in the exploit phase. Partial protocol. ON by default (this flag is a no-op kept for explicitness; use --no-normclip-report to turn it off).")
+    det_group.add_argument("--do-normclip-report", action="store_true", dest="do_normclip_report", default=FLSettings.DO_NORMCLIP_REPORT, help="OBSERVATIONAL (never alters aggregation): for each malicious update, record in a top-level normclip_report.csv whether its L2 norm exceeds x*(benign-trajectory norm) or x*(median submitted norm), across the --normclip-report-x sweep. The benign reference is PER CLIENT (never pooled): the mean of that attacker's OWN benign anchor norms (both ben1 and ben2, so 2 samples per plastic round it acts in) — live in the plastic/disabled phases, and that client's frozen mean in the exploit phase. An attacker that never acts during the plastic phase has no reference and logs ratio_to_benign=NaN (warned about at startup). Partial protocol. ON by default (this flag is a no-op kept for explicitness; use --no-normclip-report to turn it off).")
     det_group.add_argument("--no-normclip-report", action="store_false", dest="do_normclip_report", help="Disable the observational norm-clip report (normclip_report.csv). On by default.")
     det_group.add_argument("--normclip-report-x", type=str, default=",".join(f"{v:g}" for v in FLSettings.NORMCLIP_REPORT_X), help="Comma-separated x sweep for the norm-clip report (e.g. '1.0,1.5,2.0,3.0'). Each x adds exceeds_median@x and exceeds_benign@x columns (flagged when norm > x*reference).")
 
@@ -187,6 +189,17 @@ def apply_settings(args):
     FLSettings.PARTIAL_TOPK = args.partial_topk
     FLSettings.PARTIAL_GAMMA_MODE = args.partial_gamma_mode
     FLSettings.PARTIAL_AMP_GAMMA = args.partial_amp_gamma
+    FLSettings.PARTIAL_NORM_BUDGET = args.partial_norm_budget
+    if FLSettings.PARTIAL_GAMMA_MODE == "budgeted" and FLSettings.PARTIAL_NORM_BUDGET < 1.0:
+        # B < 1 asks for a submission SMALLER than the unamplified update, which the
+        # allocator cannot deliver: it only ever scales carriers UP (gamma >= 1). Pulling
+        # an update back below its natural norm is the constrain phase's job.
+        raise ValueError(
+            f"--partial-norm-budget must be >= 1.0 (got {FLSettings.PARTIAL_NORM_BUDGET}). "
+            "B < 1 would require SHRINKING the update below its unamplified norm, which the "
+            "budgeted allocator does not do — use --partial-constrain (or "
+            "--partial-freeze-noncarrying) to reduce the update, then budget on top."
+        )
     FLSettings.PARTIAL_PLASTIC_ROUNDS = args.partial_plastic_rounds
     FLSettings.PARTIAL_PLASTIC_NO_AMP = args.partial_plastic_no_amp
     FLSettings.LOG_FROZEN_SET_SUMMARY = args.log_frozen_set_summary
@@ -308,7 +321,70 @@ def apply_settings(args):
     EvaluationSettings.DO_POISON_EVAL = args.do_poison_eval
     EvaluationSettings.BATCH_SIZE = args.evaluation_batch_size
 
+    validate_benign_ref_coverage()
+
     print_configuration_summary()
+
+
+def validate_benign_ref_coverage():
+    """Check, before training, that every attacker will get a benign reference.
+
+    Each attacker's benign baseline is the mean of ITS OWN anchor norms, collected only
+    while it is active during the plastic phase (per-client by design — nothing is pooled,
+    so there is no fallback for a client that never contributed). An attacker that never
+    acts during the plastic phase therefore ends up with NO reference.
+
+    The severity depends on WHO consumes the reference, because the two consumers fail
+    very differently:
+
+      * 'budgeted' gamma  -> FATAL. Without a reference there is no budget to size, so
+        that attacker cannot be amplified at all. The protocol refuses to fall back to
+        gamma=1 (that would make its exploit rounds silent no-ops) and raises instead, so
+        an uncovered attacker kills the run the moment it is selected. Catching it here
+        turns that into a startup error rather than a crash hours into training.
+      * norm-clip report  -> WARNING. This is observational: the attack itself is
+        unaffected and the run stays valid; only that attacker's ratio_to_benign column
+        is NaN. Worth flagging loudly (a NaN reads as 'not flagged' rather than 'not
+        measured') but not worth blocking an otherwise fine run.
+
+    Only checkable statically when a client schedule fixes who acts when; under random
+    selection the runtime coverage report at the plastic freeze is the backstop.
+    """
+    if FLSettings.ATTACK_PROTOCOL != "partial" or FLSettings.PARTIAL_PLASTIC_ROUNDS <= 0:
+        return
+    budgeted = FLSettings.PARTIAL_GAMMA_MODE == "budgeted"
+    if not (budgeted or FLSettings.DO_NORMCLIP_REPORT):
+        return                      # nothing consumes the benign references
+    if not (FLSettings.USE_CLIENT_SCHEDULE and FLSettings.CLIENT_SCHEDULE):
+        return                      # random selection: cannot predict; see _freeze()
+
+    covered, missing = plastic_phase_attacker_coverage(
+        FLSettings.CLIENT_SCHEDULE, FLSettings.ATTACKER_IDS, FLSettings.PARTIAL_PLASTIC_ROUNDS)
+    if not missing:
+        return
+
+    detail = (
+        f"Attacker(s) {missing} never act during the plastic phase: the first "
+        f"{FLSettings.PARTIAL_PLASTIC_ROUNDS} pooled injection(s) of --client-schedule cover "
+        f"only {covered}. Each attacker's benign reference is the mean of its OWN anchor "
+        f"norms and is never pooled across clients, so {missing} would have none."
+    )
+    if budgeted:
+        raise ValueError(
+            f"{detail}\n--partial-gamma-mode budgeted needs that reference to size the norm "
+            f"budget, so the run would abort the moment any of {missing} is selected for an "
+            f"exploit round. Fix by raising --partial-plastic-rounds so every attacker acts "
+            f"at least once, scheduling {missing} earlier, or narrowing --attacker-fraction."
+        )
+    print(
+        f"{ANSIColor.YELLOW}[WARNING]{ANSIColor.RESET} {detail}\n"
+        f"          Their norm-clip report rows will log ratio_to_benign=NaN with every "
+        f"exceeds_benign flag False, which reads as 'not flagged' rather than 'not measured'. "
+        f"The attack itself is unaffected — this is an observational gap only, so the run "
+        f"continues.\n"
+        f"          To close it, raise --partial-plastic-rounds so every attacker acts at "
+        f"least once, schedule {missing} earlier, or pass --no-normclip-report."
+    )
 
 def build_config_sections():
     """The run's relevant settings, grouped into ordered (title, [(key, value), ...])
@@ -362,6 +438,13 @@ def build_config_sections():
         partial.append(("PARTIAL_GAMMA_MODE", FLSettings.PARTIAL_GAMMA_MODE))
         if FLSettings.PARTIAL_GAMMA_MODE == "fixed":
             partial.append(("PARTIAL_AMP_GAMMA", FLSettings.PARTIAL_AMP_GAMMA))
+        elif FLSettings.PARTIAL_GAMMA_MODE == "budgeted":
+            note = "" if FLSettings.PARTIAL_PLASTIC_ROUNDS > 0 else \
+                "  (INERT: budgeted is exploit-only; set --partial-plastic-rounds > 0)"
+            partial.append(("PARTIAL_NORM_BUDGET",
+                            f"{FLSettings.PARTIAL_NORM_BUDGET} x per-client mean benign norm{note}"))
+            partial.append(("PARTIAL_AMP_GAMMA",
+                            f"{FLSettings.PARTIAL_AMP_GAMMA} (IGNORED: ceiling is the replacement gamma)"))
         sections.append(("Partial protocol", partial))
 
         plastic_on = FLSettings.PARTIAL_PLASTIC_ROUNDS > 0

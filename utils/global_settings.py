@@ -167,8 +167,22 @@ class FLSettings:
     #   "fixed"        -> gamma = PARTIAL_AMP_GAMMA (hand-set; the trade-off sweep knob)
     #   "replacement"  -> gamma = k/(eta*m) capped at GAMMA_CAP (same as full model
     #                     replacement, so C is genuinely model-replaced post-aggregation)
+    #   "budgeted"     -> PER-CARRIER gamma from a total-L2 norm budget. EXPLOIT ONLY.
+    #                     Budget = PARTIAL_NORM_BUDGET * (this client's OWN mean benign
+    #                     anchor norm, frozen at the plastic freeze). Carriers are walked
+    #                     in descending selection-score order, each taking the replacement
+    #                     gamma (the ceiling) until the budget's excess is exhausted; the
+    #                     carrier that exhausts it is throttled to fit exactly and every
+    #                     later carrier is submitted unamplified. Total submitted norm is
+    #                     <= budget by construction. PARTIAL_AMP_GAMMA is INERT here.
     PARTIAL_GAMMA_MODE = "fixed"
     PARTIAL_AMP_GAMMA = 1.0        # fixed mode: amplify Delta_C = theta_mal - theta_t on carrying tensors by this factor (1.0 = no-op)
+    # budgeted mode: norm-inflation ceiling B. The submitted update's L2 norm is held at
+    # or below B * (this client's mean benign-anchor norm). B = 1.0 means "submit at the
+    # benign scale" (zero excess to spend -> every carrier unamplified); B > 1 buys
+    # amplification headroom. B < 1 would require SHRINKING the update, which is the
+    # constrain phase's job, not the allocator's -- rejected at startup.
+    PARTIAL_NORM_BUDGET = 1.0
 
     # ---- Plastic-phase options (Partial protocol) ----
     # The plastic phase runs the per-round localizer for the first N injection rounds,

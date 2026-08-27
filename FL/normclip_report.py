@@ -1,7 +1,7 @@
 """Observational norm-clip report (Partial protocol).
 
 For each malicious update in a round, record whether its L2 norm exceeds
-  - x * (benign-trajectory norm)   — the attacker's own ben1 anchor norm, and
+  - x * (benign-trajectory norm)   — the attacker's OWN mean anchor norm, and
   - x * (median submitted norm)    — the round's robust central norm,
 across a sweep of x. OBSERVATIONAL ONLY — this never touches aggregation or
 training; it simulates the norm-clip defense being considered separately.
@@ -13,8 +13,11 @@ Split in two so the threshold/flag logic is torch-free and unit-testable:
   - build_report_rows(...) is pure Python over those floats.
 
 The benign reference is supplied per-cid by the caller (the server reads it from
-AttackState, where the Partial protocol stashes it): the live ben1 norm in the
-plastic/disabled phases, the frozen pooled baseline in the exploit phase.
+AttackState, where the Partial protocol stashes it) and is PER CLIENT, never pooled:
+the live mean of that round's anchors (ben1 and ben2) in the plastic/disabled phases,
+and that client's own frozen mean in the exploit phase. A client that never acted
+during the plastic phase has no reference — its ratio_to_benign is NaN and its
+exceeds_benign flags are False (see build_report_rows).
 """
 import statistics
 

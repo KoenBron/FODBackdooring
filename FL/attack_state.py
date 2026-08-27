@@ -56,13 +56,23 @@ class _AttackState:
         self.plastic_frozen: bool = False            # has the freeze happened?
         self.plastic_frozen_set: set[str] = set()    # the single shared post-freeze carrying set
 
-        # ---- Benign-norm baseline (norm-clip report) — POOLED across attackers ----
-        # ||theta_ben1 - theta_t|| collected over the plastic injection rounds (when the
-        # benign anchor is still trained); at the plastic freeze their MEDIAN becomes the
-        # single reference the exploit-phase norm-clip report uses (the anchors are skipped
-        # there). Both persist so the frozen reference survives a resume.
-        self.plastic_benign_norms: list = []               # per-round ||theta_ben1 - theta_t||
-        self.plastic_benign_norm_ref: float | None = None  # frozen median (None until freeze)
+        # ---- Benign-norm baseline — PER CLIENT, never pooled ----
+        # Both benign anchors' update norms (||theta_ben1 - theta_t|| and
+        # ||theta_ben2 - theta_t||) collected over the plastic injection rounds, keyed by
+        # the attacker that produced them. At the plastic freeze each client's MEAN becomes
+        # ITS OWN exploit-phase reference (the anchors are skipped after the freeze).
+        #
+        # Deliberately NOT pooled across attackers: pooling assumes the partitions are
+        # exchangeable, which holds under IID but breaks the moment partitions go non-IID —
+        # a client's benign update norm is a property of ITS partition. Keeping the
+        # reference per client means nothing here has to be re-derived at that switch.
+        #
+        # Sample count per client = 2 x (its plastic injection rounds): 2 for a client that
+        # attacks once during the plastic phase, 4 if it attacks twice, and so on. A client
+        # that never attacks during the plastic phase gets NO entry (see freeze_benign_refs)
+        # — there is no cross-client fallback, by design.
+        self.plastic_benign_norms: dict[int, list[float]] = {}  # cid -> [||Δ_ben1||, ||Δ_ben2||, ...]
+        self.plastic_benign_ref: dict[int, float] = {}          # cid -> frozen mean (absent until freeze)
 
         # ---- Norm-clip report context (ephemeral, NOT persisted) ----
         # Per-cid {benign_ref, phase} the protocol stashes each round for the server-side
@@ -148,16 +158,41 @@ class _AttackState:
 
     # ---- Benign-norm baseline (norm-clip report) ----
 
-    def accumulate_benign_norm(self, norm) -> None:
-        """Collect one plastic round's benign-anchor update norm ||theta_ben1 - theta_t||."""
-        self.plastic_benign_norms.append(float(norm))
+    def accumulate_benign_norms(self, cid: int, norms) -> None:
+        """Collect one plastic round's benign-anchor update norms FOR ONE ATTACKER.
 
-    def freeze_benign_norm(self) -> None:
-        """Freeze the MEDIAN of the collected benign norms as the exploit-phase reference
-        (None if none were collected — e.g. the report was off during the plastic phase)."""
-        self.plastic_benign_norm_ref = (
-            statistics.median(self.plastic_benign_norms) if self.plastic_benign_norms else None
-        )
+        `norms` is an iterable of that round's anchor norms — normally both of them
+        (ben1 and ben2), which is why a single plastic round contributes 2 samples.
+        Appended under the client's own key; nothing is mixed across clients.
+        """
+        bucket = self.plastic_benign_norms.setdefault(int(cid), [])
+        for v in norms:
+            bucket.append(float(v))
+
+    def freeze_benign_refs(self) -> None:
+        """Freeze each attacker's MEAN benign-anchor norm as ITS exploit-phase reference.
+
+        Mean (not median): the samples are repeated measurements of the same quantity for
+        one client, so averaging them reduces variance — there is no cross-client
+        contamination for a median to be robust against.
+
+        A client with no collected samples gets NO entry: it never attacked during the
+        plastic phase, so there is no benign baseline for it and there is deliberately no
+        cross-client fallback (that would be exactly the pooling this design removes).
+        Callers must handle a missing reference explicitly.
+        """
+        self.plastic_benign_ref = {
+            cid: statistics.fmean(vals)
+            for cid, vals in self.plastic_benign_norms.items() if vals
+        }
+
+    def get_benign_ref(self, cid: int):
+        """This attacker's frozen benign-anchor reference, or None if it has none."""
+        return self.plastic_benign_ref.get(int(cid))
+
+    def benign_ref_sample_counts(self) -> dict:
+        """{cid: #anchor norms collected} — for the freeze-time coverage report."""
+        return {cid: len(v) for cid, v in self.plastic_benign_norms.items()}
 
     def set_normclip_ctx(self, cid: int, benign_ref, phase: str) -> None:
         """Stash this round's reporter context for an attacker (read by the server)."""
@@ -180,7 +215,7 @@ class _AttackState:
         self.plastic_frozen = False
         self.plastic_frozen_set.clear()
         self.plastic_benign_norms.clear()
-        self.plastic_benign_norm_ref = None
+        self.plastic_benign_ref.clear()
         self.normclip_ctx.clear()
 
     # ---- Persistence ----
@@ -208,10 +243,11 @@ class _AttackState:
                 "count": self.plastic_count,
                 "frozen": self.plastic_frozen,
                 "frozen_set": sorted(self.plastic_frozen_set),
-                # Benign-norm baseline for the norm-clip report (persisted so the frozen
+                # Per-client benign-norm baseline (persisted so each attacker's frozen
                 # reference survives a resume; ephemeral normclip_ctx is NOT persisted).
-                "benign_norms": list(self.plastic_benign_norms),
-                "benign_norm_ref": self.plastic_benign_norm_ref,
+                # JSON keys must be strings — same convention as carrying_set above.
+                "benign_norms_by_cid": {str(c): list(v) for c, v in self.plastic_benign_norms.items()},
+                "benign_ref_by_cid": {str(c): v for c, v in self.plastic_benign_ref.items()},
             },
         }
 
@@ -230,9 +266,21 @@ class _AttackState:
         self.plastic_count = int(p.get("count", 0))
         self.plastic_frozen = bool(p.get("frozen", False))
         self.plastic_frozen_set = set(p.get("frozen_set", ()))
-        self.plastic_benign_norms = [float(v) for v in p.get("benign_norms", [])]
-        _ref = p.get("benign_norm_ref", None)
-        self.plastic_benign_norm_ref = None if _ref is None else float(_ref)
+        self.plastic_benign_norms = {
+            int(c): [float(v) for v in vals]
+            for c, vals in p.get("benign_norms_by_cid", {}).items()
+        }
+        self.plastic_benign_ref = {
+            int(c): float(v) for c, v in p.get("benign_ref_by_cid", {}).items()
+        }
+        # Legacy (pre-per-client) snapshots stored one POOLED list + a median under
+        # "benign_norms"/"benign_norm_ref". Those samples cannot be re-attributed to the
+        # clients that produced them, so they are dropped rather than silently reused as
+        # if they were per-client. A run resuming mid-plastic simply re-accumulates.
+        if "benign_norms_by_cid" not in p and ("benign_norms" in p or "benign_norm_ref" in p):
+            print("[AttackState] legacy POOLED benign-norm baseline found and DISCARDED "
+                  "(it predates per-client references and cannot be re-attributed). "
+                  "Plastic-phase benign norms will re-accumulate from this round.")
 
     def save(self, path) -> None:
         """Write the snapshot to disk atomically.
