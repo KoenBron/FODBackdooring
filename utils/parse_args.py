@@ -100,7 +100,8 @@ def parse_args():
     constrain_group = parser.add_argument_group('Constrain-phase Configuration (partial protocol)')
     constrain_group.add_argument("--partial-constrain", action="store_true", default=FLSettings.PARTIAL_CONSTRAIN, help="partial protocol: during EXPLOIT rounds, add L_constrain = (--partial-constrain-lambda) * sum_{p not in C} ||theta_p - theta_t,p||^2 (unnormalized SSE) to the malicious trajectory's loss, pulling the NON-carrying params back toward the broadcast model theta_t so the update stays in the benign cluster (L2/Krum can otherwise separate it even at gamma=1). Carrying params are excluded so the backdoor is preserved. Requires a frozen carrying set (--partial-plastic-rounds > 0); no-op before the freeze.")
     constrain_group.add_argument("--partial-constrain-lambda", type=float, default=FLSettings.PARTIAL_CONSTRAIN_LAMBDA, help="partial protocol: coefficient LAMBDA on the summed-squared-error non-carrying-to-broadcast constrain penalty (see --partial-constrain). SSE (not a mean) so LAMBDA ~ O(1) is effective; 0.0 disables the penalty even if --partial-constrain is set.")
-    constrain_group.add_argument("--partial-freeze-noncarrying", action="store_true", default=FLSettings.PARTIAL_FREEZE_NONCARRYING, help="partial protocol: during EXPLOIT rounds, zero the GRADIENTS of the non-carrying eligible tensors for the whole mal trajectory (grad_mask hook), pinning them at the broadcast model theta_t so the carrying layers co-adapt to frozen non-carriers. Stronger than zeroing pseudo-gradients only at submission. Requires a frozen carrying set (--partial-plastic-rounds > 0); no-op before the freeze. MUTUALLY EXCLUSIVE with --partial-constrain (raises at startup if both set).")
+    constrain_group.add_argument("--partial-freeze-noncarrying", action="store_true", default=FLSettings.PARTIAL_FREEZE_NONCARRYING, help="partial protocol: during EXPLOIT rounds, zero the GRADIENTS of the non-carrying eligible tensors for the whole mal trajectory (grad_mask hook), pinning them at the broadcast model theta_t so the carrying layers co-adapt to frozen non-carriers. Stronger than zeroing pseudo-gradients only at submission. Requires a frozen carrying set (--partial-plastic-rounds > 0); no-op before the freeze. MUTUALLY EXCLUSIVE with --partial-constrain and --partial-mask-noncarrying (raises at startup if more than one is set).")
+    constrain_group.add_argument("--partial-mask-noncarrying", action="store_true", default=FLSettings.PARTIAL_MASK_NONCARRYING, help="partial protocol: during EXPLOIT rounds, train the malicious trajectory completely UNRESTRICTED and then reset the non-carrying eligible tensors to theta_t in the SUBMISSION (zero pseudo-gradient there). Same support on the wire as --partial-freeze-noncarrying, but ||Delta_C|| is the unmodified full-model value instead of the freeze's inflated one — the ablation that separates 'drop the non-carrying energy' from 'concentrate the backdoor into C'. Requires a frozen carrying set (--partial-plastic-rounds > 0); no-op before the freeze. MUTUALLY EXCLUSIVE with --partial-freeze-noncarrying and --partial-constrain (raises at startup if more than one is set).")
 
     atk_group.add_argument("--attacker-fraction", type=float, default=FLSettings.ATTACKER_FRACTION, help="Fraction of malicious clients")
     atk_group.add_argument("--client-train-ds-mode", type=str, default=FLSettings.ATTACKER_DATASET_MODE, help="Dataset mode for attackers")
@@ -206,14 +207,29 @@ def apply_settings(args):
     FLSettings.PARTIAL_CONSTRAIN = args.partial_constrain
     FLSettings.PARTIAL_CONSTRAIN_LAMBDA = args.partial_constrain_lambda
     FLSettings.PARTIAL_FREEZE_NONCARRYING = args.partial_freeze_noncarrying
-    # Freeze-noncarrying zeroes the non-carrying gradient; the constrain penalty only
-    # produces non-carrying gradient — enabling both would silently nullify constrain.
-    # Fail fast rather than run a misleading config.
-    if FLSettings.PARTIAL_FREEZE_NONCARRYING and FLSettings.PARTIAL_CONSTRAIN:
+    FLSettings.PARTIAL_MASK_NONCARRYING = args.partial_mask_noncarrying
+    # The three non-carrying interventions all act on `eligible \ C` and contradict each
+    # other pairwise, so at most one may be on. Fail fast rather than run a config whose
+    # log says a mechanism is enabled while it is in fact inert:
+    #   freeze + constrain — freezing zeroes the non-carrying gradient, the only thing the
+    #                        constrain penalty produces, so the penalty never bites;
+    #   mask + constrain   — the mask discards at submission exactly the drift the penalty
+    #                        spent model capacity shrinking;
+    #   mask + freeze      — both put the same support on the wire, but the freeze changes
+    #                        the trajectory, which is precisely what the mask ablation
+    #                        holds fixed; together neither question is answered.
+    _noncarrying_switches = [
+        ("--partial-constrain", FLSettings.PARTIAL_CONSTRAIN),
+        ("--partial-freeze-noncarrying", FLSettings.PARTIAL_FREEZE_NONCARRYING),
+        ("--partial-mask-noncarrying", FLSettings.PARTIAL_MASK_NONCARRYING),
+    ]
+    _enabled = [flag for flag, on in _noncarrying_switches if on]
+    if len(_enabled) > 1:
         raise ValueError(
-            "--partial-freeze-noncarrying and --partial-constrain are mutually exclusive: "
-            "freezing zeroes the non-carrying gradients, which is exactly what the constrain "
-            "penalty acts on, so the penalty would be inert. Enable at most one."
+            f"{' and '.join(_enabled)} are mutually exclusive: they are three different "
+            "treatments of the SAME non-carrying tensors (train them toward theta_t / never "
+            "train them / discard them at submission), and combining any two makes at least "
+            "one of them inert or unmeasurable. Enable at most one."
         )
     FLSettings.SKIP_ROUND_EVAL = args.skip_round_eval
     FLSettings.SKIP_MAP_EVAL = args.skip_map_eval
@@ -468,6 +484,11 @@ def build_config_sections():
                           + ("" if FLSettings.PARTIAL_FREEZE_NONCARRYING else "  (OFF)")))
         if FLSettings.PARTIAL_FREEZE_NONCARRYING and not plastic_on:
             constrain.append(("(note)", "freeze needs a frozen set; set --partial-plastic-rounds > 0"))
+        constrain.append(("PARTIAL_MASK_NONCARRYING",
+                          f"{FLSettings.PARTIAL_MASK_NONCARRYING}"
+                          + ("" if FLSettings.PARTIAL_MASK_NONCARRYING else "  (OFF)")))
+        if FLSettings.PARTIAL_MASK_NONCARRYING and not plastic_on:
+            constrain.append(("(note)", "mask needs a frozen set; set --partial-plastic-rounds > 0"))
         sections.append(("Constrain phase", constrain))
 
     backdoor = [

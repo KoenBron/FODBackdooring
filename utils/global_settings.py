@@ -220,6 +220,23 @@ class FLSettings:
     # enabling both raises at startup. Orthogonal to gamma.
     PARTIAL_FREEZE_NONCARRYING = False  # zero non-carrying gradients during exploit-phase mal training
 
+    # ---- Mask non-carrying (Partial protocol, exploit-only) ----
+    # The SUBMISSION-side counterpart of the freeze above. The malicious trajectory trains
+    # completely unrestricted (theta_mal is bit-identical to a run with every non-carrying
+    # switch off); only when the submission is built are the non-carrying eligible tensors
+    # reset to theta_t, so their drift is DISCARDED rather than never learned.
+    #
+    # Freeze and mask put the SAME support on the wire — energy only on C — but differ in
+    # ||Delta_C||: under the freeze the carriers absorb the pinned tensors' share of the
+    # task loss and ||Delta_C|| inflates; under the mask ||Delta_C|| is the unmodified
+    # full-model value. That is the ablation the pair exists for — it separates "drop the
+    # non-carrying energy" from "concentrate the backdoor into C".
+    # Requires a FROZEN carrying set (needs C to know what to mask), so exploit-only.
+    # MUTUALLY EXCLUSIVE with both PARTIAL_FREEZE_NONCARRYING (same support on the wire,
+    # contradictory trajectories) and PARTIAL_CONSTRAIN (the mask discards exactly the
+    # drift the penalty spends model capacity shrinking). Orthogonal to gamma.
+    PARTIAL_MASK_NONCARRYING = False  # zero non-carrying pseudo-gradients at submission only
+
     # When the plastic phase freezes, write the human-readable one-look summary of the
     # chosen carrying set (attack_logs/partial/frozen_set.md). On by default; disable with
     # --no-frozen-set-summary. No-op when the plastic phase never freezes.

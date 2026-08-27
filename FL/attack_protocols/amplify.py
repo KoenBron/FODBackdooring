@@ -43,6 +43,31 @@ def partial_amplify(theta_t, theta_mal, carrying, gamma):
     return submission
 
 
+def mask_noncarrying(submission, theta_t, names):
+    """Reset the named tensors to theta_t in a finished submission — zero pseudo-gradient.
+
+    The submission-side counterpart of the exploit-phase gradient freeze. The malicious
+    trajectory already trained UNRESTRICTED; only the wire format is edited:
+
+        submission[name] = theta_t[name]    for every name in `names`
+
+    so those coordinates contribute nothing to the submitted update. Applied AFTER
+    partial_amplify and only to names OUTSIDE the carrying set, so it never undoes an
+    amplified carrier. Elementwise and library-agnostic, same as partial_amplify.
+
+    Returns a NEW dict (inputs unmutated), or the submission object unchanged when `names`
+    is empty/None — so callers can pass a possibly-None mask straight through. Masked
+    entries are SHARED with theta_t, not cloned; safe under the same read-only contract
+    partial_amplify relies on (nothing downstream writes into a submission in place).
+    """
+    if not names:
+        return submission
+    masked = dict(submission)
+    for name in names:
+        masked[name] = theta_t[name]
+    return masked
+
+
 def allocate_norm_budget(ranked, energy, unamplified_energy, budget, gamma_full):
     """Spend a total-L2 budget across carriers in rank order; return per-carrier gammas.
 

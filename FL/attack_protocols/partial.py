@@ -16,7 +16,8 @@ Each round, on the attacker's own partition:
   3. select the carrying set C = eligible tensors whose DENOISED per-tensor
      divergence of (theta_mal vs ben1) clears the ben2 floor — PilotB's math,
   4. persist C to AttackState, then AMPLIFY only Delta_C = theta_mal - theta_t by
-     PARTIAL_AMP_GAMMA and submit (non-carrying params are submitted as theta_mal).
+     PARTIAL_AMP_GAMMA and submit (non-carrying params are submitted as theta_mal,
+     or at theta_t under --partial-mask-noncarrying).
 
 The norm budget / relocation step (pulling the total ||Delta|| back down to a
 benign norm) is a LATER increment: with gamma > 1 this submission's total norm is
@@ -32,7 +33,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from FL.attack_protocols.base import AttackProtocol
-from FL.attack_protocols.amplify import partial_amplify, allocate_norm_budget
+from FL.attack_protocols.amplify import partial_amplify, allocate_norm_budget, mask_noncarrying
 from FL.attack_state import AttackState
 from FL.normclip_report import update_norm
 from FL.groups import build_group_map, build_eligibility
@@ -79,7 +80,7 @@ class PartialLogger:
     def write_round(self, current_round, client_id, phase, select_mode, select_param,
                     gamma, gamma_source, carrying, carrying_by_group, top_carriers,
                     norms, freeze=None, constrain=None, freeze_noncarrying=None,
-                    norm_budget=None):
+                    mask_noncarrying=None, norm_budget=None):
         target = os.path.join(self.dir, f"round_{current_round}_client_{client_id}.json")
         payload = {
             "round": current_round,
@@ -107,6 +108,10 @@ class PartialLogger:
             # Present ONLY on exploit rounds where the non-carrying gradient freeze was
             # applied (#tensors whose gradient was zeroed). None otherwise.
             "freeze_noncarrying": freeze_noncarrying,
+            # Present ONLY on exploit rounds where the submission-side non-carrying mask was
+            # applied (#tensors reset to theta_t in the submission). None otherwise. Mutually
+            # exclusive with freeze_noncarrying and constrain.
+            "mask_noncarrying": mask_noncarrying,
             # Present ONLY on exploit rounds under --partial-gamma-mode budgeted: this
             # client's budget, how the excess was rationed across carriers (which one it
             # ran out on, each carrier's applied gamma), and realized vs budget norm.
@@ -523,16 +528,18 @@ class PartialAmplificationProtocol(AttackProtocol):
     def _carrier_energies(theta_t, theta_mal, names):
         """{name: ||theta_mal_p - theta_t_p||^2} — per-tensor update ENERGY.
 
-        Energy (not norm) because it is additive across the disjoint carrier tensors, so
-        the allocator can ration it with plain subtraction and take one square root at the
-        end.
+        Energy (not norm) because it is additive across disjoint tensors, so the allocator
+        can ration it with plain subtraction and take one square root at the end. Named for
+        its main caller, but it is plain per-tensor energy over whatever `names` it is
+        given — the budget path also uses it to total the masked tensors' discarded energy.
         """
         out = {}
         for n in names:
             out[n] = float((theta_mal[n].detach().float() - theta_t[n].detach().float()).pow(2).sum())
         return out
 
-    def _resolve_budgeted_gammas(self, cid, theta_t, theta_mal, sel, carrying, gamma_full):
+    def _resolve_budgeted_gammas(self, cid, theta_t, theta_mal, sel, carrying, gamma_full,
+                                 mask_names=None):
         """Per-carrier gammas under this client's norm budget. Returns (gammas, report).
 
         The budget is B x THIS client's own frozen mean benign-anchor norm — never a
@@ -543,7 +550,10 @@ class PartialAmplificationProtocol(AttackProtocol):
         norm-clip report compares against, and what the server scores. That is consistent
         even though carriers are a subset of the eligible tensors: partial_amplify
         perturbs ONLY carrier coordinates, so every non-carrier contributes the same
-        constant to the unamplified norm and to the submitted norm.
+        constant to the unamplified norm and to the submitted norm. The non-carrying MASK
+        is the one thing that breaks that constancy — it sends its coordinates to theta_t —
+        so its energy is subtracted below, leaving the allocator's `unamplified_energy` the
+        energy of the update ACTUALLY submitted at gamma=1.
 
         Carrier ORDER is sel["ranked"] (descending selection score). `ranked` is recomputed
         from the pooled means while `carrying` is the persisted frozen set; they normally
@@ -567,12 +577,15 @@ class PartialAmplificationProtocol(AttackProtocol):
 
         energy = self._carrier_energies(theta_t, theta_mal, ordered)
         unamp_l2 = update_norm(theta_mal, theta_t)      # whole-update, matches `ref`
+        unamp_energy = unamp_l2 * unamp_l2
+        masked_energy = sum(self._carrier_energies(theta_t, theta_mal, mask_names).values()) \
+            if mask_names else 0.0
         budget = FLSettings.PARTIAL_NORM_BUDGET * ref
 
         gammas, report = allocate_norm_budget(
             ranked=[(n, 0.0) for n in ordered],
             energy=energy,
-            unamplified_energy=unamp_l2 * unamp_l2,
+            unamplified_energy=max(0.0, unamp_energy - masked_energy),
             budget=budget,
             gamma_full=gamma_full,
         )
@@ -583,6 +596,9 @@ class PartialAmplificationProtocol(AttackProtocol):
             "benign_ref": ref,
             "benign_ref_samples": len(AttackState.plastic_benign_norms.get(cid, [])),
             "carriers_not_in_ranked": appended,
+            # Energy the mask threw away, i.e. how much budget the mask freed up. 0.0 when
+            # the mask is off; report["unamplified_l2"] is already net of it.
+            "masked_energy": masked_energy,
         })
         return gammas, report
 
@@ -660,6 +676,24 @@ class PartialAmplificationProtocol(AttackProtocol):
             return None
         frozen = self._noncarrying_names(carrying, elig_list)
         return frozen or None
+
+    def _noncarrying_mask_names(self, carrying, elig_list):
+        """The names to reset to theta_t at SUBMISSION time, or None.
+
+        Same coordinate set as the freeze (`eligible \\ C`), applied to the finished
+        submission instead of to training: theta_mal is trained completely unrestricted and
+        mask_noncarrying then zeroes these tensors' pseudo-gradients. Freeze and mask put
+        the same SUPPORT on the wire while differing in ||Delta_C|| — under the freeze the
+        carriers absorb the pinned tensors' share of the task loss, under the mask they do
+        not — which is the ablation the pair exists for.
+
+        Returns None (nothing masked) when the switch is off or there are no non-carrying
+        eligible params, so callers can pass the result straight through.
+        """
+        if not FLSettings.PARTIAL_MASK_NONCARRYING:
+            return None
+        masked = self._noncarrying_names(carrying, elig_list)
+        return masked or None
 
     # ---- orchestration ----
 
@@ -740,10 +774,18 @@ class PartialAmplificationProtocol(AttackProtocol):
         AttackState.set_carrying_set(cid, carrying)
 
     def _amplify(self, cid, current_round, server_weights, theta_mal, sel, carrying,
-                 gamma, gamma_source):
+                 gamma, gamma_source, mask_names=None):
         """Build the submission: theta_t + gamma*(theta_mal - theta_t) on C only, i.e. the
         model-replacement form restricted to the carriers. Budgeted mode passes a
         PER-CARRIER gamma map instead of one flat factor.
+
+        mask_names (the exploit-phase non-carrying mask, None when off) is applied AFTER
+        amplification — it only ever touches tensors outside C, so the two never collide —
+        and is folded into the budget: masked coordinates are submitted at theta_t and so
+        contribute nothing to the submitted norm, which is why their energy is deducted
+        from the unamplified energy the allocator rations against. Budgeting against drift
+        that never leaves the client would leave most of the budget unspent, i.e. silently
+        cancel the point of pairing the mask with a budget.
 
         RAISES if budgeted mode reaches a client with no benign reference. There is no
         budget to size, so the only thing this could do is submit unamplified — an attack
@@ -754,11 +796,17 @@ class PartialAmplificationProtocol(AttackProtocol):
 
         Returns (submission, norm_budget); norm_budget is None outside budgeted mode.
         """
+        if mask_names:
+            print(f"  [partial client={cid} round={current_round}] mask: {len(mask_names)} "
+                  f"non-carrying tensor(s) reset to theta_t at submission (zero pseudo-gradient)",
+                  flush=True)
+
         if gamma_source != "budgeted":
-            return partial_amplify(server_weights, theta_mal, carrying, gamma), None
+            submission = partial_amplify(server_weights, theta_mal, carrying, gamma)
+            return mask_noncarrying(submission, server_weights, mask_names), None
 
         gamma_map, report = self._resolve_budgeted_gammas(
-            cid, server_weights, theta_mal, sel, carrying, gamma)
+            cid, server_weights, theta_mal, sel, carrying, gamma, mask_names)
         if gamma_map is None:
             raise RuntimeError(
                 f"[partial client={cid} round={current_round}] --partial-gamma-mode budgeted "
@@ -774,6 +822,7 @@ class PartialAmplificationProtocol(AttackProtocol):
             )
 
         submission = partial_amplify(server_weights, theta_mal, carrying, gamma_map)
+        submission = mask_noncarrying(submission, server_weights, mask_names)
         self._print_budget(cid, current_round, report)
         return submission, report
 
@@ -846,10 +895,14 @@ class PartialAmplificationProtocol(AttackProtocol):
         gamma, gamma_source = self._resolve_gamma(client_config, in_plastic, in_exploit)
 
         # ---- 3. publish cross-round state, then build the submission ----
+        # The mask edits the SUBMISSION only, so unlike freeze_names it is resolved here
+        # (after training) and never reaches _run_trajectory.
+        mask_names = self._noncarrying_mask_names(carrying, sel["elig_list"]) if in_exploit else None
         self._stash_round_state(cid, carrying, benign_norms, phase, in_exploit)
         self._print_selection(cid, current_round, carrying, sel["ranked"], gamma, phase)
         submission, norm_budget = self._amplify(
-            cid, current_round, server_weights, theta_mal, sel, carrying, gamma, gamma_source)
+            cid, current_round, server_weights, theta_mal, sel, carrying, gamma, gamma_source,
+            mask_names)
 
         # ---- 4. per-round log blocks; each stays None unless its feature ran ----
         freeze = self._freeze_block(sel, current_round) if froze_this_round else None
@@ -858,6 +911,7 @@ class PartialAmplificationProtocol(AttackProtocol):
             "constrained_tensors": len(sel["elig_list"]) - len(carrying),
         }
         freeze_noncarrying = None if freeze_names is None else {"frozen_tensors": len(freeze_names)}
+        mask_noncarrying_block = None if mask_names is None else {"masked_tensors": len(mask_names)}
 
         norms = self._norm_diagnostics(server_weights, theta_mal, submission, carrying,
                                        sel["elig_list"])
@@ -879,7 +933,8 @@ class PartialAmplificationProtocol(AttackProtocol):
             carrying_by_group=self._carrying_by_group(carrying, sel["tensor_to_group"]),
             top_carriers=[[n, float(s)] for n, s in sel["ranked"][:10]],
             norms=norms, freeze=freeze, constrain=constrain,
-            freeze_noncarrying=freeze_noncarrying, norm_budget=norm_budget,
+            freeze_noncarrying=freeze_noncarrying, mask_noncarrying=mask_noncarrying_block,
+            norm_budget=norm_budget,
         )
 
         metrics = {
@@ -893,6 +948,7 @@ class PartialAmplificationProtocol(AttackProtocol):
             "gamma_source": gamma_source,
             "constrain_lambda": FLSettings.PARTIAL_CONSTRAIN_LAMBDA if constrain_fn is not None else 0.0,
             "freeze_noncarrying": freeze_names is not None,
+            "mask_noncarrying": mask_names is not None,
             "norm_budget_l2": (norm_budget or {}).get("budget_l2"),
             "norm_budget_realized_l2": (norm_budget or {}).get("realized_l2"),
             "partial_log": log_path,
@@ -924,8 +980,8 @@ class PartialAmplificationProtocol(AttackProtocol):
                 f"unamplified ||Delta||={rep['unamplified_l2']:.4g} already "
                 f"{over:.2f}x the budget {rep['budget_l2']:.4g} "
                 f"(B={rep['B']:g} x benign_ref={rep['benign_ref']:.4g}) -> no amplification. "
-                f"Lower the update with --partial-constrain / --partial-freeze-noncarrying, "
-                f"or raise --partial-norm-budget.",
+                f"Lower the update with --partial-constrain / --partial-freeze-noncarrying "
+                f"/ --partial-mask-noncarrying, or raise --partial-norm-budget.",
                 flush=True,
             )
             return
@@ -970,15 +1026,19 @@ class PartialAmplificationProtocol(AttackProtocol):
         dC_pre = l2(theta_mal, theta_t, carrying_list)       # ||Delta_C|| pre-amplification
         d_pre = l2(theta_mal, theta_t, elig_list)            # unamplified total (== theta_mal update)
         d_post = l2(submission, theta_t, elig_list)          # submitted total (post-amplification)
-        # Non-carrying drift from theta_t. partial_amplify only touches C, so this is
-        # identical in theta_mal and submission — it is exactly what the constrain
+        # Non-carrying drift from theta_t, measured on BOTH sides. partial_amplify leaves it
+        # alone, but the submission-side mask sends it to exactly 0 — so pre and post differ
+        # whenever --partial-mask-noncarrying is on, and taking one for the other would put
+        # the energy percentages on inconsistent totals. It is also what the constrain
         # penalty drives toward 0 (smaller => the update hides better under L2 / Krum).
+        d_nonC_pre = l2(theta_mal, theta_t, noncarrying_list)
         d_nonC = l2(submission, theta_t, noncarrying_list)
 
         # Energy split (%). Energy = L2^2, so the carrying/non-carrying energies add up to
-        # the total (carrying_list and noncarrying_list partition elig_list). Amplification
-        # scales ONLY the carrying energy; the non-carrying energy is unchanged, so pre vs
-        # post shows exactly how amplification shifted the update's mass into C.
+        # the total on each side (carrying_list and noncarrying_list partition elig_list),
+        # giving tot_pre == d_pre^2 and tot_post == d_post^2. Pre vs post is then the direct
+        # read on how much amplification (and, under the mask, discarding) shifted the
+        # update's mass into C.
         #
         # The post-amplification carrying norm is MEASURED off the submission rather than
         # derived as gamma*dC_pre. Those agree under a single scalar gamma, but budgeted
@@ -986,9 +1046,10 @@ class PartialAmplificationProtocol(AttackProtocol):
         # measuring keeps this correct for all three gamma modes.
         dC_post = l2(submission, theta_t, carrying_list)
         e_carry_pre = dC_pre ** 2
-        e_nonc = d_nonC ** 2                                  # unchanged by amplification
+        e_nonc_pre = d_nonC_pre ** 2
+        e_nonc = d_nonC ** 2                                  # == e_nonc_pre unless masked
         e_carry_post = dC_post ** 2
-        tot_pre = e_carry_pre + e_nonc                        # == d_pre^2
+        tot_pre = e_carry_pre + e_nonc_pre                    # == d_pre^2
         tot_post = e_carry_post + e_nonc                      # == d_post^2
         def pct(part, tot):
             return (100.0 * part / tot) if tot > 0 else float("nan")
@@ -1003,7 +1064,8 @@ class PartialAmplificationProtocol(AttackProtocol):
             "delta_carrying_l2_post": dC_post,               # measured, not gamma*dC_pre
             "delta_total_l2_unamplified": d_pre,
             "delta_total_l2_submitted": d_post,
-            "delta_noncarrying_l2_submitted": d_nonC,        # constrain target (-> 0)
+            "delta_noncarrying_l2_pre": d_nonC_pre,          # theta_mal's own drift off C
+            "delta_noncarrying_l2_submitted": d_nonC,        # constrain target (-> 0; exactly 0 when masked)
             "norm_inflation_ratio": (d_post / d_pre) if d_pre > 0 else float("nan"),
             # Carrying set size vs the whole model.
             "carrying_params": carrying_params,
@@ -1012,7 +1074,7 @@ class PartialAmplificationProtocol(AttackProtocol):
             # Energy split before vs after amplification, side by side.
             "energy_pct": {
                 "carrying_pre": pct(e_carry_pre, tot_pre),
-                "noncarrying_pre": pct(e_nonc, tot_pre),
+                "noncarrying_pre": pct(e_nonc_pre, tot_pre),
                 "carrying_post": pct(e_carry_post, tot_post),
                 "noncarrying_post": pct(e_nonc, tot_post),
             },
