@@ -121,6 +121,28 @@ class CustomCocoDataset(Dataset):
                     break
         return frozenset(hits)
 
+    def get_partition_labels(self, rule, seed, p_majority=0.7):
+        """One proxy class per image, for LABEL-SKEW partitioning only — never training.
+
+        Returns (labels, bucket_names): labels[i] is the dense bucket of self.img_ids[i],
+        and bucket_names indexes that same axis (the categories, then '_background').
+        Delegates the actual rule to utils.noniid.image_label, which is the single place
+        the proxy is defined; see that function for the available rules.
+        """
+        from utils.noniid import build_image_labels, bucket_names  # torch-free module
+        labels, class_index = build_image_labels(
+            self.img_ids, self.img_ann_map, self.cat_map.keys(), rule, seed, p_majority)
+        return labels, bucket_names(self.cat_map, class_index)
+
+    def get_target_class_bucket(self, bucket_names_list):
+        """Dense bucket index of BackdoorProperties.TARGET_CLASS, or None when the target
+        is unknown or the attack is global (in which case a target quota is meaningless —
+        same condition get_target_image_indices() uses)."""
+        if BackdoorProperties.ATTACK_TYPE in GLOBAL_ATTACK_TYPES:
+            return None
+        name = BackdoorProperties.TARGET_CLASS
+        return bucket_names_list.index(name) if name in bucket_names_list else None
+
     # Torch probeert batch resultaten naar 1 tensor te stacken maar
     # dit gaat niet door varierende dimensie van boxen per image
     # Nice for only inferencing

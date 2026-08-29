@@ -280,6 +280,30 @@ class FLSettings:
     ATTACKER_TARGET_MIN_COUNT = 0
     BENIGN_TARGET_FLOOR = 0
 
+    # ---- Non-IID partitioning (label skew at EQUAL partition size) ----
+    # 'iid' (default) is the historical seeded shuffle + array_split — unchanged.
+    # 'dirichlet' gives every client the SAME number of images but draws each client's
+    # class composition as q_j ~ Dir(DIRICHLET_ALPHA * K * marginal) — the dataset's own
+    # class marginal as the base measure, so E[q_j] = marginal and large alpha is genuine
+    # IID rather than "every client wants an equal share of every class". Holding
+    # |partition| fixed is
+    # deliberate: FedAvg weights by num_samples, so quantity skew would change the
+    # model-replacement factor away from gamma = k/(eta*m) and would make ||Delta|| (and
+    # therefore the norm-clip median and any calibrated norm budget) scale with the draw.
+    # Equal sizes leave only ANGULAR heterogeneity, which is the axis under study.
+    # Small alpha = strongly skewed, large alpha -> IID. See utils/noniid.py.
+    #
+    # Attacker partitions share ONE composition vector and are allocated first, so their
+    # label compositions are identical by construction — which is what keeps the plastic
+    # phase's pooling of div/b across attackers valid once partitions stop being
+    # exchangeable. The target-class floor reuses ATTACKER_TARGET_MIN_* above.
+    # MUTUALLY EXCLUSIVE with GUARANTEE_TARGET_OBJECTS, whose post-hoc index swaps would
+    # scramble exactly that matching.
+    PARTITION_MODE = "iid"            # 'iid' | 'dirichlet'
+    DIRICHLET_ALPHA = 0.5             # concentration; 0.1 / 0.5 / 5.0 is a reasonable sweep
+    DIRICHLET_LABEL_RULE = "max_area"  # image -> single proxy class; see noniid.image_label
+    DIRICHLET_LABEL_P = 0.7           # 'stochastic_majority' only: P(take the majority)
+
     # Observational norm-clip report (Partial protocol). OBSERVATIONAL only: for each
     # malicious update, records whether its L2 norm exceeds x * (benign-trajectory norm)
     # or x * (median submitted norm), across a sweep of x, into a top-level

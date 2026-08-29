@@ -6,7 +6,7 @@ from torch.utils.data import DataLoader
 from models.fasterrcnn.wrapper import FasterRCNNWrapper
 from utils.dataset import CustomCocoDataset
 from utils.global_settings import ProjectPaths, BackdoorProperties, FLSettings, TrainingSettings
-from utils.partitioning import partition_dataset, get_shuffled_indices, set_global_seed
+from utils.partitioning import partition_dataset, build_iid_partitions, set_global_seed
 
 CACHE_BUILD = False
 DEVICE = None
@@ -42,10 +42,13 @@ def build_partitions_once():
     
     NUM_CLASSES = clean_ds.get_total_classes_count() + 1
     
-    # Shuffle dataset indices and create 2 subsets, this way both are shuffled the same way and clients get the same data whether malicious or not
-    shuffled_indices = get_shuffled_indices(dataset_size=clean_ds.__len__())
-    SUBSETS_CLEAN = partition_dataset(clean_ds, FLSettings.TOTAL_CLIENTS, indices=shuffled_indices)
-    SUBSETS_POISON = partition_dataset(poison_ds, FLSettings.TOTAL_CLIENTS, indices=shuffled_indices)
+    # Shuffle dataset indices and create 2 subsets, this way both are shuffled the same way and clients get the same data whether malicious or not.
+    # Legacy flwr path: always IID — --partition-mode dirichlet is wired into the custom
+    # server/client loop (FL/custom_client.py) only.
+    client_indices = build_iid_partitions(clean_ds.__len__(), FLSettings.TOTAL_CLIENTS,
+                                          clean_ds.get_target_image_indices())
+    SUBSETS_CLEAN = partition_dataset(clean_ds, client_indices)
+    SUBSETS_POISON = partition_dataset(poison_ds, client_indices)
 
     CACHE_BUILD = True
 

@@ -1,10 +1,13 @@
 import math
 import numpy as np
-import torch
 import random
-from torch.utils.data import Subset
 
 from utils.global_settings import FLSettings
+
+# torch is imported lazily, inside the two functions that need it, so that building an
+# index partition does NOT drag torch in — the same reason FL/normclip_report.py splits
+# its torch half off. It keeps the IID/non-IID partitioners reachable from the torch-free
+# smoketests, which is where their equivalence is checked.
 
 def get_shuffled_indices(dataset_size):
     indices = list(range(dataset_size))
@@ -146,18 +149,42 @@ def get_shuffled_indices_with_target_quota(
 
     return indices
 
-def partition_dataset(dataset, n_clients, indices):
+def build_iid_partitions(dataset_size, n_clients, target_image_indices=None):
+    """The IID partition as an explicit per-client index list.
+
+    Same two code paths as before — the plain seeded shuffle, or the target-quota
+    rebalanced one — followed by the np.array_split this module has always used. Only the
+    RETURN SHAPE is new: a list of per-client index lists rather than one flat permutation,
+    because Dirichlet label-skew partitions are not slices of a permutation. The IID result
+    is bit-identical to the old flat-permutation path (asserted in smoketest_noniid).
     """
-    Partitions the dataset over n_clients when shuffled according to indices, returns a list of data subsets
+    if not FLSettings.GUARANTEE_TARGET_OBJECTS:
+        indices = get_shuffled_indices(dataset_size)
+    else:
+        indices = get_shuffled_indices_with_target_quota(
+            dataset_size=dataset_size,
+            n_clients=n_clients,
+            attacker_ids=FLSettings.ATTACKER_IDS,
+            target_image_indices=target_image_indices or frozenset(),
+            min_target_fraction=FLSettings.ATTACKER_TARGET_MIN_FRACTION,
+            min_target_count=FLSettings.ATTACKER_TARGET_MIN_COUNT,
+            benign_target_floor=FLSettings.BENIGN_TARGET_FLOOR,
+        )
+    return [chunk.tolist() for chunk in np.array_split(np.asarray(indices), n_clients)]
+
+def partition_dataset(dataset, client_indices):
     """
-    # Split according to 'indices'
-    partitions = np.array_split(indices, n_clients)
-    return [Subset(dataset, part) for part in partitions]
+    Wraps each client's index list as a torch Subset. Sizes may differ between clients
+    in principle; both partitioners here produce equal (IID: +/-1) sizes.
+    """
+    from torch.utils.data import Subset
+    return [Subset(dataset, part) for part in client_indices]
 
 def set_global_seed(seed):
     """
     Give the ability to seed all the randomness relevant to this FL training
     """
+    import torch
     # Seed the python random module, used for paritioning
     random.seed(seed)
 
@@ -168,6 +195,7 @@ def set_global_seed(seed):
     np.random.seed(seed)
 
 def unset_global_seed():
+    import torch
     random.seed()
     torch.seed()
     np.random.seed()

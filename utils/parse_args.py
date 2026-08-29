@@ -2,6 +2,7 @@ import argparse
 import re
 from collections import defaultdict
 
+from utils.noniid import LABEL_RULES
 from utils.select_clients import plastic_phase_attacker_coverage
 from utils.global_settings import BackdoorProperties, FLSettings, TrainingSettings, TriggerType, AttackType, FloatingTriggerPos, EvaluationSettings, ANSIColor, ProjectPaths
 from utils.bbox_transform import BoxTransformMode
@@ -112,6 +113,13 @@ def parse_args():
     atk_group.add_argument("--attacker-target-min-fraction", type=float, default=FLSettings.ATTACKER_TARGET_MIN_FRACTION, help="Minimum fraction of each attacker partition that must contain the target class.")
     atk_group.add_argument("--attacker-target-min-count", type=int, default=FLSettings.ATTACKER_TARGET_MIN_COUNT, help="Absolute floor on target-class images per attacker partition. Effective quota is max(fraction × |partition|, count).")
     atk_group.add_argument("--benign-target-floor", type=int, default=FLSettings.BENIGN_TARGET_FLOOR, help="Minimum number of target-class images each benign partition is allowed to retain when donating to attackers.")
+
+    # Non-IID partitioning (label skew at equal partition size)
+    part_group = parser.add_argument_group('Data Partitioning')
+    part_group.add_argument("--partition-mode", type=str, default=FLSettings.PARTITION_MODE, choices=["iid", "dirichlet"], help="How the training set is split across clients. 'iid' (default) is the seeded shuffle + equal chunks, unchanged. 'dirichlet' gives every client the SAME number of images but draws each client's CLASS COMPOSITION as Dir(--dirichlet-alpha * K * class-marginal), i.e. label skew without quantity skew — so gamma = k/(eta*m) stays exact and update norms stay comparable across clients. MUTUALLY EXCLUSIVE with --guarantee-target-objects.")
+    part_group.add_argument("--dirichlet-alpha", type=float, default=FLSettings.DIRICHLET_ALPHA, help="Dirichlet concentration for --partition-mode dirichlet. The base measure is the dataset's own class marginal, so E[composition] = marginal at every alpha: small = strongly skewed around it, large -> genuine IID. 0.1 / 0.5 / 5.0 is a reasonable sweep; LaySelFL uses 0.9.")
+    part_group.add_argument("--dirichlet-label-rule", type=str, default=FLSettings.DIRICHLET_LABEL_RULE, choices=list(LABEL_RULES), help="Proxy that files each multi-object image under ONE class for partitioning (never used for training). 'max_area': per-class summed annotation area, argmax (default). 'count_majority': most instances. 'first': first-listed annotation, an arbitrary-but-deterministic control. 'stochastic_majority': max_area with probability --dirichlet-label-p, else a uniform draw over the classes present.")
+    part_group.add_argument("--dirichlet-label-p", type=float, default=FLSettings.DIRICHLET_LABEL_P, help="P(take the majority class) for --dirichlet-label-rule stochastic_majority. Ignored by the other rules.")
 
     # Detectability Harness (passive; observational only, does not alter aggregation)
     det_group = parser.add_argument_group('Detectability Harness (passive)')
@@ -246,6 +254,32 @@ def apply_settings(args):
     FLSettings.ATTACKER_TARGET_MIN_FRACTION = args.attacker_target_min_fraction
     FLSettings.ATTACKER_TARGET_MIN_COUNT = args.attacker_target_min_count
     FLSettings.BENIGN_TARGET_FLOOR = args.benign_target_floor
+
+    FLSettings.PARTITION_MODE = args.partition_mode
+    FLSettings.DIRICHLET_ALPHA = args.dirichlet_alpha
+    FLSettings.DIRICHLET_LABEL_RULE = args.dirichlet_label_rule
+    FLSettings.DIRICHLET_LABEL_P = args.dirichlet_label_p
+    if FLSettings.PARTITION_MODE == "dirichlet":
+        if FLSettings.DIRICHLET_ALPHA <= 0:
+            raise ValueError(
+                f"--dirichlet-alpha must be > 0 (got {FLSettings.DIRICHLET_ALPHA}); it is a "
+                "Dirichlet concentration, and alpha -> infinity is the IID limit."
+            )
+        # The quota rebalancer swaps individual indices between partitions AFTER the split.
+        # Under label skew that would scramble the one property the attacker allocation is
+        # built to guarantee — that every attacker holds an IDENTICAL label composition,
+        # which is what keeps the plastic phase's pooled div/b valid. The Dirichlet
+        # allocator enforces the same target-class floor natively, from ATTACKER_TARGET_MIN_*,
+        # so nothing is lost by refusing the combination.
+        if FLSettings.GUARANTEE_TARGET_OBJECTS:
+            raise ValueError(
+                "--partition-mode dirichlet and --guarantee-target-objects are mutually "
+                "exclusive: the quota rebalancer swaps indices between partitions after the "
+                "split, which would break the identical-composition guarantee across "
+                "attackers that the label-skew allocator provides. Drop "
+                "--guarantee-target-objects — --attacker-target-min-fraction / "
+                "--attacker-target-min-count still apply, enforced during allocation."
+            )
 
     # Detectability harness (passive)
     FLSettings.DO_STEALTH_EVAL = args.do_stealth_eval
@@ -444,6 +478,21 @@ def build_config_sections():
     if FLSettings.NEUROTOXIN_ENABLED:
         attacker.append(("NEUROTOXIN_MASK_RATIO", FLSettings.NEUROTOXIN_MASK_RATIO))
     sections.append(("Attacker", attacker))
+
+    partitioning = [("PARTITION_MODE", FLSettings.PARTITION_MODE
+                     + ("" if FLSettings.PARTITION_MODE == "dirichlet" else "  (equal chunks of a seeded shuffle)")),
+                    ("PARTITIONING_SEED", FLSettings.PARTITIONING_SEED)]
+    if FLSettings.PARTITION_MODE == "dirichlet":
+        partitioning.append(("DIRICHLET_ALPHA",
+                             f"{FLSettings.DIRICHLET_ALPHA}  (label skew only; partition sizes equal)"))
+        partitioning.append(("DIRICHLET_LABEL_RULE", FLSettings.DIRICHLET_LABEL_RULE))
+        if FLSettings.DIRICHLET_LABEL_RULE == "stochastic_majority":
+            partitioning.append(("DIRICHLET_LABEL_P", FLSettings.DIRICHLET_LABEL_P))
+        quota = max(FLSettings.ATTACKER_TARGET_MIN_COUNT, 0)
+        partitioning.append(("attacker target floor",
+                             f"max({FLSettings.ATTACKER_TARGET_MIN_FRACTION} x |partition|, {quota}) "
+                             f"images labelled '{BackdoorProperties.TARGET_CLASS}'"))
+    sections.append(("Partitioning", partitioning))
 
     if is_partial:
         partial = [("PARTIAL_SELECT_MODE", FLSettings.PARTIAL_SELECT_MODE)]
