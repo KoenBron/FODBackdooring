@@ -265,20 +265,21 @@ def apply_settings(args):
                 f"--dirichlet-alpha must be > 0 (got {FLSettings.DIRICHLET_ALPHA}); it is a "
                 "Dirichlet concentration, and alpha -> infinity is the IID limit."
             )
-        # The quota rebalancer swaps individual indices between partitions AFTER the split.
-        # Under label skew that would scramble the one property the attacker allocation is
-        # built to guarantee — that every attacker holds an IDENTICAL label composition,
-        # which is what keeps the plastic phase's pooled div/b valid. The Dirichlet
-        # allocator enforces the same target-class floor natively, from ATTACKER_TARGET_MIN_*,
-        # so nothing is lost by refusing the combination.
+        # --guarantee-target-objects is ONE flag with TWO implementations, and under
+        # dirichlet it selects the allocator's native floor rather than the IID path's
+        # post-hoc index swaps (which would scramble the identical-composition guarantee
+        # across attackers that the plastic phase's pooled div/b relies on). Semantics are
+        # the same either way: at least max(fraction x |partition|, count) target-class
+        # images per attacker. It is NOT auto-enabled under dirichlet — a 60% floor applied
+        # to one arm and not the other pins the target class at every alpha and makes the
+        # IID/non-IID comparison measure the quota instead of the skew.
         if FLSettings.GUARANTEE_TARGET_OBJECTS:
-            raise ValueError(
-                "--partition-mode dirichlet and --guarantee-target-objects are mutually "
-                "exclusive: the quota rebalancer swaps indices between partitions after the "
-                "split, which would break the identical-composition guarantee across "
-                "attackers that the label-skew allocator provides. Drop "
-                "--guarantee-target-objects — --attacker-target-min-fraction / "
-                "--attacker-target-min-count still apply, enforced during allocation."
+            print(
+                f"{ANSIColor.YELLOW}[WARNING]{ANSIColor.RESET} --guarantee-target-objects "
+                "with --partition-mode dirichlet: the floor is enforced INSIDE the "
+                "allocator (no post-hoc index swaps). It applies at every alpha, so an IID "
+                "baseline must set the same quota or the two arms differ by more than the "
+                "label skew."
             )
 
     # Detectability harness (passive)
@@ -490,8 +491,12 @@ def build_config_sections():
             partitioning.append(("DIRICHLET_LABEL_P", FLSettings.DIRICHLET_LABEL_P))
         quota = max(FLSettings.ATTACKER_TARGET_MIN_COUNT, 0)
         partitioning.append(("attacker target floor",
-                             f"max({FLSettings.ATTACKER_TARGET_MIN_FRACTION} x |partition|, {quota}) "
-                             f"images labelled '{BackdoorProperties.TARGET_CLASS}'"))
+                             (f"max({FLSettings.ATTACKER_TARGET_MIN_FRACTION} x |partition|, "
+                              f"{quota}) images labelled '{BackdoorProperties.TARGET_CLASS}'"
+                              "  (enforced in-allocator)")
+                             if FLSettings.GUARANTEE_TARGET_OBJECTS else
+                             "OFF — target class drawn like any other "
+                             "(--guarantee-target-objects enables it)"))
     sections.append(("Partitioning", partitioning))
 
     if is_partial:

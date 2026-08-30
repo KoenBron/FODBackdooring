@@ -185,7 +185,10 @@ def gamma_error_ratios(sizes, attacker_ids, clients_per_round, seed, trials=400)
     rng = _rng(seed, 4)
     n_clients = len(sizes)
     attackers = set(attacker_ids)
-    if not attackers or clients_per_round <= 0:
+    if not attackers or clients_per_round <= 1:
+        # k=1 makes every ratio exactly 1.0 (the single participant is the whole sample),
+        # which reads as "unequal sizes are harmless". Return nothing so the caller can say
+        # the measurement was not made rather than print a meaningless 1.00.
         return []
     ratios = []
     for _ in range(trials):
@@ -216,9 +219,15 @@ def main():
     ap.add_argument("--target-min-fraction", type=float,
                     default=FLSettings.ATTACKER_TARGET_MIN_FRACTION)
     ap.add_argument("--target-min-count", type=int, default=FLSettings.ATTACKER_TARGET_MIN_COUNT)
-    ap.add_argument("--clients-per-round", type=int, default=FLSettings.CLIENTS_PER_ROUND,
+    # NOT FLSettings.CLIENTS_PER_ROUND: this script never calls apply_settings, so that
+    # attribute still holds the module default of 1 — and at k=1 the gamma ratio is
+    # identically 1.0 by algebra (w_assumed = 1/1 = w_true), so the section printed
+    # "0% of attack rounds off by >1.5x" regardless of how unequal the sizes were, i.e.
+    # the exact opposite of the argument it exists to make.
+    ap.add_argument("--clients-per-round", type=int, default=9,
                     help="participants per round; only used to simulate the model-replacement "
-                         "gamma error in the plain-Dirichlet comparison section.")
+                         "gamma error in the plain-Dirichlet comparison section. Must be > 1 "
+                         "for that number to mean anything.")
     ap.add_argument("--plain-trials", type=int, default=20,
                     help="partition draws averaged over in the plain-Dirichlet comparison. "
                          "A single draw's gamma error and E[q] bias are dominated by whether "
@@ -258,6 +267,7 @@ def main():
               f"{sum(1 for k in labels if k == target_idx)} images (rule={args.rule})")
 
     K = len(names)
+    S_IID = len(labels) // args.clients
     vecs = object_vectors(img_ids, img_ann_map, class_index, K)
     proxy_marginal = global_marginal(labels, K)
     obj_total = [sum(v[k] for v in vecs) for k in range(K)]
@@ -280,21 +290,89 @@ def main():
                                 contains_target=contains_target)
         print_composition_table(rows, names)
         drift = [r["drift_tv"] for r in rows]
+        # The attackers' single shared draw, printed because the ENTIRE attack
+        # configuration rests on it: one Dirichlet sample, no averaging or rejection, so a
+        # different partitioning seed is a different experiment. Recorded here so a run can
+        # be identified by what its attackers actually held.
+        if attackers:
+            q_att = requested[attackers[0]]
+            top = sorted(range(K), key=lambda k: -q_att[k])[:5]
+            print("  attacker shared draw q_att (one sample; the whole attack rests on it): "
+                  + ", ".join(f"{names[k]}={q_att[k]:.3f}" for k in top if q_att[k] > 0.005))
         # Heterogeneity against the DATASET marginal, at both levels. drift_tv above is a
         # different quantity (requested vs realised), so the two are printed apart.
         p_tv = [total_variation(class_counts(p, labels, K), proxy_marginal) for p in client_indices]
         o_tv = [total_variation(sum_vectors(p, vecs, K), obj_marginal) for p in client_indices]
         skew_summary[alpha] = (sum(p_tv) / len(p_tv), sum(o_tv) / len(o_tv))
+        # Split by role. Attackers draw from FULL pools and get their request almost
+        # exactly; benign clients are dealt afterwards and absorb ALL of the supply error.
+        # A single pooled mean hides that asymmetry, and the asymmetry matters: it widens
+        # the benign cone by more than the intended skew while leaving attacker updates on
+        # a cleaner draw, which is precisely the contrast the stealth metrics measure.
+        d_att = [r["drift_tv"] for r in rows if r["role"] == "attacker"]
+        d_ben = [r["drift_tv"] for r in rows if r["role"] == "benign"]
         print(f"  drift_tv (requested vs realised): mean={sum(drift) / len(drift):.3f} "
               f"max={max(drift):.3f}   (0 = the requested skew was realised exactly)")
+        if d_att and d_ben:
+            print(f"    by role: attacker mean={sum(d_att) / len(d_att):.3f}  "
+                  f"benign mean={sum(d_ben) / len(d_ben):.3f} "
+                  f"(max={max(d_ben):.3f})   <- benign absorb the supply error")
+
+        # ATTACKER TARGET SUPPLY vs the IID expectation. Without the quota there is no
+        # floor at all -- the attacker's target-class holding is whatever its single
+        # Dirichlet draw plus class CO-OCCURRENCE happens to deliver, and on VOC that
+        # varies ~5x across seeds at alpha=0.1. Target supply is the most direct driver of
+        # backdoor strength there is, so an ASR gap between two alphas can easily be a
+        # supply gap instead. Printed against the IID expectation, with a warning, so the
+        # seed can be screened BEFORE a 40-hour run rather than diagnosed after it.
+        if contains_target and attackers:
+            expected = S_IID * len(contains_target) / len(labels)
+            att_rows = [r for r in rows if r["role"] == "attacker"]
+            got = sum(r["contains_target"] for r in att_rows) / len(att_rows)
+            ben_have = [r["contains_target"] for r in rows if r["role"] == "benign"]
+            pct = 100.0 * got / expected if expected else float("nan")
+            flag = "" if 85.0 <= pct <= 115.0 else "   <-- OFF THE IID EXPECTATION"
+            print(f"  attacker target supply: {got:.0f} images containing "
+                  f"'{args.target_class}' vs {expected:.0f} expected under IID "
+                  f"({pct:.0f}%){flag}")
+            print(f"    benign min={min(ben_have)} max={max(ben_have)}; no floor is "
+                  f"enforced — this is the draw plus class co-occurrence")
+            if not 85.0 <= pct <= 115.0:
+                print(f"    {'':4}Screen --seed, or hold supply fixed across conditions; "
+                      f"otherwise alpha and target supply move together.")
         print(f"  heterogeneity vs dataset marginal: proxy-level={skew_summary[alpha][0]:.3f}  "
               f"object-level={skew_summary[alpha][1]:.3f}   "
               f"(object-level is what the detector's loss sees)")
 
-    # ---- IID baseline for comparison ----
+    # ---- IID baseline: the NOISE FLOOR every TV above must be read against ----
+    # "~0 by construction" is not good enough to calibrate alpha. An IID split of S images
+    # still lands off the marginal by pure multinomial sampling noise, and on a 20-class
+    # detection set that floor is a few percent — so an object-level TV of 0.16 is 3x the
+    # floor, not "nearly IID". Measured, not asserted: real permutations, same S.
     marginal = global_marginal(labels, K)
-    print(f"\n{'=' * 78}\n[iid baseline] drift of an IID split against the global marginal "
-          f"is ~0 by construction; largest class share = {max(marginal):.3f}")
+    iid_seeds = 5
+    p_floor, o_floor = [], []
+    _r = _rng(args.seed, 5)
+    for _ in range(iid_seeds):
+        perm = _r.permutation(len(labels)).tolist()
+        for j in range(args.clients):
+            part = perm[j * S_IID:(j + 1) * S_IID]
+            p_floor.append(total_variation(class_counts(part, labels, K), proxy_marginal))
+            o_floor.append(total_variation(sum_vectors(part, vecs, K), obj_marginal))
+    p_floor = sum(p_floor) / len(p_floor)
+    o_floor = sum(o_floor) / len(o_floor)
+    print(f"\n{'=' * 78}\n[iid baseline] largest class share = {max(marginal):.3f}")
+    print(f"  SAMPLING-NOISE FLOOR of a true IID split ({iid_seeds} permutations, "
+          f"{S_IID} images each):")
+    print(f"    proxy-level TV = {p_floor:.3f}    object-level TV = {o_floor:.3f}")
+    print(f"  Every TV printed above sits on top of this; divide by it to read how much "
+          f"skew is real.")
+    if skew_summary:
+        print(f"  {'alpha':>7} {'proxy TV':>9} {'x floor':>8} {'object TV':>10} {'x floor':>8}")
+        for a in sorted(skew_summary):
+            pv, ov = skew_summary[a]
+            print(f"  {a:>7} {pv:>9.3f} {pv / p_floor:>7.1f}x {ov:>10.3f} "
+                  f"{ov / o_floor:>7.1f}x")
 
     # ---- the textbook scheme, reported for comparison only ----
     print(f"\n{'=' * 78}")
@@ -363,10 +441,14 @@ def main():
             pick = lambda f: ratios[min(len(ratios) - 1, int(f * len(ratios)))]
             off = sum(1 for r in ratios if r > 1.5 or r < 1 / 1.5) / len(ratios)
             print(f"    gamma error       median {pick(0.5):.2f}  IQR [{pick(0.25):.2f}, "
-                  f"{pick(0.75):.2f}]  {off:.0%} of attack rounds off by >1.5x")
+                  f"{pick(0.75):.2f}]  {off:.0%} of attack rounds off by >1.5x "
+                  f"(k={args.clients_per_round})")
             print(f"                      (gamma = k/(eta*m) is what an attacker who cannot see")
             print(f"                       other clients' sizes computes; this is the factor it")
             print(f"                       is wrong by. Equal sizes make it exact.)")
+        else:
+            print(f"    gamma error       not measured (needs --clients-per-round > 1 and "
+                  f"at least one attacker)")
 
 
 if __name__ == "__main__":

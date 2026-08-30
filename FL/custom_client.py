@@ -60,6 +60,15 @@ class ClientManager:
         target_bucket = ds_benign.get_target_class_bucket(names)
 
         if FLSettings.PARTITION_MODE == "dirichlet":
+            # The attacker target-class quota is GATED on GUARANTEE_TARGET_OBJECTS, exactly
+            # as it is on the IID path (build_iid_partitions takes the plain shuffle when
+            # the switch is off). Applying it unconditionally here made every Dirichlet run
+            # carry a 60% target-class floor the IID baseline did not have, which pins the
+            # target class at EVERY alpha — attackers held 497/827 person images and benign
+            # 110 whether alpha was 0.1 or 100, so alpha -> infinity was no longer the IID
+            # limit and the two arms differed by more than the skew under study.
+            # Off (the default) the allocator draws the target class like any other.
+            quota_on = FLSettings.GUARANTEE_TARGET_OBJECTS
             client_indices, requested = allocate_label_skew(
                 labels=labels,
                 n_buckets=len(names),
@@ -67,9 +76,10 @@ class ClientManager:
                 attacker_ids=FLSettings.ATTACKER_IDS,
                 alpha=FLSettings.DIRICHLET_ALPHA,
                 seed=FLSettings.PARTITIONING_SEED,
-                target_idx=target_bucket,
-                target_min_count=FLSettings.ATTACKER_TARGET_MIN_COUNT,
-                target_min_fraction=FLSettings.ATTACKER_TARGET_MIN_FRACTION,
+                target_idx=target_bucket if quota_on else None,
+                target_min_count=FLSettings.ATTACKER_TARGET_MIN_COUNT if quota_on else 0,
+                target_min_fraction=(FLSettings.ATTACKER_TARGET_MIN_FRACTION
+                                     if quota_on else 0.0),
             )
         else:
             client_indices = build_iid_partitions(
