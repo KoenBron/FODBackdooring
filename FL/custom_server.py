@@ -2,6 +2,7 @@ from FL.strategies.fedavg import FedAvg
 from FL.strategies.fedopt import FedOpt
 from FL.strategies.multikrum import MultiKrum
 from FL.strategies.foolsgold import FoolsGold
+from FL.strategies.normclip import NormClip
 from models.fasterrcnn.wrapper import FasterRCNNWrapper
 from utils.global_settings import ProjectPaths, BackdoorProperties, TrainingSettings, FLSettings
 from utils.dataset import CustomCocoDataset
@@ -230,8 +231,13 @@ class Server:
                                  kappa=FLSettings.FOOLSGOLD_KAPPA,
                                  feature_group=FLSettings.FOOLSGOLD_FEATURE_GROUP,
                                  normalise=FLSettings.FOOLSGOLD_NORMALISE)
+            case "normclip":
+                return NormClip(model_state_dict=self.wrapper.get_weights(),
+                                c=FLSettings.NORMCLIP_AGG_C,
+                                noise_sigma=FLSettings.NORMCLIP_NOISE_SIGMA,
+                                seed=FLSettings.SEED)
             case _:
-                raise Exception(f"No valid aggregation strategy name is given: {strategy}. Choices are: ['fedavg', 'fedopt', 'multikrum', 'foolsgold'] ")
+                raise Exception(f"No valid aggregation strategy name is given: {strategy}. Choices are: ['fedavg', 'fedopt', 'multikrum', 'foolsgold', 'normclip'] ")
 
     def get_global_weights(self):
         """
@@ -290,6 +296,27 @@ class Server:
             # kept/rejected view above cannot show. Persist them for offline analysis.
             # The Attacker/Benign label is joined in HERE, on the server side, so the
             # strategy stays label-free: it never saw who was malicious when it decided.
+            # Norm-clip records a per-client SCALE rather than a weight. The kept/rejected
+            # split above only says who was touched at all; the scale is the real story
+            # (0.99 is "barely clipped"), so persist it for offline analysis.
+            if "scales" in selection:
+                self.logger.write_normclip_aggregation([
+                    {
+                        "round": round,
+                        "cid": cid,
+                        "type": self.client_round_updates[cid]["type"],
+                        "is_attacker": int(cid in attackers),
+                        "delta_norm": selection["scores"][cid],
+                        "threshold": selection["threshold"],
+                        "median_norm": selection["median_norm"],
+                        "scale": selection["scales"][cid],
+                        "clipped": int(selection["scales"][cid] < 1.0),
+                        "n_participants": selection["n"],
+                        "noise_sigma": selection["noise_sigma"],
+                    }
+                    for cid in sorted(selection["scales"])
+                ])
+
             if "weights" in selection:
                 self.logger.write_foolsgold_weights([
                     {

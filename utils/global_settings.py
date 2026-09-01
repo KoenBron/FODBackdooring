@@ -349,6 +349,26 @@ class FLSettings:
     KRUM_F = 1          # assumed Byzantine count f for Krum's (n-f-2) neighbor sum
     MULTIKRUM_M = -1    # #clients Multi-Krum keeps; <=0 -> auto (n - KRUM_F)
     NORMCLIP_C = 2.0    # norm-bound multiplier: flag ||Delta|| > C * median(||Delta||)
+
+    # ---- Norm-clip AGGREGATION (--aggregation-strategy normclip) ----
+    # Deliberately a SEPARATE multiplier from NORMCLIP_C above. That one is the passive
+    # detector's flag threshold and has been 2.0 in every run so far; repointing it would
+    # silently change the harness's output and break comparability with collected
+    # baselines. This is the active defense's own policy knob, defaulting to FLAME's rule
+    # (clip at the median itself). The two share the same MATH, not the same parameter —
+    # set them equal if you want the detector and the defense to agree exactly.
+    #
+    # NOTE the coordinate sets also differ: the aggregation measures the WHOLE update
+    # (every float tensor, via FL.normclip_report.update_norm — the same quantity
+    # normclip_report.csv reports), while the harness block scores ELIGIBLE-only deltas.
+    NORMCLIP_AGG_C = 1.0
+    # Gaussian noise added to the aggregate AFTER clipping, with std = sigma * M / n
+    # (DP-FedAvg convention: M is the clip bound, n the participant count, so sigma is
+    # "noise as a fraction of one client's worth of clipped signal" and needs no knowledge
+    # of the model's parameter scale). 0.0 = off, an exact no-op. Run clip-alone and
+    # clip+noise as SEPARATE arms: noise costs benign accuracy, so mixing them makes an
+    # mAP drop unattributable.
+    NORMCLIP_NOISE_SIGMA = 0.0
     # Granularity of the per-bucket dl2_* energy decomposition. "auto" derives it
     # from ATTACK_PROTOCOL (pilot_a->group, pilot_b->tensor, ...) like the pilots
     # fix their own; "group"/"tensor" force it. See custom_server._resolve_*.

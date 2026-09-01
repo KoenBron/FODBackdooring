@@ -12,11 +12,14 @@ SINGLE SOURCE OF TRUTH for the numeric heart of every robust aggregator:
 
   - FoolsGold re-weighting (foolsgold_weights), used by FL.strategies.foolsgold.
 
+  - Norm-clip scaling (normclip_scales), used by FL.strategies.normclip.
+
 Torch-free on purpose: both are pure arithmetic over a similarity/distance map, so
 they unit-test without torch/GPU (the dev sandbox and CI). The vector work that
 needs torch — distances, cosines, update histories — stays in each caller.
 """
 import math
+import statistics
 
 
 def krum_min_clients(f):
@@ -192,3 +195,54 @@ def foolsgold_weights(cosine, cids, kappa=1.0, normalise="none"):
         total = 1.0
     return {"weights": out, "alpha": alpha, "max_cs": v,
             "weight_sum": total, "degenerate": False}
+
+
+def normclip_scales(norms, cids, c):
+    """Norm-bound clipping (FLAME-style median rule), server-side.
+
+    Bounds every update's L2 norm at M = c * median(||Delta_j||) by RESCALING rather than
+    rejecting: an update over the bound is projected onto the sphere of radius M, one
+    under it passes through untouched.
+
+        M   = c * median_j ||Delta_j||
+        s_i = min(1, M / ||Delta_i||)
+
+    Rescaling is a pure positive scalar, so it changes MAGNITUDE ONLY — the update's
+    direction is preserved exactly. That is the point of including this defense: it is
+    the one that acts purely on the norm axis, and it leaves cosine/Krum-style direction
+    separation untouched (asserted in smoketest_normclip_agg).
+
+    norms: {cid: ||Delta_i||}, whole-update L2. The caller supplies these, so the
+           coordinate set is the caller's choice — FL.strategies.normclip uses
+           FL.normclip_report.update_norm (every float tensor), the same quantity
+           normclip_report.csv reports, so the active defense and the passive report
+           agree on what is being measured.
+    cids:  clients to score. Sorted internally so the output cannot depend on the order
+           the caller iterated its updates in.
+    c:     the multiplier. 1.0 clips at the median itself (FLAME's rule).
+
+    statistics.median (not torch.median) on purpose: torch returns the LOWER of the two
+    middle values on even input, while statistics averages them. The observational
+    normclip_report already uses statistics.median, so this keeps the active defense and
+    that report identical for even participant counts too.
+
+    Returns {"scales": {cid: s}, "threshold": M, "median": med, "clipped": [cids]}.
+    A zero-norm update, or a round whose median is 0, yields s = 1 (nothing to clip)
+    rather than a division by zero.
+    """
+    cids = sorted(cids)
+    if not cids:
+        return {"scales": {}, "threshold": 0.0, "median": 0.0, "clipped": []}
+
+    med = float(statistics.median([norms[i] for i in cids]))
+    threshold = c * med
+
+    scales = {}
+    for i in cids:
+        n_i = norms[i]
+        if threshold <= 0.0 or n_i <= 0.0 or n_i <= threshold:
+            scales[i] = 1.0
+        else:
+            scales[i] = threshold / n_i
+    return {"scales": scales, "threshold": threshold, "median": med,
+            "clipped": [i for i in cids if scales[i] < 1.0]}

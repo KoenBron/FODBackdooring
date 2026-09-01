@@ -58,6 +58,11 @@ class ModelLogger:
                 # FoolsGold per-round aggregation weights (top-level). Written only when
                 # --aggregation-strategy foolsgold is active.
                 self.foolsgold_weights_path = os.path.join(self.output_path, "foolsgold_weights.csv")
+
+                # Norm-clip AGGREGATION trace (top-level). Written only when
+                # --aggregation-strategy normclip is active. Distinct from
+                # normclip_report.csv, which is the passive per-attacker exceedance sweep.
+                self.normclip_agg_path = os.path.join(self.output_path, "normclip_aggregation.csv")
         else:
             # Load a checkpoint and write logs to that output path
             model_dir_path = os.path.join(ProjectPaths.OUTPUT_DIR, custom_path)
@@ -73,6 +78,7 @@ class ModelLogger:
                 self.stealth_summary_path = os.path.join(self.output_path, "stealth_summary.csv")
                 self.normclip_report_path = os.path.join(self.output_path, "normclip_report.csv")
                 self.foolsgold_weights_path = os.path.join(self.output_path, "foolsgold_weights.csv")
+                self.normclip_agg_path = os.path.join(self.output_path, "normclip_aggregation.csv")
 
                 # Validate if checkpoint of best recorded model is there
                 best_model_path = os.path.join(model_dir_path, "best_model.pth")
@@ -253,6 +259,24 @@ class ModelLogger:
         write_header = (not os.path.isfile(self.foolsgold_weights_path)
                         or os.path.getsize(self.foolsgold_weights_path) == 0)
         with open(self.foolsgold_weights_path, 'a', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+            if write_header:
+                writer.writeheader()
+            for row in rows:
+                writer.writerow(row)
+
+    def write_normclip_aggregation(self, rows):
+        """Append this round's norm-clip decisions, one row per participant.
+
+        Same lazy-header append as the other observational CSVs. The Attacker/Benign label
+        is joined in on the SERVER side — the strategy never saw it — so the scales can be
+        scored against ground truth offline without compromising the adversarial model.
+        """
+        if not rows:
+            return
+        write_header = (not os.path.isfile(self.normclip_agg_path)
+                        or os.path.getsize(self.normclip_agg_path) == 0)
+        with open(self.normclip_agg_path, 'a', newline='') as f:
             writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
             if write_header:
                 writer.writeheader()

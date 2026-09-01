@@ -61,7 +61,7 @@ def parse_args():
     fl_group.add_argument("--partitioning-seed", type=int, default=FLSettings.PARTITIONING_SEED, help="Seed value for partitioning the dataset")
     fl_group.add_argument("--resume-from", type=str, default=None, help="Path to checkpoint to resume from")
     fl_group.add_argument("--clients-per-round", type=int, default=FLSettings.CLIENTS_PER_ROUND, help="Number of clients participating each round")
-    fl_group.add_argument("--aggregation-strategy", type=str, default=FLSettings.AGGREGATION_STRATEGY, help="Server-side aggregation strategy: 'fedavg' (sample-weighted mean), 'fedopt' (server-LR blend, uses --server-lr), 'multikrum' (robust: keep the m most-central updates by Krum score, then FedAvg them; uses --krum-f / --multikrum-m), or 'foolsgold' (sybil-resistant: re-weight clients by how similar their CUMULATIVE update direction is to their most-similar peer; uses --foolsgold-kappa / --foolsgold-feature-group). Defensive strategies see only the submitted updates, never client labels.")
+    fl_group.add_argument("--aggregation-strategy", type=str, default=FLSettings.AGGREGATION_STRATEGY, help="Server-side aggregation strategy: 'fedavg' (sample-weighted mean), 'fedopt' (server-LR blend, uses --server-lr), 'multikrum' (robust: keep the m most-central updates by Krum score, then FedAvg them; uses --krum-f / --multikrum-m), 'foolsgold' (sybil-resistant: re-weight clients by how similar their CUMULATIVE update direction is to their most-similar peer; uses --foolsgold-kappa / --foolsgold-feature-group), or 'normclip' (bound every update's L2 norm at C*median by RESCALING it, then sample-weighted FedAvg over the clipped pseudo-gradients; uses --normclip-agg-c / --normclip-noise-sigma). Defensive strategies see only the submitted updates, never client labels.")
     fl_group.add_argument("--server-lr", type=float, default=FLSettings.SERVER_LR, help="Server-side learning rate η used by FedOpt: w_new = (1-η)·w_global + η·avg(w_client). η=1 reduces to FedAvg.")
     fl_group.add_argument("--gamma-cap", type=float, default=FLSettings.GAMMA_CAP, help="Upper bound on the model-replacement scaling factor γ = k/(η·m). Prevents γ from exploding when server_lr is small.")
     fl_group.add_argument("--use-client-schedule", action="store_true", default=FLSettings.USE_CLIENT_SCHEDULE, help="Instead of randomly, though seeded, selecting clients, takes a client schedule to structure when malicious clients are used.")
@@ -128,6 +128,8 @@ def parse_args():
     det_group.add_argument("--multikrum-m", type=int, default=FLSettings.MULTIKRUM_M, help="Number of clients Multi-Krum keeps. <=0 auto-sets to n-f.")
     det_group.add_argument("--foolsgold-kappa", type=float, default=FLSettings.FOOLSGOLD_KAPPA, help="FoolsGold confidence parameter kappa (--aggregation-strategy foolsgold). Scales the logit before clipping. It does NOT change which clients are excluded (anything below the logit's zero crossing at alpha~0.3775 is zeroed for every kappa) — it controls how decisively borderline clients are admitted, so larger kappa gives a sharper, more binary split. Paper default 1.0.")
     det_group.add_argument("--foolsgold-feature-group", type=str, default=FLSettings.FOOLSGOLD_FEATURE_GROUP, help="Parameter group (see FL/groups.py) whose cumulative update history FoolsGold tracks — the paper's 'indicative features'. Default roi.cls_score: the classification head, where a TARGETED_MISLABELING backdoor's signal lives, and ~21.5K floats per client instead of ~41M for the whole model. Use roi.bbox_pred for a box-transform attack.")
+    det_group.add_argument("--normclip-agg-c", type=float, default=FLSettings.NORMCLIP_AGG_C, help="Clip multiplier for --aggregation-strategy normclip: every update is rescaled onto the sphere of radius C*median(||Delta||). Default 1.0 = FLAME's rule (clip at the median), which by construction rescales roughly half the round. SEPARATE from --normclip-c, which is the passive detector's flag threshold and stays at its own default so previously collected harness output remains comparable; set them equal if you want detector and defense to agree.")
+    det_group.add_argument("--normclip-noise-sigma", type=float, default=FLSettings.NORMCLIP_NOISE_SIGMA, help="Gaussian noise added to the normclip aggregate after clipping, with std = sigma * M / n (M = the clip bound, n = participants). Scaled by M so sigma needs no knowledge of the model's parameter magnitudes; O(1e-3) is a sensible start. 0 = off (exact no-op). Run clip-alone and clip+noise as separate arms — noise costs benign accuracy, so mixing them makes an mAP drop unattributable.")
     det_group.add_argument("--foolsgold-normalise", type=str, default=FLSettings.FOOLSGOLD_NORMALISE, choices=["none", "sum"], help="How FoolsGold turns per-client weights into aggregation coefficients. 'none' (default) is PAPER-FAITHFUL: weights are used as-is, each in [0,1], so the aggregate sum_i w_i*Delta_i grows with how many clients are trusted (~8 of 9 trusted gives an ~8x step). sum(w) is printed every round as the effective step multiplier. 'sum' divides by sum(w) for a constant-size convex combination — defensible and matching Multi-Krum's behaviour, but not the paper's rule; use it if 'none' destabilises training.")
     det_group.add_argument("--normclip-c", type=float, default=FLSettings.NORMCLIP_C, help="Norm-bound detector multiplier: flag updates with L2 norm > C*median.")
     det_group.add_argument("--stealth-granularity", type=str, default=FLSettings.STEALTH_GRANULARITY, choices=["auto", "group", "tensor"], help="Granularity of the dl2_* per-bucket energy decomposition. 'auto' derives it from --attack-protocol (pilot_a->group, pilot_b->tensor); 'group'/'tensor' force it.")
@@ -290,6 +292,8 @@ def apply_settings(args):
     FLSettings.KRUM_F = args.krum_f
     FLSettings.MULTIKRUM_M = args.multikrum_m
     FLSettings.NORMCLIP_C = args.normclip_c
+    FLSettings.NORMCLIP_AGG_C = args.normclip_agg_c
+    FLSettings.NORMCLIP_NOISE_SIGMA = args.normclip_noise_sigma
     FLSettings.FOOLSGOLD_KAPPA = args.foolsgold_kappa
     FLSettings.FOOLSGOLD_FEATURE_GROUP = args.foolsgold_feature_group
     FLSettings.FOOLSGOLD_NORMALISE = args.foolsgold_normalise
@@ -474,6 +478,13 @@ def build_config_sections():
     if FLSettings.AGGREGATION_STRATEGY.lower() == "multikrum":
         federated.append(("KRUM_F", FLSettings.KRUM_F))
         federated.append(("MULTIKRUM_M", f"{FLSettings.MULTIKRUM_M} (<=0 -> auto n-f)"))
+    if FLSettings.AGGREGATION_STRATEGY.lower() == "normclip":
+        federated.append(("NORMCLIP_AGG_C",
+                          f"{FLSettings.NORMCLIP_AGG_C}  (clip at C x median; 1.0 = FLAME's rule)"))
+        federated.append(("NORMCLIP_NOISE_SIGMA",
+                          f"{FLSettings.NORMCLIP_NOISE_SIGMA}"
+                          + ("  (OFF)" if FLSettings.NORMCLIP_NOISE_SIGMA <= 0
+                             else "  (std = sigma * M / n, added post-clip)")))
     if FLSettings.AGGREGATION_STRATEGY.lower() == "foolsgold":
         federated.append(("FOOLSGOLD_KAPPA", FLSettings.FOOLSGOLD_KAPPA))
         federated.append(("FOOLSGOLD_NORMALISE",
