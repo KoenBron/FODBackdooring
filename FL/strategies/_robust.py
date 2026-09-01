@@ -1,17 +1,22 @@
 """Torch-free robust-aggregation core.
 
-SINGLE SOURCE OF TRUTH for the Krum score/selection, shared by:
-  - the Multi-Krum aggregation strategy (FL.strategies.multikrum), and
-  - the observational stealth harness (FL.stealth_defenses.krum),
-so the two can never drift. Only the *distance* input differs between them (the
-harness scores eligible-param deltas; the aggregator scores whole-update vectors);
-the scoring itself — score = sum of the (n-f-2) smallest squared distances, argmin
-for Krum, m lowest for Multi-Krum — lives here and nowhere else.
+SINGLE SOURCE OF TRUTH for the numeric heart of every robust aggregator:
 
-Torch-free on purpose: the scoring is pure arithmetic over a squared-distance map,
-so it unit-tests without torch/GPU (the dev sandbox and CI). Distance computation,
-which needs torch, stays in each caller.
+  - Krum / Multi-Krum scoring (krum_select), shared by the Multi-Krum strategy
+    (FL.strategies.multikrum) and the observational stealth harness
+    (FL.stealth_defenses.krum), so the two can never drift. Only the *distance*
+    input differs between them (the harness scores eligible-param deltas; the
+    aggregator scores whole-update vectors); the scoring itself — score = sum of
+    the (n-f-2) smallest squared distances, argmin for Krum, m lowest for
+    Multi-Krum — lives here and nowhere else.
+
+  - FoolsGold re-weighting (foolsgold_weights), used by FL.strategies.foolsgold.
+
+Torch-free on purpose: both are pure arithmetic over a similarity/distance map, so
+they unit-test without torch/GPU (the dev sandbox and CI). The vector work that
+needs torch — distances, cosines, update histories — stays in each caller.
 """
+import math
 
 
 def krum_min_clients(f):
@@ -69,3 +74,121 @@ def krum_select(sqdist, cids, f, m=None):
     kept = set(ranked[:m_res])
     return {"scores": scores, "ranked": ranked, "selected": selected,
             "kept": kept, "m": m_res, "resilient": n >= krum_min_clients(f)}
+
+
+def _degenerate(cids, alpha, max_cs, normalise):
+    """Every client equally suspicious, so the rescale alpha/max(alpha) is undefined.
+
+    The right fallback depends on the mode, and in both cases it is the SAFE one:
+
+      "none" — return all zeros. The combine is theta_t + sum(w_i * Delta_i), so a
+          zero weight vector simply leaves the global model untouched for that round.
+          "The defense had no confidence, so do not move" is both conservative and
+          the honest reading; the paper does not define this case at all.
+      "sum"  — return uniform 1/n. All zeros is NOT available here: the caller would
+          divide by sum(w) == 0, and a convex combination of zero weights collapses
+          the model rather than leaving it alone.
+    """
+    n = len(cids)
+    weights = {i: 0.0 for i in cids} if normalise == "none" else {i: 1.0 / n for i in cids}
+    return {"weights": weights, "alpha": alpha, "max_cs": max_cs,
+            "weight_sum": sum(weights.values()), "degenerate": True}
+
+
+def foolsgold_weights(cosine, cids, kappa=1.0, normalise="none"):
+    """FoolsGold aggregation weights (Fung et al., RAID 2020).
+
+
+    cosine: symmetric nested map, cosine[i][j] = cos(H_i, H_j) for i != j, where H_i
+            is client i's cumulative update. Diagonal entries are never read.
+    cids:   client ids to weight. Sorted internally, so the output cannot depend on
+            the order the caller happened to iterate its updates in.
+    kappa:  confidence parameter scaling the logit before the [0, 1] clip. NOT a
+            severity dial: the logit crosses zero at alpha ~ 0.3775, and any client
+            below that is clipped to 0 for EVERY kappa > 0, so kappa never changes
+            WHICH clients are excluded. What it changes is how decisively the
+            survivors are admitted — larger kappa pushes borderline clients up toward
+            full weight, i.e. a sharper, more binary split (and slightly more
+            permissive at the margin). Paper default 1.0.
+
+    normalise:
+        "none" (default, PAPER-FAITHFUL) — return the post-logit weights as they are,
+            each in [0, 1]. The paper treats w_i as a per-client TRUST score, not a
+            share: several clients may sit at 1.0 simultaneously, and the aggregate
+            sum(w_i * Delta_i) therefore grows with how many clients are trusted.
+            Safe here only because the combiner is delta-form (theta_t + sum w_i D_i),
+            which leaves theta_t intact whatever the weights sum to.
+        "sum" — divide by sum(w), giving a convex combination and a step size that does
+            not move with the trust count. Defensible but NOT the paper's rule; kept as
+            the recovery path if the paper-faithful sum destabilises training.
+
+    Returns {"weights": {cid: w}, "alpha": {cid: rescaled confidence},
+             "max_cs": {cid: v_i}, "weight_sum": float, "degenerate": bool}.
+
+    `weight_sum` is the effective step multiplier under "none" (1.0 == one average
+    client's delta), so it is worth logging: it is the quantity that grows with the
+    number of trusted participants.
+    """
+    cids = sorted(cids)
+    n = len(cids)
+    if n == 0:
+        return {"weights": {}, "alpha": {}, "max_cs": {}, "weight_sum": 0.0,
+                "degenerate": False}
+    if n == 1:
+        c = cids[0]
+        return {"weights": {c: 1.0}, "alpha": {c: 1.0}, "max_cs": {c: 0.0},
+                "weight_sum": 1.0, "degenerate": False}
+
+    # v_i = max_j cs_ij, with the implicit 0 from the zeroed diagonal.
+    v = {i: max([0.0] + [cosine[i][j] for j in cids if j != i]) for i in cids}
+
+    # Pardoning: an honest client that happens to resemble a sybil should not be
+    # punished for the sybil's own high similarity. Scale i's view of j down by the
+    # ratio of their peak similarities whenever j is the more suspicious of the two.
+    # v[j] > v[i] >= 0 implies v[j] > 0, so the division is always safe.
+    alpha = {}
+    for i in cids:
+        adjusted = [0.0]
+        for j in cids:
+            if j == i:
+                continue
+            c = cosine[i][j]
+            if v[j] > v[i]:
+                c *= v[i] / v[j]
+            adjusted.append(c)
+        alpha[i] = 1.0 - max(adjusted)
+
+    alpha = {i: min(1.0, max(0.0, a)) for i, a in alpha.items()}
+
+    # Rescale so the least-suspicious client sits at 1. If every client is maximally
+    # similar to some peer, every alpha is 0 and this would divide by zero — which
+    # would hand back all-zero weights and, because the combiner is a convex
+    # combination over ABSOLUTE weights, silently replace the global model with
+    # zeros. Fall back to uniform and let the caller warn.
+    a_max = max(alpha.values())
+    if a_max <= 0.0:
+        return _degenerate(cids, alpha, v, normalise)
+    alpha = {i: a / a_max for i, a in alpha.items()}
+
+    # Logit, which sharpens the split between "clearly honest" and "clearly colluding".
+    # alpha == 1 would be +inf, so the reference clamps it to 0.99 first; alpha == 0 is
+    # -inf, which the [0, 1] clip below sends to 0 (fully excluded).
+    out = {}
+    for i in cids:
+        a = alpha[i]
+        if a >= 1.0:
+            a = 0.99
+        if a <= 0.0:
+            out[i] = 0.0
+            continue
+        w = kappa * (math.log(a / (1.0 - a)) + 0.5)
+        out[i] = min(1.0, max(0.0, w))
+
+    total = sum(out.values())
+    if total <= 0.0:
+        return _degenerate(cids, alpha, v, normalise)
+    if normalise == "sum":
+        out = {i: w / total for i, w in out.items()}
+        total = 1.0
+    return {"weights": out, "alpha": alpha, "max_cs": v,
+            "weight_sum": total, "degenerate": False}

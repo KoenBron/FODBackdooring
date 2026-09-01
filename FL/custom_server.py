@@ -1,6 +1,7 @@
 from FL.strategies.fedavg import FedAvg
 from FL.strategies.fedopt import FedOpt
 from FL.strategies.multikrum import MultiKrum
+from FL.strategies.foolsgold import FoolsGold
 from models.fasterrcnn.wrapper import FasterRCNNWrapper
 from utils.global_settings import ProjectPaths, BackdoorProperties, TrainingSettings, FLSettings
 from utils.dataset import CustomCocoDataset
@@ -69,10 +70,18 @@ class Server:
 
         # If checkpoint path to resume training from is given, load it to the server model
         self.round_offset = 0
+        self._pending_strategy_state = None
         if checkpoint_id is not None:
             self._load_from_checkpoint(checkpoint_id=checkpoint_id)
 
         self.strategy = self._select_strategy(strategy=strategy)
+
+        # Restore a stateful strategy's own state (FoolsGold's per-client histories)
+        # once it exists. Applied after construction because the checkpoint is read
+        # before the strategy is built.
+        if self._pending_strategy_state is not None and hasattr(self.strategy, "load_state_dict"):
+            self.strategy.load_state_dict(self._pending_strategy_state)
+        self._pending_strategy_state = None
 
         # Dict of dicts to index client updates by client_index
         self.client_round_updates = {}
@@ -135,6 +144,9 @@ class Server:
                 checkpoint = torch.load(checkpoint_path)
                 self.wrapper.set_weights(checkpoint["model_state_dict"])
                 self.round_offset = checkpoint["round"]
+                # Stash rather than apply: the strategy is constructed AFTER this runs,
+                # so self.strategy does not exist yet. __init__ applies it below.
+                self._pending_strategy_state = checkpoint.get("strategy_state")
                 print(f"[INFO] Loading model from: {checkpoint_path} to resume training\n[INFO] Completed rounds: {self.round_offset}, starting training of round {self.round_offset + 1}")
             except Exception as e:
                 raise Exception(f"[ERROR] Exception occurred while loading checkpoint: {e}")
@@ -154,6 +166,11 @@ class Server:
             "model_state_dict": self.wrapper.get_weights(),
             "round": round,
         }
+        # Stateful strategies (FoolsGold's cumulative per-client update histories) ride
+        # along in the SAME file as the model and round number, so a resume cannot
+        # desync a history from the model it was accumulated against.
+        if hasattr(self.strategy, "state_dict"):
+            checkpoint["strategy_state"] = self.strategy.state_dict()
         torch.save(checkpoint, checkpoint_path)
 
     def _resolve_stealth_granularity(self):
@@ -208,8 +225,13 @@ class Server:
             case "multikrum":
                 return MultiKrum(model_state_dict=self.wrapper.get_weights(),
                                  f=FLSettings.KRUM_F, m=FLSettings.MULTIKRUM_M)
+            case "foolsgold":
+                return FoolsGold(model_state_dict=self.wrapper.get_weights(),
+                                 kappa=FLSettings.FOOLSGOLD_KAPPA,
+                                 feature_group=FLSettings.FOOLSGOLD_FEATURE_GROUP,
+                                 normalise=FLSettings.FOOLSGOLD_NORMALISE)
             case _:
-                raise Exception(f"No valid aggregation strategy name is given: {strategy}. Choices are: ['fedavg', 'fedopt', 'multikrum'] ")
+                raise Exception(f"No valid aggregation strategy name is given: {strategy}. Choices are: ['fedavg', 'fedopt', 'multikrum', 'foolsgold'] ")
 
     def get_global_weights(self):
         """
@@ -263,6 +285,33 @@ class Server:
                   f"rejected {selection['rejected']} (m={selection['m']}, f={selection['f']}, n={selection['n']}); "
                   f"attackers this round={sorted(attackers)}, "
                   f"attackers rejected={sorted(rejected & attackers)}/{len(attackers)}", flush=True)
+
+            # A re-weighting defense (FoolsGold) carries per-client weights that the
+            # kept/rejected view above cannot show. Persist them for offline analysis.
+            # The Attacker/Benign label is joined in HERE, on the server side, so the
+            # strategy stays label-free: it never saw who was malicious when it decided.
+            if "weights" in selection:
+                self.logger.write_foolsgold_weights([
+                    {
+                        "round": round,
+                        "cid": cid,
+                        "type": self.client_round_updates[cid]["type"],
+                        "is_attacker": int(cid in attackers),
+                        "weight": selection["weights"][cid],
+                        # 1.0 == the contribution of a fully-trusted client (mode
+                        # "none") or its 1/n fair share (mode "sum"); 0 == silenced.
+                        "trust_ratio": selection["trust_ratio"][cid],
+                        "suppressed": int(cid in selection["rejected"]),
+                        "silenced": int(cid in selection["silenced"]),
+                        "max_cs": selection["scores"][cid],
+                        "n_participants": selection["n"],
+                        # sum(w): the effective step multiplier under the paper-faithful mode.
+                        "weight_sum": selection["weight_sum"],
+                        "normalise": selection["normalise"],
+                        "degenerate": int(bool(selection.get("degenerate", False))),
+                    }
+                    for cid in sorted(selection["weights"])
+                ])
 
         # Passive backdoor-detectability harness (B1). OBSERVATIONAL ONLY: reads
         # the raw client updates before they are freed below; never alters the

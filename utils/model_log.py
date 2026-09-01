@@ -54,6 +54,10 @@ class ModelLogger:
                 # Observational norm-clip report (top-level, lazy header — its columns
                 # depend on the --normclip-report-x sweep, unknown until the first row).
                 self.normclip_report_path = os.path.join(self.output_path, "normclip_report.csv")
+
+                # FoolsGold per-round aggregation weights (top-level). Written only when
+                # --aggregation-strategy foolsgold is active.
+                self.foolsgold_weights_path = os.path.join(self.output_path, "foolsgold_weights.csv")
         else:
             # Load a checkpoint and write logs to that output path
             model_dir_path = os.path.join(ProjectPaths.OUTPUT_DIR, custom_path)
@@ -68,6 +72,7 @@ class ModelLogger:
                 self.stealth_per_client_path = os.path.join(self.output_path, "stealth_per_client.csv")
                 self.stealth_summary_path = os.path.join(self.output_path, "stealth_summary.csv")
                 self.normclip_report_path = os.path.join(self.output_path, "normclip_report.csv")
+                self.foolsgold_weights_path = os.path.join(self.output_path, "foolsgold_weights.csv")
 
                 # Validate if checkpoint of best recorded model is there
                 best_model_path = os.path.join(model_dir_path, "best_model.pth")
@@ -228,6 +233,26 @@ class ModelLogger:
         write_header = (not os.path.isfile(self.normclip_report_path)
                         or os.path.getsize(self.normclip_report_path) == 0)
         with open(self.normclip_report_path, 'a', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+            if write_header:
+                writer.writeheader()
+            for row in rows:
+                writer.writerow(row)
+
+    def write_foolsgold_weights(self, rows):
+        """Append this round's FoolsGold aggregation weights, one row per participant.
+
+        Same lazy-header append as write_normclip_report, so a resume adds to the existing
+        file rather than rewriting it. The Attacker/Benign label in these rows is
+        OBSERVATIONAL: the strategy itself never sees it (custom_server strips the label
+        before calling aggregate), and the column exists only so the weights can be scored
+        against ground truth offline.
+        """
+        if not rows:
+            return
+        write_header = (not os.path.isfile(self.foolsgold_weights_path)
+                        or os.path.getsize(self.foolsgold_weights_path) == 0)
+        with open(self.foolsgold_weights_path, 'a', newline='') as f:
             writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
             if write_header:
                 writer.writeheader()

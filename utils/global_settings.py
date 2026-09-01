@@ -304,6 +304,34 @@ class FLSettings:
     DIRICHLET_LABEL_RULE = "max_area"  # image -> single proxy class; see noniid.image_label
     DIRICHLET_LABEL_P = 0.7           # 'stochastic_majority' only: P(take the majority)
 
+    # ---- FoolsGold aggregation (Fung et al., RAID 2020) ----
+    # Sybil-resistant re-weighting: sybils share an objective, so their CUMULATIVE update
+    # directions converge; a client highly similar to its most-similar peer is scaled
+    # toward zero. Unlike Multi-Krum it re-weights rather than selects.
+    #
+    # History is kept only over the INDICATIVE FEATURES (one group from FL/groups.py), as
+    # the paper recommends: over the whole model it would be ~41M floats per client
+    # (~3.3 GB for 20 clients) instead of ~21.5K (~1.7 MB), and the output layer is where
+    # the sybil signal actually lives. roi.cls_score is the right group for a
+    # TARGETED_MISLABELING backdoor; point it at roi.bbox_pred for a box-transform attack.
+    # KAPPA scales the logit before clipping. It does NOT change which clients are
+    # excluded (anything below the logit's zero crossing at alpha ~ 0.3775 is clipped to 0
+    # for every kappa); it controls how decisively borderline clients are admitted —
+    # larger kappa = a sharper, more binary split.
+    FOOLSGOLD_KAPPA = 1.0
+    FOOLSGOLD_FEATURE_GROUP = "roi.cls_score"
+    # How the per-client weights are turned into aggregation coefficients.
+    #   "none" (default, PAPER-FAITHFUL) — use them as-is, each in [0,1]. The paper treats
+    #       w_i as a per-client TRUST score, so several clients may sit at 1.0 at once and
+    #       the aggregate sum_i w_i * Delta_i GROWS with the number of trusted clients.
+    #       With ~8 of 9 participants trusted that is an ~8x step; the combiner is
+    #       delta-form so theta_t survives it, but the effective learning rate does move
+    #       with the defense's confidence. sum(w) is logged every round for exactly this.
+    #   "sum" — divide by sum(w) for a convex combination and a constant step size.
+    #       Defensible, and it matches Multi-Krum's drop-and-average behaviour, but it is
+    #       NOT the paper's rule. Kept as the recovery path if "none" destabilises training.
+    FOOLSGOLD_NORMALISE = "none"
+
     # Observational norm-clip report (Partial protocol). OBSERVATIONAL only: for each
     # malicious update, records whether its L2 norm exceeds x * (benign-trajectory norm)
     # or x * (median submitted norm), across a sweep of x, into a top-level
