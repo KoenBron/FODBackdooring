@@ -276,7 +276,8 @@ def _draw_class(rng, weights, available):
 
 
 def allocate_label_skew(labels, n_buckets, n_clients, attacker_ids, alpha, seed,
-                        target_idx=None, target_min_count=0, target_min_fraction=0.0):
+                        target_idx=None, target_min_count=0, target_min_fraction=0.0,
+                        match_attackers=False):
     """Partition image indices into n_clients EQUAL-sized, label-skewed lists.
 
     Returns (client_indices, requested): client_indices[c] is client c's index list, all
@@ -287,11 +288,32 @@ def allocate_label_skew(labels, n_buckets, n_clients, attacker_ids, alpha, seed,
     Exactly equal sizes are the point; the IID path keeps np.array_split's +/-1 and is
     untouched.
 
-    Attackers are served FIRST, from full pools, and all share ONE count vector — so their
-    label compositions are identical by construction, not merely equal in expectation.
-    That is what keeps the plastic phase's pooling of div/b across attackers valid once
-    partitions stop being exchangeable, and it is directly verifiable: every attacker row
-    of the composition CSV matches.
+    match_attackers controls how the malicious clients are drawn, and it is a real
+    experimental choice rather than an implementation detail:
+
+      False (default) — attackers are drawn INDEPENDENTLY, exactly like benign clients.
+          Each gets its own Dirichlet draw, so colluding clients no longer share a label
+          distribution. This matters because a shared distribution produces correlated
+          update directions, which is precisely the signal FoolsGold keys on: matched
+          attackers hand that defense close to an ideal sybil signature, and it would
+          look strong for a reason that is an artifact of the partitioner. Independent
+          draws remove that artifact.
+          COST: the plastic phase pools div/b ACROSS attackers on an explicit
+          exchangeability assumption (see FL/attack_state.py). Independent draws break
+          that assumption — the pooled localisation is now averaging over clients with
+          genuinely different data. Either accept it and say so, or raise
+          --partial-plastic-rounds so each attacker contributes more samples.
+
+      True — attackers share ONE draw and ONE integer count vector, so their label
+          compositions are identical by construction (not merely equal in expectation),
+          which keeps the pooling assumption exactly true. Retained as the second arm:
+          it is the best-case bound for FoolsGold, and reporting both is the honest way
+          to separate "the defense works" from "the partitioner helped it".
+
+    Under match_attackers=True the attackers are served FIRST from full pools, which is
+    also where the target-class floor is enforced. Under False there is no floor —
+    see scripts/partition_report.py, which measures the realised target supply so the
+    draw can be screened before a long run.
 
     Benign clients are then dealt ROUND-ROBIN, one image each per pass, in a per-pass
     reshuffled order. Filling clients one at a time instead would starve whoever is served
@@ -313,7 +335,9 @@ def allocate_label_skew(labels, n_buckets, n_clients, attacker_ids, alpha, seed,
     for pool in pools:
         rng.shuffle(pool)
 
-    attackers = sorted(set(attacker_ids))
+    # Independent attackers simply fall through to the benign path: one draw each, dealt
+    # round-robin with everyone else. The matched path below is skipped entirely.
+    attackers = sorted(set(attacker_ids)) if match_attackers else []
     benign = [c for c in range(n_clients) if c not in set(attackers)]
     client_indices = [[] for _ in range(n_clients)]
     requested = [[0.0] * n_buckets for _ in range(n_clients)]

@@ -219,6 +219,12 @@ def main():
     ap.add_argument("--target-min-fraction", type=float,
                     default=FLSettings.ATTACKER_TARGET_MIN_FRACTION)
     ap.add_argument("--target-min-count", type=int, default=FLSettings.ATTACKER_TARGET_MIN_COUNT)
+    ap.add_argument("--poison-rate", type=float, default=BackdoorProperties.POISON_RATE,
+                    help="Only used to report expected poisoned objects per epoch; the "
+                         "dataset rolls this PER ANNOTATION, not per image.")
+    ap.add_argument("--attacker-mode", default="independent", choices=["independent", "matched"],
+                    help="Mirror of --dirichlet-attacker-mode, so the report screens the "
+                         "same draw the run will use.")
     # NOT FLSettings.CLIENTS_PER_ROUND: this script never calls apply_settings, so that
     # attribute still holds the module default of 1 — and at k=1 the gamma ratio is
     # identically 1.0 by algebra (w_assumed = 1/1 = w_true), so the section printed
@@ -281,7 +287,8 @@ def main():
                 labels=labels, n_buckets=K, n_clients=args.clients,
                 attacker_ids=attackers, alpha=alpha, seed=args.seed,
                 target_idx=target_idx, target_min_count=args.target_min_count,
-                target_min_fraction=args.target_min_fraction)
+                target_min_fraction=args.target_min_fraction,
+                match_attackers=(args.attacker_mode == "matched"))
         except (ValueError, AssertionError) as exc:
             print(f"  FAILED: {exc}")
             continue
@@ -326,20 +333,42 @@ def main():
         # supply gap instead. Printed against the IID expectation, with a warning, so the
         # seed can be screened BEFORE a 40-hour run rather than diagnosed after it.
         if contains_target and attackers:
-            expected = S_IID * len(contains_target) / len(labels)
-            att_rows = [r for r in rows if r["role"] == "attacker"]
-            got = sum(r["contains_target"] for r in att_rows) / len(att_rows)
+            # PER-ATTACKER, not averaged. Under --dirichlet-attacker-mode independent each
+            # attacker draws its own composition, so the mean hides the worst case — and it
+            # is the WORST-supplied attacker that decides whether the backdoor lands, since
+            # one starved client contributes almost nothing on the rounds it is scheduled.
+            #
+            # OBJECTS, not just images: _check_targeted_poison rolls per ANNOTATION, so an
+            # image with four people yields ~4*poison_rate poisoned boxes, and the object
+            # count is the real poisonable supply.
+            exp_img = S_IID * len(contains_target) / len(labels)
+            n_tgt_obj = sum(v[target_idx] for v in vecs) if target_idx is not None else 0
+            exp_obj = S_IID * n_tgt_obj / len(labels)
+            print(f"\n  TARGET SUPPLY for '{args.target_class}' "
+                  f"(poison_rate={args.poison_rate:g}, per-annotation):")
+            print(f"    {'cid':>5}  {'images':>7}  {'objects':>8}  {'poisoned/epoch':>15}  "
+                  f"{'vs IID':>7}")
+            worst = None
+            for r in [r for r in rows if r["role"] == "attacker"]:
+                cid = r["cid"]
+                objs = sum_vectors(client_indices[cid], vecs, K)[target_idx] \
+                    if target_idx is not None else 0
+                pct_o = 100.0 * objs / exp_obj if exp_obj else float("nan")
+                worst = objs if worst is None else min(worst, objs)
+                mark = "" if 60.0 <= pct_o else "   <-- STARVED"
+                print(f"    {cid:>5}  {r['contains_target']:>7}  {objs:>8}  "
+                      f"{objs * args.poison_rate:>15.0f}  {pct_o:>6.0f}%{mark}")
             ben_have = [r["contains_target"] for r in rows if r["role"] == "benign"]
-            pct = 100.0 * got / expected if expected else float("nan")
-            flag = "" if 85.0 <= pct <= 115.0 else "   <-- OFF THE IID EXPECTATION"
-            print(f"  attacker target supply: {got:.0f} images containing "
-                  f"'{args.target_class}' vs {expected:.0f} expected under IID "
-                  f"({pct:.0f}%){flag}")
-            print(f"    benign min={min(ben_have)} max={max(ben_have)}; no floor is "
-                  f"enforced — this is the draw plus class co-occurrence")
-            if not 85.0 <= pct <= 115.0:
-                print(f"    {'':4}Screen --seed, or hold supply fixed across conditions; "
-                      f"otherwise alpha and target supply move together.")
+            print(f"    IID expectation: {exp_img:.0f} images / {exp_obj:.0f} objects "
+                  f"per client; benign hold {min(ben_have)}-{max(ben_have)} images")
+            print(f"    dataset totals: {len(contains_target)} images contain the target, "
+                  f"{n_tgt_obj} target objects overall")
+            if exp_obj and worst is not None and worst < 0.6 * exp_obj:
+                print(f"    {'':4}WORST attacker holds {worst} target objects "
+                      f"({100.0 * worst / exp_obj:.0f}% of the IID expectation). No floor is "
+                      f"enforced on the independent path — screen --seed, or switch to "
+                      f"--dirichlet-attacker-mode matched, which restores the floor at the "
+                      f"cost of making the attackers detectable to FoolsGold.")
         print(f"  heterogeneity vs dataset marginal: proxy-level={skew_summary[alpha][0]:.3f}  "
               f"object-level={skew_summary[alpha][1]:.3f}   "
               f"(object-level is what the detector's loss sees)")

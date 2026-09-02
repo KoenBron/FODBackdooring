@@ -14,11 +14,12 @@ nowhere touches torch, so this runs without a GPU. Asserts:
      the reason image_label takes an rng at all.
   3. THE INVARIANT: every client gets exactly len(labels)//n_clients images, the partition
      is disjoint, and it covers everything bar the < n_clients dropped remainder.
-  4. Attacker partitions have IDENTICAL label composition (not merely equal in
-     expectation) while holding DIFFERENT images — the property the plastic phase's
-     pooled div/b depends on once partitions stop being exchangeable.
-  5. The attacker target-class floor is met by every attacker without disturbing sizes,
-     and an impossible floor raises instead of silently under-filling.
+  4. Both attacker modes. 'matched' gives identical label compositions while holding
+     DIFFERENT images (the property the plastic phase's pooled div/b assumes);
+     'independent' — the DEFAULT — gives each attacker its own draw, so colluders do not
+     share a distribution and FoolsGold is not handed a partitioner artifact.
+  5. The attacker target-class floor (matched mode only) is met by every attacker
+     without disturbing sizes, and an impossible floor raises rather than under-filling.
   6. Skew is real and monotone in alpha: small alpha concentrates each client on a few
      classes, large alpha approaches the global marginal. Measured as drift from the
      marginal, so it does not depend on which classes happen to be big.
@@ -33,9 +34,9 @@ nowhere touches torch, so this runs without a GPU. Asserts:
      clients dealt taking the whole supply.
  10. The IID path is BIT-IDENTICAL to the pre-refactor flat-permutation + array_split
      behaviour, so every existing run still reproduces.
- 11. A randomised sweep over client/bucket counts, alpha, attacker sets, target floors and
-     four population shapes (including EMPTY buckets): every configuration either holds
-     all of the above invariants or refuses outright.
+ 11. A randomised sweep over client/bucket counts, alpha, attacker sets, BOTH attacker
+     modes, target floors and four population shapes (including EMPTY buckets): every
+     configuration either holds all of the above invariants or refuses outright.
 """
 import math
 import os
@@ -132,30 +133,47 @@ def main():
     print(f"  [3] {n_clients} clients x {size} images, disjoint, "
           f"{len(labels) - len(flat)} remainder dropped")
 
-    # ---- 4. attacker compositions are IDENTICAL ----------------------------------
+    # ---- 4. the two attacker modes -------------------------------------------------
+    # 'matched' gives every attacker the SAME composition (what the plastic phase's pooled
+    # div/b assumes). 'independent' (the default) gives each its own draw, so colluders no
+    # longer share a label distribution — which is what stops FoolsGold being handed a
+    # correlated-direction signal that is an artifact of the partitioner rather than of the
+    # attack. Both are pinned: a silent flip either way changes what the defenses measure.
     attackers = [0, 1, 3]
-    parts, _ = allocate_label_skew(labels, n_buckets, n_clients, attackers, 0.3, 42)
-    comps = [composition(parts[a], labels, n_buckets) for a in attackers]
-    for c in comps[1:]:
-        _expect(c == comps[0], f"attacker compositions must match exactly: {comps[0]} vs {c}")
-    benign = [composition(parts[c], labels, n_buckets)
+    m_parts, _ = allocate_label_skew(labels, n_buckets, n_clients, attackers, 0.3, 42,
+                                     match_attackers=True)
+    m_comps = [composition(m_parts[a], labels, n_buckets) for a in attackers]
+    for c in m_comps[1:]:
+        _expect(c == m_comps[0],
+                f"matched: compositions must be identical: {m_comps[0]} vs {c}")
+    benign = [composition(m_parts[c], labels, n_buckets)
               for c in range(n_clients) if c not in attackers]
-    _expect(any(b != comps[0] for b in benign),
+    _expect(any(b != m_comps[0] for b in benign),
             "benign clients must not all share it too, or the test is vacuous")
-    _expect(len({tuple(sorted(parts[a])) for a in attackers}) == len(attackers),
+    _expect(len({tuple(sorted(m_parts[a])) for a in attackers}) == len(attackers),
             "matched composition must not mean matched IMAGES")
-    print(f"  [4] {len(attackers)} attackers share composition {comps[0]}, distinct images")
+
+    i_parts, _ = allocate_label_skew(labels, n_buckets, n_clients, attackers, 0.3, 42)
+    i_comps = [composition(i_parts[a], labels, n_buckets) for a in attackers]
+    _expect(any(c != i_comps[0] for c in i_comps[1:]),
+            f"independent (the DEFAULT) must NOT produce identical compositions: {i_comps}")
+    _expect(all(len(p) == size for p in i_parts),
+            "independent draws must still hold the equal-size invariant")
+    flat_i = [i for p in i_parts for i in p]
+    _expect(len(flat_i) == len(set(flat_i)), "independent partitions must stay disjoint")
+    print(f"  [4] matched -> all attackers {m_comps[0]}; independent (default) -> "
+          f"{len({tuple(c) for c in i_comps})} distinct compositions")
 
     # ---- 5. the target-class floor ------------------------------------------------
     parts, _ = allocate_label_skew(labels, n_buckets, n_clients, attackers, 0.3, 42,
-                                   target_idx=2, target_min_count=30)
+                                   target_idx=2, target_min_count=30, match_attackers=True)
     for a in attackers:
         got = composition(parts[a], labels, n_buckets)[2]
         _expect(got >= 30, f"attacker {a} got {got} target-class images, floor was 30")
     _expect(all(len(p) == size for p in parts), "the floor must not disturb partition sizes")
     try:
         allocate_label_skew(labels, n_buckets, n_clients, attackers, 0.3, 42,
-                            target_idx=2, target_min_count=999)
+                            target_idx=2, target_min_count=999, match_attackers=True)
         _expect(False, "an unsatisfiable target floor must raise, not silently under-fill")
     except ValueError as exc:
         _expect("target class" in str(exc), f"unexpected error text: {exc}")
@@ -309,11 +327,14 @@ def main():
         if len(pop) < n_cl * 2:
             continue
         tgt = rng2.choice([None] + [k for k, n in enumerate(sizes) if n > 0])
-        frac = rng2.choice([0.0, 0.1, 0.3])
+        # The floor only has an enforcement point on the matched path, so pair them.
+        matched = rng2.random() < 0.5
+        frac = rng2.choice([0.0, 0.1, 0.3]) if matched else 0.0
         try:
             parts, req = allocate_label_skew(pop, n_bk, n_cl, att, alpha,
                                              rng2.randrange(10**6), target_idx=tgt,
-                                             target_min_fraction=frac)
+                                             target_min_fraction=frac,
+                                             match_attackers=matched)
         except ValueError:
             refused += 1                    # unsatisfiable floor or supply — by design
             continue
@@ -322,10 +343,10 @@ def main():
         _expect(all(len(p) == size_ for p in parts), f"unequal sizes ({shape}, a={alpha})")
         _expect(len(flat_) == len(set(flat_)), f"overlapping partitions ({shape}, a={alpha})")
         _expect(set(flat_) <= set(range(len(pop))), f"index out of range ({shape}, a={alpha})")
-        if att:
+        if att and matched:
             comps_ = [composition(parts[a], pop, n_bk) for a in att]
             _expect(all(c == comps_[0] for c in comps_),
-                    f"attacker compositions diverged ({shape}, a={alpha})")
+                    f"matched attacker compositions diverged ({shape}, a={alpha})")
             if tgt is not None and frac > 0:
                 need = math.ceil(frac * size_)
                 _expect(comps_[0][tgt] >= need,

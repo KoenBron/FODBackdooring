@@ -119,6 +119,7 @@ def parse_args():
     part_group.add_argument("--partition-mode", type=str, default=FLSettings.PARTITION_MODE, choices=["iid", "dirichlet"], help="How the training set is split across clients. 'iid' (default) is the seeded shuffle + equal chunks, unchanged. 'dirichlet' gives every client the SAME number of images but draws each client's CLASS COMPOSITION as Dir(--dirichlet-alpha * K * class-marginal), i.e. label skew without quantity skew — so gamma = k/(eta*m) stays exact and update norms stay comparable across clients. MUTUALLY EXCLUSIVE with --guarantee-target-objects.")
     part_group.add_argument("--dirichlet-alpha", type=float, default=FLSettings.DIRICHLET_ALPHA, help="Dirichlet concentration for --partition-mode dirichlet. The base measure is the dataset's own class marginal, so E[composition] = marginal at every alpha: small = strongly skewed around it, large -> genuine IID. 0.1 / 0.5 / 5.0 is a reasonable sweep; LaySelFL uses 0.9.")
     part_group.add_argument("--dirichlet-label-rule", type=str, default=FLSettings.DIRICHLET_LABEL_RULE, choices=list(LABEL_RULES), help="Proxy that files each multi-object image under ONE class for partitioning (never used for training). 'max_area': per-class summed annotation area, argmax (default). 'count_majority': most instances. 'first': first-listed annotation, an arbitrary-but-deterministic control. 'stochastic_majority': max_area with probability --dirichlet-label-p, else a uniform draw over the classes present.")
+    part_group.add_argument("--dirichlet-attacker-mode", type=str, default=FLSettings.DIRICHLET_ATTACKER_MODE, choices=["independent", "matched"], help="How malicious clients are drawn under --partition-mode dirichlet. 'independent' (default): each attacker gets its own Dirichlet draw like any benign client, so colluders do NOT share a label distribution — this removes the correlated-update-direction artifact that would otherwise hand FoolsGold an ideal sybil signature. 'matched': attackers share one draw and one integer count vector, making their compositions identical by construction; this keeps the plastic phase's pooled div/b assumption exactly true and is the best-case bound for FoolsGold. Note the target-class floor (--guarantee-target-objects) is only available under 'matched'.")
     part_group.add_argument("--dirichlet-label-p", type=float, default=FLSettings.DIRICHLET_LABEL_P, help="P(take the majority class) for --dirichlet-label-rule stochastic_majority. Ignored by the other rules.")
 
     # Detectability Harness (passive; observational only, does not alter aggregation)
@@ -264,6 +265,7 @@ def apply_settings(args):
     FLSettings.DIRICHLET_ALPHA = args.dirichlet_alpha
     FLSettings.DIRICHLET_LABEL_RULE = args.dirichlet_label_rule
     FLSettings.DIRICHLET_LABEL_P = args.dirichlet_label_p
+    FLSettings.DIRICHLET_ATTACKER_MODE = args.dirichlet_attacker_mode
     if FLSettings.PARTITION_MODE == "dirichlet":
         if FLSettings.DIRICHLET_ALPHA <= 0:
             raise ValueError(
@@ -278,6 +280,20 @@ def apply_settings(args):
         # images per attacker. It is NOT auto-enabled under dirichlet — a 60% floor applied
         # to one arm and not the other pins the target class at every alpha and makes the
         # IID/non-IID comparison measure the quota instead of the skew.
+        # The in-allocator floor is applied through the attackers' SHARED count vector, so
+        # it exists only on the 'matched' path. Independent draws have no such vector and
+        # therefore no enforcement point — refuse rather than accept the flag and ignore it.
+        if FLSettings.GUARANTEE_TARGET_OBJECTS and \
+                FLSettings.DIRICHLET_ATTACKER_MODE == "independent":
+            raise ValueError(
+                "--guarantee-target-objects has no enforcement point under "
+                "--dirichlet-attacker-mode independent: the floor is applied through the "
+                "attackers' shared count vector, which independent draws do not have. "
+                "Either use --dirichlet-attacker-mode matched (which is also the "
+                "configuration FoolsGold most easily detects), or drop the floor and screen "
+                "the realised target supply with scripts/partition_report.py before "
+                "committing to a seed."
+            )
         if FLSettings.GUARANTEE_TARGET_OBJECTS:
             print(
                 f"{ANSIColor.YELLOW}[WARNING]{ANSIColor.RESET} --guarantee-target-objects "
@@ -462,6 +478,19 @@ def build_config_sections():
         ("NUM_ROUNDS", FLSettings.NUM_ROUNDS),
         ("RANDOM_SEED", FLSettings.SEED),
     ]
+    # Partitioning at a glance. The full detail has its own section below; this line is
+    # here because the data split silently conditions every number in the run, and it is
+    # the first thing to check when two runs disagree.
+    if FLSettings.PARTITION_MODE == "dirichlet":
+        run.append(("PARTITIONING",
+                    f"non-IID label skew — Dirichlet alpha={FLSettings.DIRICHLET_ALPHA}, "
+                    f"rule={FLSettings.DIRICHLET_LABEL_RULE}, equal partition sizes, "
+                    f"seed={FLSettings.PARTITIONING_SEED}"))
+    else:
+        run.append(("PARTITIONING",
+                    f"IID — seeded shuffle into equal chunks, "
+                    f"seed={FLSettings.PARTITIONING_SEED}"))
+    run.append(("AGGREGATION", FLSettings.AGGREGATION_STRATEGY))
     if getattr(FLSettings, "RESUME_FROM", None):
         run.append(("RESUME_FROM", FLSettings.RESUME_FROM))
     if getattr(FLSettings, "EVAL_EVERY", None) is not None:
@@ -514,6 +543,11 @@ def build_config_sections():
         partitioning.append(("DIRICHLET_ALPHA",
                              f"{FLSettings.DIRICHLET_ALPHA}  (label skew only; partition sizes equal)"))
         partitioning.append(("DIRICHLET_LABEL_RULE", FLSettings.DIRICHLET_LABEL_RULE))
+        partitioning.append(("DIRICHLET_ATTACKER_MODE",
+                             f"{FLSettings.DIRICHLET_ATTACKER_MODE}"
+                             + ("  (own draw each; no target floor)"
+                                if FLSettings.DIRICHLET_ATTACKER_MODE == "independent"
+                                else "  (shared composition; pooled div/b stays valid)")))
         if FLSettings.DIRICHLET_LABEL_RULE == "stochastic_majority":
             partitioning.append(("DIRICHLET_LABEL_P", FLSettings.DIRICHLET_LABEL_P))
         quota = max(FLSettings.ATTACKER_TARGET_MIN_COUNT, 0)

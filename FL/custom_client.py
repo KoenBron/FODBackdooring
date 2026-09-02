@@ -80,6 +80,7 @@ class ClientManager:
                 target_min_count=FLSettings.ATTACKER_TARGET_MIN_COUNT if quota_on else 0,
                 target_min_fraction=(FLSettings.ATTACKER_TARGET_MIN_FRACTION
                                      if quota_on else 0.0),
+                match_attackers=(FLSettings.DIRICHLET_ATTACKER_MODE == "matched"),
             )
         else:
             client_indices = build_iid_partitions(

@@ -303,6 +303,20 @@ class FLSettings:
     DIRICHLET_ALPHA = 0.5             # concentration; 0.1 / 0.5 / 5.0 is a reasonable sweep
     DIRICHLET_LABEL_RULE = "max_area"  # image -> single proxy class; see noniid.image_label
     DIRICHLET_LABEL_P = 0.7           # 'stochastic_majority' only: P(take the majority)
+    # How the malicious clients are drawn.
+    #   "independent" (default) — each attacker gets its OWN Dirichlet draw, exactly like a
+    #       benign client. A SHARED label distribution produces correlated update
+    #       directions, which is the signal FoolsGold keys on; matched attackers would hand
+    #       that defense close to an ideal sybil signature and make it look strong for a
+    #       reason that is an artifact of the partitioner. Independent draws remove that.
+    #       COST: the plastic phase pools div/b ACROSS attackers assuming exchangeable
+    #       partitions (FL/attack_state.py). Independent draws break that assumption.
+    #       There is also NO target-class floor on this path — screen the realised supply
+    #       with scripts/partition_report.py before committing to a seed.
+    #   "matched" — attackers share one draw and one integer count vector, so their
+    #       compositions are identical by construction and the pooling assumption holds
+    #       exactly. Keep as the second arm: it is the best-case bound for FoolsGold.
+    DIRICHLET_ATTACKER_MODE = "independent"
 
     # ---- FoolsGold aggregation (Fung et al., RAID 2020) ----
     # Sybil-resistant re-weighting: sybils share an objective, so their CUMULATIVE update
