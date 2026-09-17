@@ -28,6 +28,11 @@ Asserts:
   6. Freeze-threshold semantics (mirrors _resolve_carrying): the freeze fires exactly
      when the pooled count reaches N, and no further accumulation happens afterwards.
   7. reset() clears every plastic field.
+  9. Replay idempotence: re-accumulating the SAME (round, cid) — what a crash-and-resume
+     does — replaces that sample instead of pooling it twice, so the freeze decision is
+     identical to the uninterrupted run. A different cid in the same round still pools.
+ 10. A checkpoint written before the accumulator was keyed still loads, reproducing its
+     recorded means and count exactly.
 """
 import os
 import sys
@@ -60,9 +65,13 @@ ROUNDS = [
 ]
 
 
-def _accumulate_all(rounds):
-    for div, b in rounds:
-        AttackState.accumulate_plastic(div, b)
+def _accumulate_all(rounds, cid=0, start=11, step=3):
+    """Feed a list of (div, b) as consecutive injections by ONE attacker.
+
+    Each gets a distinct (round, cid), which is what accumulate_plastic keys on.
+    Reusing a pair would overwrite rather than pool — that is the point of test 9."""
+    for i, (div, b) in enumerate(rounds):
+        AttackState.accumulate_plastic(div, b, start + step * i, cid)
 
 
 def main():
@@ -85,7 +94,7 @@ def main():
 
     # 3. Averaging denoises the fluke. Contrast the fluke's OWN round against the pool.
     AttackState.reset()
-    AttackState.accumulate_plastic(*ROUNDS[1])  # the spike round alone
+    AttackState.accumulate_plastic(*ROUNDS[1], 14, 1)  # the spike round alone
     md1, mb1 = AttackState.plastic_means()
     solo = {n for n, _ in select_by_mode(md1, mb1, "topk", 1.0, 1)}
     _expect(solo == {"fluke"}, f"on the spike round alone, top-1 should be the fluke, got {solo}")
@@ -124,15 +133,15 @@ def main():
 
     # 5. Persistence round-trip MID-WINDOW (simulate a shift after 2 of 3 rounds).
     AttackState.reset()
-    AttackState.accumulate_plastic(*ROUNDS[0])
-    AttackState.accumulate_plastic(*ROUNDS[1])
+    AttackState.accumulate_plastic(*ROUNDS[0], 11, 0)
+    AttackState.accumulate_plastic(*ROUNDS[1], 14, 1)
     snap = json.loads(json.dumps(AttackState.to_dict()))  # force a real JSON round-trip
     AttackState.reset()
     AttackState.from_dict(snap)
     _expect(AttackState.plastic_count == 2, "shift must preserve count=2")
     _expect(abs(AttackState.plastic_div_sum["carrier"] - 1.7) < 1e-9, "shift must preserve div sum (0.9+0.8)")
     _expect(not AttackState.is_plastic_frozen(), "mid-window shift must not be frozen yet")
-    AttackState.accumulate_plastic(*ROUNDS[2])  # resume the final round
+    AttackState.accumulate_plastic(*ROUNDS[2], 17, 2)  # resume the final round
     md, mb = AttackState.plastic_means()
     _expect({n for n, _ in select_by_mode(md, mb, "topk", 1.0, 1)} == {"carrier"},
             "resumed accumulation must reach the same freeze decision")
@@ -153,7 +162,7 @@ def main():
     for i in range(1, 6):
         if AttackState.is_plastic_frozen():
             continue  # exploit phase: no accumulation
-        AttackState.accumulate_plastic(*ROUNDS[(i - 1) % len(ROUNDS)])
+        AttackState.accumulate_plastic(*ROUNDS[(i - 1) % len(ROUNDS)], 11 + 3 * (i - 1), (i - 1) % 4)
         if AttackState.plastic_count >= N:
             md, mb = AttackState.plastic_means()
             AttackState.set_plastic_frozen({n for n, _ in select_by_mode(md, mb, "topk", 1.0, 1)})
@@ -166,6 +175,81 @@ def main():
     _expect(AttackState.plastic_div_sum == {} and AttackState.plastic_b_sum == {}, "reset must clear sums")
     _expect(AttackState.plastic_count == 0 and not AttackState.plastic_frozen, "reset must clear count/flag")
     _expect(AttackState.plastic_frozen_set == set(), "reset must clear frozen set")
+
+    # 9. Replay idempotence. A crash mid-plastic makes the resumed process re-run the
+    #    round that was in flight, so accumulate_plastic is called twice for the same
+    #    (round, cid). Append-only pooling gave that round double weight in
+    #    mean(div)/mean(b) and could move a near-cutoff tensor across the gate, which is
+    #    how two identically configured runs ended up with different carrying sets.
+    AttackState.reset()
+    _accumulate_all(ROUNDS)                       # clean run: rounds 11/14/17, cid 0
+    clean_means = AttackState.plastic_means()
+    clean_count = AttackState.plastic_count
+
+    AttackState.reset()
+    AttackState.accumulate_plastic(*ROUNDS[0], 11, 0)
+    AttackState.accumulate_plastic(*ROUNDS[1], 14, 0)
+    AttackState.accumulate_plastic(*ROUNDS[1], 14, 0)   # <-- the replay
+    AttackState.accumulate_plastic(*ROUNDS[2], 17, 0)
+    _expect(AttackState.plastic_count == clean_count,
+            f"replayed round must not bump the count: {AttackState.plastic_count} vs {clean_count}")
+    _expect(AttackState.plastic_means() == clean_means,
+            "replayed round must not change the pooled means")
+
+    #    A replay with DIFFERENT values (the re-run is nondeterministic) must take the
+    #    later sample, not the earlier one, and still count once.
+    AttackState.reset()
+    AttackState.accumulate_plastic({"carrier": 1.0}, {"carrier": 0.1}, 11, 0)
+    AttackState.accumulate_plastic({"carrier": 2.0}, {"carrier": 0.2}, 11, 0)
+    _expect(AttackState.plastic_count == 1, "replay must count once")
+    _expect(abs(AttackState.plastic_div_sum["carrier"] - 2.0) < 1e-9,
+            f"replay must keep the LATER value, got {AttackState.plastic_div_sum}")
+
+    #    Two attackers in the SAME round are two distinct injections and must both pool.
+    AttackState.reset()
+    AttackState.accumulate_plastic({"carrier": 1.0}, {"carrier": 0.1}, 11, 0)
+    AttackState.accumulate_plastic({"carrier": 3.0}, {"carrier": 0.3}, 11, 1)
+    _expect(AttackState.plastic_count == 2, "same round, different cid must pool as 2")
+    _expect(abs(AttackState.plastic_div_sum["carrier"] - 4.0) < 1e-9, "both attackers must contribute")
+
+    #    Replay protection must survive the checkpoint round-trip.
+    AttackState.reset()
+    AttackState.accumulate_plastic(*ROUNDS[0], 11, 0)
+    AttackState.accumulate_plastic(*ROUNDS[1], 14, 0)
+    snap3 = json.loads(json.dumps(AttackState.to_dict()))
+    AttackState.reset()
+    AttackState.from_dict(snap3)
+    AttackState.accumulate_plastic(*ROUNDS[1], 14, 0)   # replay the round that was in flight
+    AttackState.accumulate_plastic(*ROUNDS[2], 17, 0)
+    _expect(AttackState.plastic_count == clean_count,
+            f"replay after resume must not double-count, got {AttackState.plastic_count}")
+    _expect(AttackState.plastic_means() == clean_means,
+            "replay after resume must reach the same freeze decision")
+
+    # 10. Pre-keying checkpoints still load. They hold only the aggregate, so the
+    #     individual injections are gone, but the means and count must be preserved
+    #     exactly or a resume would freeze on a different window than it recorded.
+    AttackState.reset()
+    legacy = {
+        "version": 1,
+        "carrying_set": {},
+        "plastic": {
+            "div_sum": {"carrier": 2.7, "fluke": 1.1},
+            "b_sum": {"carrier": 0.3, "fluke": 0.3},
+            "count": 3,
+            "frozen": False,
+            "frozen_set": [],
+        },
+    }
+    AttackState.from_dict(json.loads(json.dumps(legacy)))
+    _expect(AttackState.plastic_count == 3, f"legacy count must load, got {AttackState.plastic_count}")
+    _expect(abs(AttackState.plastic_div_sum["carrier"] - 2.7) < 1e-9, "legacy div sum must load")
+    md_l, _ = AttackState.plastic_means()
+    _expect(abs(md_l["carrier"] - 0.9) < 1e-9, f"legacy mean must be sum/count, got {md_l['carrier']}")
+    #     and accumulation continues on top of it with replay protection from here on.
+    AttackState.accumulate_plastic({"carrier": 1.2}, {"carrier": 0.1}, 20, 3)
+    AttackState.accumulate_plastic({"carrier": 1.2}, {"carrier": 0.1}, 20, 3)
+    _expect(AttackState.plastic_count == 4, f"legacy + 1 deduped injection = 4, got {AttackState.plastic_count}")
 
     # 8. Non-carrying target set (mirror of _noncarrying_names, the SHARED rule behind
     #    both the constrain penalty and the gradient freeze): exactly the ELIGIBLE

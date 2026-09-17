@@ -403,7 +403,8 @@ class PartialAmplificationProtocol(AttackProtocol):
 
     # ---- plastic phase (which carrying set) ----
 
-    def _resolve_carrying(self, sel, in_plastic, plastic_on, cid=None, benign_norms=None):
+    def _resolve_carrying(self, sel, in_plastic, plastic_on, cid=None, benign_norms=None,
+                          current_round=None):
         """Pick THIS round's carrying set and drive the pooled plastic accumulator.
 
             plastic disabled -> per-round selection (unchanged legacy behavior)
@@ -415,12 +416,16 @@ class PartialAmplificationProtocol(AttackProtocol):
         benign_norms: this round's benign-anchor update norms (ben1 and ben2) for THIS
         attacker, recorded under its own cid — never pooled across clients, unlike div/b.
         None when nothing consumes them (see _needs_benign_refs).
+
+        current_round: identifies this injection together with cid. accumulate_plastic is
+        idempotent in that pair, so a round replayed after a crash-and-resume replaces its
+        earlier sample instead of pooling both and reweighting the freeze.
         """
         if not plastic_on:
             return sel["carrying"]
         if not in_plastic:
             return AttackState.plastic_frozen_set
-        AttackState.accumulate_plastic(sel["div_t"], sel["b_t"])
+        AttackState.accumulate_plastic(sel["div_t"], sel["b_t"], current_round, cid)
         if benign_norms:
             AttackState.accumulate_benign_norms(cid, benign_norms)
         if AttackState.plastic_count >= FLSettings.PARTIAL_PLASTIC_ROUNDS:
@@ -889,7 +894,8 @@ class PartialAmplificationProtocol(AttackProtocol):
         # triggering round still counts as plastic and the freeze takes effect next round.
         plastic_on = FLSettings.PARTIAL_PLASTIC_ROUNDS > 0
         in_plastic = plastic_on and not AttackState.is_plastic_frozen()
-        carrying = self._resolve_carrying(sel, in_plastic, plastic_on, cid, benign_norms)
+        carrying = self._resolve_carrying(sel, in_plastic, plastic_on, cid, benign_norms,
+                                          current_round)
         froze_this_round = in_plastic and AttackState.is_plastic_frozen()
         phase = "disabled" if not plastic_on else ("plastic" if in_plastic else "exploit")
         gamma, gamma_source = self._resolve_gamma(client_config, in_plastic, in_exploit)

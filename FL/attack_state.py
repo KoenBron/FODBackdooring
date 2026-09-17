@@ -50,9 +50,18 @@ class _AttackState:
         # injection rounds, then FREEZES one shared carrying set. Pooling is fair
         # because the client partitions are IID (exchangeable). All fields are
         # persisted so a 4h cluster shift landing mid-plastic resumes correctly.
-        self.plastic_div_sum: dict[str, float] = {}  # name -> Σ div_t over plastic rounds
-        self.plastic_b_sum: dict[str, float] = {}    # name -> Σ b_t   over plastic rounds
-        self.plastic_count: int = 0                  # pooled injection rounds accumulated
+        # One entry per (round, client) injection, keyed "<round>:<cid>" so a round
+        # REPLAYED after a crash-and-resume OVERWRITES its earlier contribution instead
+        # of adding a second one. The sums and the count are derived from this dict
+        # (see the properties below), so identity is enforced in one place.
+        #
+        # Why this matters: the freeze picks carriers from mean(div)/mean(b) pooled over
+        # these entries. An append-only accumulator let a replayed plastic round reweight
+        # that mean, which is enough to move a tensor sitting near the cutoff across it.
+        # Each entry is {"div": {name: float}, "b": {name: float}, "n": int}; "n" is 1 for
+        # a real injection and >1 only for the aggregate carried in from a pre-keying
+        # checkpoint (see from_dict).
+        self.plastic_samples: dict[str, dict] = {}
         self.plastic_frozen: bool = False            # has the freeze happened?
         self.plastic_frozen_set: set[str] = set()    # the single shared post-freeze carrying set
 
@@ -128,15 +137,55 @@ class _AttackState:
 
     # ---- Plastic-phase accumulator (pooled across attackers) ----
 
-    def accumulate_plastic(self, div, b) -> None:
-        """Add one round's per-bucket div_t / b_t into the pooled running sums and
-        bump the pooled injection count. div and b are name->float dicts over the
-        same (eligible) key set, so the sums stay aligned across rounds."""
-        for n, v in div.items():
-            self.plastic_div_sum[n] = self.plastic_div_sum.get(n, 0.0) + v
-        for n, v in b.items():
-            self.plastic_b_sum[n] = self.plastic_b_sum.get(n, 0.0) + v
-        self.plastic_count += 1
+    def accumulate_plastic(self, div, b, current_round, cid) -> None:
+        """Record one (round, client) injection's per-bucket div_t / b_t.
+
+        div and b are name->float dicts over the same (eligible) key set, so the
+        derived sums stay aligned across rounds.
+
+        IDEMPOTENT IN (current_round, cid). Calling this twice for the same round and
+        client — which is what a crash-and-resume does, since the round in flight is
+        re-run — REPLACES the earlier sample rather than pooling both. Without that,
+        the replayed round carries double weight in mean(div)/mean(b), and the freeze
+        is decided on a reweighted mean. Tensors sitting near the cutoff can cross it
+        on that alone, so two runs with identical configs can end up with different
+        carrying sets purely because one of them was interrupted.
+        """
+        key = self._plastic_key(current_round, cid)
+        self.plastic_samples[key] = {
+            "div": {n: float(v) for n, v in div.items()},
+            "b": {n: float(v) for n, v in b.items()},
+            "n": 1,
+        }
+
+    @staticmethod
+    def _plastic_key(current_round, cid) -> str:
+        """Identity of one pooled injection. String so it survives a JSON round-trip."""
+        return f"{int(current_round)}:{int(cid)}"
+
+    def _plastic_sum(self, field: str) -> dict[str, float]:
+        """Elementwise sum of one field ('div' or 'b') across recorded samples."""
+        out: dict[str, float] = {}
+        for entry in self.plastic_samples.values():
+            for n, v in entry[field].items():
+                out[n] = out.get(n, 0.0) + v
+        return out
+
+    @property
+    def plastic_div_sum(self) -> dict[str, float]:
+        """name -> Σ div_t over recorded plastic injections. Derived, read-only."""
+        return self._plastic_sum("div")
+
+    @property
+    def plastic_b_sum(self) -> dict[str, float]:
+        """name -> Σ b_t over recorded plastic injections. Derived, read-only."""
+        return self._plastic_sum("b")
+
+    @property
+    def plastic_count(self) -> int:
+        """Pooled injections accumulated. Derived, read-only: a replayed (round, cid)
+        overwrites its sample, so this counts DISTINCT injections, not calls."""
+        return sum(entry["n"] for entry in self.plastic_samples.values())
 
     def plastic_means(self):
         """Pooled means (mean_div, mean_b) = sum / count. Empty dicts if no samples."""
@@ -209,9 +258,7 @@ class _AttackState:
         self.lhat.clear()
         self.benign_anchor.clear()
         self.beta_max.clear()
-        self.plastic_div_sum.clear()
-        self.plastic_b_sum.clear()
-        self.plastic_count = 0
+        self.plastic_samples.clear()
         self.plastic_frozen = False
         self.plastic_frozen_set.clear()
         self.plastic_benign_norms.clear()
@@ -238,6 +285,12 @@ class _AttackState:
             # Pooled plastic accumulator — persisted so a shift mid-plastic resumes
             # accumulation (rather than freezing on a truncated window).
             "plastic": {
+                # Source of truth: one entry per (round, cid), so a resume that replays
+                # a plastic round overwrites rather than double-counts.
+                "samples": self.plastic_samples,
+                # Derived mirrors. Written for readability and for any older reader that
+                # still expects them; from_dict PREFERS "samples" and only falls back to
+                # these when loading a checkpoint written before the keying change.
                 "div_sum": self.plastic_div_sum,
                 "b_sum": self.plastic_b_sum,
                 "count": self.plastic_count,
@@ -261,9 +314,34 @@ class _AttackState:
             for cid, names in d.get("carrying_set", {}).items()
         }
         p = d.get("plastic", {})
-        self.plastic_div_sum = dict(p.get("div_sum", {}))
-        self.plastic_b_sum = dict(p.get("b_sum", {}))
-        self.plastic_count = int(p.get("count", 0))
+        samples = p.get("samples")
+        if samples is not None:
+            self.plastic_samples = {
+                str(k): {
+                    "div": {n: float(v) for n, v in e.get("div", {}).items()},
+                    "b": {n: float(v) for n, v in e.get("b", {}).items()},
+                    "n": int(e.get("n", 1)),
+                }
+                for k, e in samples.items()
+            }
+        else:
+            # Checkpoint written before the accumulator was keyed: it holds only the
+            # aggregate, so the individual injections are unrecoverable. Carry it as one
+            # weighted entry, which reproduces the same means and count exactly. Rounds
+            # already folded into it cannot be de-duplicated retroactively — only
+            # injections recorded after this load get replay protection.
+            count = int(p.get("count", 0))
+            self.plastic_samples = (
+                {
+                    "legacy": {
+                        "div": {n: float(v) for n, v in p.get("div_sum", {}).items()},
+                        "b": {n: float(v) for n, v in p.get("b_sum", {}).items()},
+                        "n": count,
+                    }
+                }
+                if count
+                else {}
+            )
         self.plastic_frozen = bool(p.get("frozen", False))
         self.plastic_frozen_set = set(p.get("frozen_set", ()))
         self.plastic_benign_norms = {
