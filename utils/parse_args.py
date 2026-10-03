@@ -7,22 +7,77 @@ from utils.select_clients import plastic_phase_attacker_coverage
 from utils.global_settings import BackdoorProperties, FLSettings, TrainingSettings, TriggerType, AttackType, FloatingTriggerPos, EvaluationSettings, ANSIColor, ProjectPaths
 from utils.bbox_transform import BoxTransformMode
 
+_SCHEDULE_TOKEN = re.compile(r"^(\d+)(?:-(\d+)(?:/(\d+))?)?:(\d+|\*)$")
+
+
+def _expand_schedule_tokens(spec, attacker_ids):
+    """Expand a --client-schedule string into [(round, client), ...].
+
+    Returns None (after printing why) on a malformed or impossible token, matching
+    how the rest of parse_client_schedule reports errors. '*' rotation uses one
+    cursor for the whole string so splitting a schedule into several tokens keeps
+    the attackers rotating rather than restarting at the first one.
+    """
+    rotation = list(attacker_ids)
+    cursor = 0
+    out = []
+    for token in (t.strip() for t in spec.split(",") if t.strip()):
+        m = _SCHEDULE_TOKEN.match(token)
+        if not m:
+            print(f"{ANSIColor.RED}[ERROR]{ANSIColor.RESET} Bad --client-schedule token {token!r}. "
+                  f"Expected 'round:client', 'start-end:client' or 'start-end/step:client', "
+                  f"where client is an index or '*' to rotate attackers.")
+            return None
+        start, end, step, who = m.group(1), m.group(2), m.group(3), m.group(4)
+        start = int(start)
+        end = int(end) if end is not None else start
+        step = int(step) if step is not None else 1
+        if step < 1:
+            print(f"{ANSIColor.RED}[ERROR]{ANSIColor.RESET} Step must be >= 1 in {token!r}.")
+            return None
+        if end < start:
+            print(f"{ANSIColor.RED}[ERROR]{ANSIColor.RESET} Range end before start in {token!r}.")
+            return None
+        if who == "*" and not rotation:
+            print(f"{ANSIColor.RED}[ERROR]{ANSIColor.RESET} {token!r} uses '*' but there are no "
+                  f"attackers to rotate through (--attacker-fraction gives none).")
+            return None
+        for rnd in range(start, end + 1, step):
+            if who == "*":
+                out.append((rnd, rotation[cursor % len(rotation)]))
+                cursor += 1
+            else:
+                out.append((rnd, int(who)))
+    return out
+
+
 def parse_client_schedule(args, attacker_ids):
     """
     Parse the formatted client schedule string to set which clients are selected each round.
     Gives a warning when non-malicious clients are selected. Cannot select more clients in a given round than updates
     
-    client_schedule_str: "round_index:client_index,round_index:client_index"
+    Accepted token forms, comma separated and freely mixed:
+
+        round:client        one round                      e.g. 11:0
+        start-end:client    every round in [start, end]    e.g. 11-128:0
+        start-end/step:cl   every step-th round            e.g. 11-128/3:0
+
+    The client may be '*', which rotates through attacker_ids in order, advancing
+    once per emitted round and continuing across tokens left to right. So a
+    40-injection every-third-round schedule over four attackers is
+
+        11-128/3:*
+
+    instead of the forty explicit pairs it expands to. Expansion happens before
+    validation, so every round still gets the same range and attacker-id checks.
     """
-    validation_pattern = "^\d+:\d+(,\d+:\d+)*$"
-    if not re.match(validation_pattern, args.client_schedule):
-        print(f"{ANSIColor.RED}[ERROR]{ANSIColor.RESET} client_schedule string does not match: 'round:client_index,round:client_index' or '^\d+:\d+(,\d+:\d+)*$'")
+    pairs = _expand_schedule_tokens(args.client_schedule, attacker_ids)
+    if pairs is None:
+        return None
 
     # Parse the round index, client index pairs
     schedule = defaultdict(list)
-    pairs = args.client_schedule.split(',')
-    for pair in pairs:
-        round, client_idx = pair.split(':')
+    for round, client_idx in pairs:
         # Validate the round and client number
         if int(round) not in range(1, args.num_rounds + 1):
             print(f"{ANSIColor.RED}[ERROR]{ANSIColor.RESET} Invalid round number given: {int(round)}. Allowed round range: 1 - args.num_rounds")
@@ -65,8 +120,9 @@ def parse_args():
     fl_group.add_argument("--server-lr", type=float, default=FLSettings.SERVER_LR, help="Server-side learning rate η used by FedOpt: w_new = (1-η)·w_global + η·avg(w_client). η=1 reduces to FedAvg.")
     fl_group.add_argument("--gamma-cap", type=float, default=FLSettings.GAMMA_CAP, help="Upper bound on the model-replacement scaling factor γ = k/(η·m). Prevents γ from exploding when server_lr is small.")
     fl_group.add_argument("--use-client-schedule", action="store_true", default=FLSettings.USE_CLIENT_SCHEDULE, help="Instead of randomly, though seeded, selecting clients, takes a client schedule to structure when malicious clients are used.")
-    fl_group.add_argument("--client-schedule", type=str, default="", help="Schedule for specific clients. Format: 'round:client,round:client'. Bijv: '10:2,11:3'")
+    fl_group.add_argument("--client-schedule", type=str, default="", help="Which malicious clients act in which rounds. Comma-separated tokens, freely mixed: 'round:client' (one round), 'start-end:client' (every round in the range), 'start-end/step:client' (every step-th round). The client may be '*' to rotate through the attacker ids, advancing once per emitted round and continuing across tokens. So '11-128/3:*' is the 40-injection every-third-round schedule over four attackers, and '11-105:*' is the continuous one. Ranges expand before validation, so round bounds, client indices and per-round capacity are still checked.")
     fl_group.add_argument("--skip-round-eval", action="store_true", default=FLSettings.SKIP_ROUND_EVAL, help="Skip the server's per-round mAP / ASR evaluation and save_if_best_model. Use during the PilotA pilot — pilot measurements live in attack_logs/, not in round_evaluations.csv, and PilotA submits a benign endpoint so ASR is trivially ~0.")
+    fl_group.add_argument("--eval-every", type=int, default=FLSettings.EVAL_EVERY, help="Run the per-round mAP / ASR evaluation only every Nth round (default 1 = every round). The first and the last round are always evaluated; skipped rounds log NaN so round_evaluations.csv keeps a fixed shape. Evaluation is a fixed per-round cost that --benign-client-epochs / --malicious-client-epochs do not touch, so this cuts wall-clock without changing training dynamics. WARNING: pick N coprime with the injection period. Injections every 3rd round with --eval-every 3 never lands on an injection round, so every sample sits at the same offset from one and peak ASR is systematically under-read; --eval-every 2 samples both phases. A startup warning fires when the two schedules never coincide.")
     fl_group.add_argument("--skip-map-eval", action="store_true", default=FLSettings.SKIP_MAP_EVAL, help="Skip only the clean mAP evaluation (run_clean_eval) to cut compute; mAP_50/mAP_50_95 are logged as NaN and best-model saving is skipped. ASR eval still runs unless --skip-asr-eval. Ignored when --skip-round-eval is set.")
     fl_group.add_argument("--skip-asr-eval", action="store_true", default=FLSettings.SKIP_ASR_EVAL, help="Skip only the poison ASR evaluation (run_poison_eval) to cut compute; ASR/fail_rate/avg_conf_fail are logged as NaN. mAP eval still runs unless --skip-map-eval. Ignored when --skip-round-eval is set.")
     fl_group.add_argument("--output-subdir", type=str, default=None, help=f"Subdirectory under outputs/ where this run's results (timestamped run dir, checkpoints, CSVs) are gathered. When omitted, falls back to the value in global_settings (currently '{ProjectPaths.OUTPUT_DIR.name}').")
@@ -246,6 +302,9 @@ def apply_settings(args):
             "one of them inert or unmeasurable. Enable at most one."
         )
     FLSettings.SKIP_ROUND_EVAL = args.skip_round_eval
+    if args.eval_every < 1:
+        raise ValueError(f"--eval-every must be >= 1 (got {args.eval_every}); 1 means evaluate every round.")
+    FLSettings.EVAL_EVERY = args.eval_every
     FLSettings.SKIP_MAP_EVAL = args.skip_map_eval
     FLSettings.SKIP_ASR_EVAL = args.skip_asr_eval
     # Output subdirectory: CLI overrides the global_settings default (which sets
@@ -399,8 +458,37 @@ def apply_settings(args):
     EvaluationSettings.BATCH_SIZE = args.evaluation_batch_size
 
     validate_benign_ref_coverage()
+    warn_eval_cadence_aliasing()
 
     print_configuration_summary()
+
+
+def warn_eval_cadence_aliasing():
+    """Warn when --eval-every never samples an injection round.
+
+    ASR decays between injections, so an evaluation grid that shares a period with
+    the injection schedule reads the attack at one fixed offset every time. With
+    injections every 3rd round and --eval-every 3 the grid misses all of them and
+    peak ASR is systematically under-read. The run is still internally consistent
+    (two runs on the same grid remain comparable), so this is a warning rather than
+    an error -- but the absolute numbers are not comparable to every-round runs.
+    """
+    n = FLSettings.EVAL_EVERY
+    if n <= 1 or not FLSettings.USE_CLIENT_SCHEDULE or not FLSettings.CLIENT_SCHEDULE:
+        return
+    injections = sorted(FLSettings.CLIENT_SCHEDULE)
+    if not injections:
+        return
+    evaluated = {r for r in injections if r % n == 0 or r == 1 or r >= FLSettings.NUM_ROUNDS}
+    if evaluated:
+        return
+    print(
+        f"{ANSIColor.YELLOW}[WARNING]{ANSIColor.RESET} --eval-every {n} never lands on an "
+        f"injection round ({len(injections)} scheduled, first at {injections[0]}). Every ASR "
+        f"sample will sit at the same offset from an injection, so peak ASR is read low and "
+        f"these numbers are not comparable to an every-round run. Pick a cadence coprime with "
+        f"the injection period (e.g. --eval-every 2 for injections every 3rd round)."
+    )
 
 
 def validate_benign_ref_coverage():

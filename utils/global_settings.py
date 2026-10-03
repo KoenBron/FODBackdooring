@@ -258,6 +258,21 @@ class FLSettings:
     SKIP_MAP_EVAL = False   # skip run_clean_eval (mAP_50 / mAP_50_95)
     SKIP_ASR_EVAL = False   # skip run_poison_eval (ASR / fail_rate / avg_conf_fail)
 
+    # Per-round evaluation CADENCE. 1 = evaluate every round (the historical
+    # behaviour). n > 1 evaluates every nth round plus the first and the last, so a
+    # run always keeps its starting point and its endpoint. Skipped rounds still get
+    # a NaN CSV row, same as SKIP_ROUND_EVAL, so the file shape never changes.
+    #
+    # Evaluation is a fixed per-round cost (one pass over each val dataloader) that
+    # local-epoch changes do not touch, so this is the lever that cuts wall-clock
+    # without altering training dynamics at all.
+    #
+    # CAUTION: the injection schedule has its own period. If EVAL_EVERY shares a
+    # factor with it, every evaluated round sits at the SAME offset from an
+    # injection, so the sampled ASR carries a constant phase bias and peak ASR is
+    # systematically under-read. parse_args warns when the two never coincide.
+    EVAL_EVERY = 1
+
     # FedOpt / server-side learning rate. Only consulted when AGGREGATION_STRATEGY == "fedopt"
     # by the strategy itself; the model-replacement scaler always reads it (defaults to 1.0
     # so behavior under fedavg is unchanged). GAMMA_CAP bounds the replacement scaler γ.

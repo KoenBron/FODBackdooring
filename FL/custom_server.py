@@ -7,7 +7,9 @@ from models.fasterrcnn.wrapper import FasterRCNNWrapper
 from utils.global_settings import ProjectPaths, BackdoorProperties, TrainingSettings, FLSettings
 from utils.dataset import CustomCocoDataset
 from utils.round_evaluator import RoundEvaluator
-from FL.stealth_defenses import analyze as stealth_analyze, DEFENSE_NAMES as STEALTH_DEFENSE_NAMES
+from FL.stealth_defenses import (analyze as stealth_analyze,
+                                 DEFENSE_NAMES as STEALTH_DEFENSE_NAMES,
+                                 format_round_digest as stealth_format_round_digest)
 from FL.groups import build_bucket_map, build_eligibility
 from FL.attack_state import AttackState
 
@@ -193,6 +195,23 @@ class Server:
         """
         return build_bucket_map(self.wrapper.model, self._resolve_stealth_granularity())
 
+    @staticmethod
+    def _should_run_round_eval(round):
+        """Whether this round runs the mAP / ASR evaluation (FLSettings.EVAL_EVERY).
+
+        1 (the default) evaluates every round. n > 1 evaluates every nth round plus
+        the first and the last, so a run always keeps its starting point and its
+        endpoint no matter how the cadence divides NUM_ROUNDS. A skipped round still
+        writes a NaN CSV row, so round_evaluations.csv keeps a fixed shape.
+
+        Independent of SKIP_ROUND_EVAL (a hard off switch) and of the stealth
+        harness, which has its own gate in _should_run_stealth.
+        """
+        n = getattr(FLSettings, "EVAL_EVERY", 1) or 1
+        if n <= 1:
+            return True
+        return round % n == 0 or round == 1 or round >= FLSettings.NUM_ROUNDS
+
     def _should_run_stealth(self, round_attacker_ids):
         """Decide whether to run the passive stealth harness this round.
 
@@ -371,6 +390,8 @@ class Server:
             )
             self.logger.log_stealth_per_client(per_client_rows)
             self.logger.log_stealth_summary(summary_row)
+            self.logger.log_stealth_digest(
+                stealth_format_round_digest(per_client_rows, summary_row))
 
         # Observational norm-clip report (never alters aggregation). One row per malicious
         # client: does its submitted-update L2 norm exceed x*(benign-trajectory ref) or
@@ -395,7 +416,7 @@ class Server:
         # Evaluate the model on ASR and mAP (unless skipped — see SKIP_ROUND_EVAL).
         self.wrapper.set_weights(new_global_weights)
 
-        if FLSettings.SKIP_ROUND_EVAL:
+        if FLSettings.SKIP_ROUND_EVAL or not self._should_run_round_eval(round):
             # Pilot-mode shortcut: PilotA's measurements live in attack_logs/
             # (per-epoch CPU snapshots → per-group L2 divergence + β_max). The
             # server-side mAP / ASR evals carry no information about that and

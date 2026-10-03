@@ -50,6 +50,7 @@ class ModelLogger:
                 # knows at construction.
                 self.stealth_per_client_path = os.path.join(self.output_path, "stealth_per_client.csv")
                 self.stealth_summary_path = os.path.join(self.output_path, "stealth_summary.csv")
+                self.stealth_digest_path = os.path.join(self.output_path, "stealth_rounds.txt")
 
                 # Observational norm-clip report (top-level, lazy header — its columns
                 # depend on the --normclip-report-x sweep, unknown until the first row).
@@ -76,6 +77,7 @@ class ModelLogger:
                 self.round_eval_path = os.path.join(self.output_path, "round_evaluations.csv")
                 self.stealth_per_client_path = os.path.join(self.output_path, "stealth_per_client.csv")
                 self.stealth_summary_path = os.path.join(self.output_path, "stealth_summary.csv")
+                self.stealth_digest_path = os.path.join(self.output_path, "stealth_rounds.txt")
                 self.normclip_report_path = os.path.join(self.output_path, "normclip_report.csv")
                 self.foolsgold_weights_path = os.path.join(self.output_path, "foolsgold_weights.csv")
                 self.normclip_agg_path = os.path.join(self.output_path, "normclip_aggregation.csv")
@@ -226,6 +228,19 @@ class ModelLogger:
             if write_header:
                 writer.writeheader()
             writer.writerow(summary_row)
+
+    def log_stealth_digest(self, text):
+        """Append one human-readable round block to stealth_rounds.txt.
+
+        The two CSVs stay the machine-readable record; this file is the one to read
+        when you want to see what separated the attacker from the benign cohort in a
+        given round without loading anything. Built by
+        stealth_defenses.format_round_digest, appended so a resume continues the file.
+        """
+        if not text:
+            return
+        with open(self.stealth_digest_path, 'a') as f:
+            f.write(text + "\n")
 
     def log_normclip_report(self, rows):
         """Append the observational norm-clip rows (one per malicious client this round).
