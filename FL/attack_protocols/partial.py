@@ -80,12 +80,17 @@ class PartialLogger:
     def write_round(self, current_round, client_id, phase, select_mode, select_param,
                     gamma, gamma_source, carrying, carrying_by_group, top_carriers,
                     norms, freeze=None, constrain=None, freeze_noncarrying=None,
-                    mask_noncarrying=None, norm_budget=None):
+                    mask_noncarrying=None, norm_budget=None, submitted=None):
         target = os.path.join(self.dir, f"round_{current_round}_client_{client_id}.json")
         payload = {
             "round": current_round,
             "client_id": client_id,
             "phase": phase,                           # 'disabled' | 'plastic' | 'exploit'
+            # What was actually handed to the server: 'malicious' normally, 'benign_anchor'
+            # on plastic rounds under PARTIAL_PLASTIC_SUBMIT_BENIGN. The norms block still
+            # describes the poisoned submission that WOULD have been sent, so the two modes
+            # stay comparable; this field says whether it was.
+            "submitted": submitted,
             "select_mode": select_mode,
             "select_param": select_param,
             # The amplification factor applied to every carrier — EXCEPT under
@@ -747,7 +752,10 @@ class PartialAmplificationProtocol(AttackProtocol):
         reference; ben2 is already trained for the noise floor, so the second sample is
         free (2 samples per plastic round this client acts in).
 
-        Returns (theta_mal, sel, benign_norms).
+        Returns (theta_mal, sel, benign_norms, theta_ben1). theta_ben1 is returned so the
+        caller can submit it instead of theta_mal under PARTIAL_PLASTIC_SUBMIT_BENIGN --
+        the measurement is unaffected either way, since div/b come from the trained
+        trajectories and not from whatever was submitted.
         """
         seed_mal, seed_ben1, seed_ben2 = seeds
         print(f"  [partial client={cid} round={current_round}] trajectories on partition "
@@ -765,7 +773,7 @@ class PartialAmplificationProtocol(AttackProtocol):
         if self._needs_benign_refs():
             benign_norms = [update_norm(theta_ben1, server_weights),
                             update_norm(theta_ben2, server_weights)]
-        return theta_mal, sel, benign_norms
+        return theta_mal, sel, benign_norms, theta_ben1
 
     def _stash_round_state(self, cid, carrying, benign_norms, phase, in_exploit):
         """Publish this round's cross-round state: the carrying set, plus (for the
@@ -884,8 +892,9 @@ class PartialAmplificationProtocol(AttackProtocol):
             theta_mal, sel, constrain_fn, freeze_names = self._exploit_trajectory(
                 server_weights, cid, current_round, n_epochs, seeds[0])
             benign_norms = None
+            theta_ben1 = None            # no anchors after the freeze
         else:
-            theta_mal, sel, benign_norms = self._plastic_trajectories(
+            theta_mal, sel, benign_norms, theta_ben1 = self._plastic_trajectories(
                 server_weights, cid, current_round, n_epochs, seeds)
             constrain_fn = freeze_names = None
 
@@ -909,6 +918,19 @@ class PartialAmplificationProtocol(AttackProtocol):
         submission, norm_budget = self._amplify(
             cid, current_round, server_weights, theta_mal, sel, carrying, gamma, gamma_source,
             mask_names)
+
+        # Plastic phase only: hand in the benign anchor rather than the poisoned model.
+        # Deliberately AFTER _amplify so the logged norms still describe what the poisoned
+        # submission WOULD have been, which is what makes the two modes comparable; only
+        # the returned weights change. The localizer is untouched -- sel, div/b and the
+        # pooled accumulator all come from the trained trajectories above.
+        plastic_submit_benign = (in_plastic and FLSettings.PARTIAL_PLASTIC_SUBMIT_BENIGN
+                                 and theta_ben1 is not None)
+        if plastic_submit_benign:
+            submission = theta_ben1
+            print(f"  [partial client={cid} round={current_round}] plastic: submitting the "
+                  f"BENIGN anchor (ben1); the poisoned model is measured but not sent",
+                  flush=True)
 
         # ---- 4. per-round log blocks; each stays None unless its feature ran ----
         freeze = self._freeze_block(sel, current_round) if froze_this_round else None
@@ -941,6 +963,7 @@ class PartialAmplificationProtocol(AttackProtocol):
             norms=norms, freeze=freeze, constrain=constrain,
             freeze_noncarrying=freeze_noncarrying, mask_noncarrying=mask_noncarrying_block,
             norm_budget=norm_budget,
+            submitted=("benign_anchor" if plastic_submit_benign else "malicious"),
         )
 
         metrics = {

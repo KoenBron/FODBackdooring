@@ -150,6 +150,7 @@ def parse_args():
     # Plastic-phase Configuration (Partial protocol)
     plastic_group = parser.add_argument_group('Plastic-phase Configuration (partial protocol)')
     plastic_group.add_argument("--partial-plastic-rounds", type=int, default=FLSettings.PARTIAL_PLASTIC_ROUNDS, help="partial protocol: number of (pooled, across-attacker) injection rounds to observe before FREEZING one shared carrying set = select_by_mode(mean(div), mean(b)). The frozen set is reused every later round, removing the per-round |C| oscillation and late-round collapse. 0 = plastic phase OFF (per-round selection every round).")
+    plastic_group.add_argument("--partial-plastic-submit-benign", action="store_true", default=FLSettings.PARTIAL_PLASTIC_SUBMIT_BENIGN, help="partial protocol: during the PLASTIC phase submit the benign anchor (theta_ben1) instead of the poisoned model. The localizer is unaffected -- div/b come from the trained trajectories, not from what is submitted -- so the carrying set is selected exactly as before, but the attacker is indistinguishable from a benign client for the whole localisation phase and never perturbs the global model it is localising against. Costs the cumulative plastic deposit (plastic_rounds x eta*m/k); measured ASR at the freeze is ~0.000, so that deposit lands where it buys nothing. Exploit rounds are untouched.")
     plastic_group.add_argument("--partial-plastic-no-amp", action="store_true", default=FLSettings.PARTIAL_PLASTIC_NO_AMP, help="partial protocol: submit UNAMPLIFIED (gamma=1) during the plastic phase so the localizer observes on an un-deformed global; amplification resumes only after the freeze. Off by default (amplify during plastic to lay the backdoor foundation).")
     plastic_group.add_argument("--no-frozen-set-summary", action="store_false", dest="log_frozen_set_summary", default=FLSettings.LOG_FROZEN_SET_SUMMARY, help="partial protocol: DISABLE the human-readable frozen-set summary (attack_logs/partial/frozen_set.md) written when the plastic phase freezes. On by default.")
 
@@ -273,6 +274,7 @@ def apply_settings(args):
         )
     FLSettings.PARTIAL_PLASTIC_ROUNDS = args.partial_plastic_rounds
     FLSettings.PARTIAL_PLASTIC_NO_AMP = args.partial_plastic_no_amp
+    FLSettings.PARTIAL_PLASTIC_SUBMIT_BENIGN = args.partial_plastic_submit_benign
     FLSettings.LOG_FROZEN_SET_SUMMARY = args.log_frozen_set_summary
     FLSettings.PARTIAL_CONSTRAIN = args.partial_constrain
     FLSettings.PARTIAL_CONSTRAIN_LAMBDA = args.partial_constrain_lambda

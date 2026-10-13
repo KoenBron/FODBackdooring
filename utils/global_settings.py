@@ -235,6 +235,20 @@ class FLSettings:
     # MUTUALLY EXCLUSIVE with both PARTIAL_FREEZE_NONCARRYING (same support on the wire,
     # contradictory trajectories) and PARTIAL_CONSTRAIN (the mask discards exactly the
     # drift the penalty spends model capacity shrinking). Orthogonal to gamma.
+    # Plastic phase: submit the BENIGN anchor instead of the poisoned model.
+    #
+    # The localizer only needs the three trajectories to be TRAINED; what the client
+    # SUBMITS that round is independent of the measurement. Submitting theta_ben1 makes
+    # the attacker byte-for-byte a benign client for the whole localisation phase, which
+    # removes two objections at once: the attacker is not nudging the very global model
+    # it is localising against, and it has no norm signature to detect during those
+    # rounds (measured at 1.07-1.10x the benign mean when theta_mal is submitted).
+    #
+    # Costs the cumulative plastic deposit, 6 x eta*m/k = 0.25 malicious deltas, roughly
+    # 6.7% of a 9-injection run's total. Measured ASR at the freeze is 0.0000-0.0002, so
+    # that deposit buys nothing where it lands; the expected ASR cost is well under 6.7%.
+    PARTIAL_PLASTIC_SUBMIT_BENIGN = False
+
     PARTIAL_MASK_NONCARRYING = False  # zero non-carrying pseudo-gradients at submission only
 
     # When the plastic phase freezes, write the human-readable one-look summary of the
