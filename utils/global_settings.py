@@ -287,6 +287,13 @@ class FLSettings:
     # systematically under-read. parse_args warns when the two never coincide.
     EVAL_EVERY = 1
 
+    # First round to evaluate. 1 (default) evaluates from the start. Set it to the last
+    # injection round to skip the build-up entirely and spend the evaluation budget on
+    # the decay tail instead -- useful when several runs share an identical prefix and
+    # only their post-injection behaviour differs. Rounds before it write a NaN CSV row,
+    # exactly like a round skipped by EVAL_EVERY, so the file shape never changes.
+    EVAL_START_ROUND = 1
+
     # FedOpt / server-side learning rate. Only consulted when AGGREGATION_STRATEGY == "fedopt"
     # by the strategy itself; the model-replacement scaler always reads it (defaults to 1.0
     # so behavior under fedavg is unchanged). GAMMA_CAP bounds the replacement scaler γ.

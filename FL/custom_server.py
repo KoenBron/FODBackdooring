@@ -199,18 +199,24 @@ class Server:
     def _should_run_round_eval(round):
         """Whether this round runs the mAP / ASR evaluation (FLSettings.EVAL_EVERY).
 
-        1 (the default) evaluates every round. n > 1 evaluates every nth round plus
-        the first and the last, so a run always keeps its starting point and its
+        Rounds before FLSettings.EVAL_START_ROUND are skipped outright. Within the
+        window, 1 (the default) evaluates every round; n > 1 evaluates every nth round
+        plus the window's first round and the last, so a run always keeps its starting point and its
         endpoint no matter how the cadence divides NUM_ROUNDS. A skipped round still
         writes a NaN CSV row, so round_evaluations.csv keeps a fixed shape.
 
         Independent of SKIP_ROUND_EVAL (a hard off switch) and of the stealth
         harness, which has its own gate in _should_run_stealth.
         """
+        start = getattr(FLSettings, "EVAL_START_ROUND", 1) or 1
+        if round < start:
+            return False
         n = getattr(FLSettings, "EVAL_EVERY", 1) or 1
         if n <= 1:
             return True
-        return round % n == 0 or round == 1 or round >= FLSettings.NUM_ROUNDS
+        # `start` replaces round 1 as the always-on anchor, so the first evaluated round
+        # is the one the window opens on rather than whichever multiple of n follows it.
+        return round % n == 0 or round == start or round >= FLSettings.NUM_ROUNDS
 
     def _should_run_stealth(self, round_attacker_ids):
         """Decide whether to run the passive stealth harness this round.
