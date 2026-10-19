@@ -196,18 +196,30 @@ class Server:
         return build_bucket_map(self.wrapper.model, self._resolve_stealth_granularity())
 
     @staticmethod
-    def _should_run_round_eval(round):
-        """Whether this round runs the mAP / ASR evaluation (FLSettings.EVAL_EVERY).
+    def _should_run_round_eval(round, n_attackers=0):
+        """Whether this round runs the mAP / ASR evaluation.
 
-        Rounds before FLSettings.EVAL_START_ROUND are skipped outright. Within the
-        window, 1 (the default) evaluates every round; n > 1 evaluates every nth round
-        plus the window's first round and the last, so a run always keeps its starting point and its
-        endpoint no matter how the cadence divides NUM_ROUNDS. A skipped round still
-        writes a NaN CSV row, so round_evaluations.csv keeps a fixed shape.
+        Three settings compose as one union:
 
-        Independent of SKIP_ROUND_EVAL (a hard off switch) and of the stealth
-        harness, which has its own gate in _should_run_stealth.
+          EVAL_ON_INJECTION_ROUNDS  always evaluate a round an attacker acted in,
+                                    whatever the window says (additive).
+          EVAL_START_ROUND          skip everything before this round.
+          EVAL_EVERY                within the window, evaluate every nth round, plus
+                                    the window's first round and the last, so a run
+                                    always keeps its start and end whatever n divides.
+
+        So EVAL_ON_INJECTION_ROUNDS with EVAL_START_ROUND set to the last injection
+        gives every injection round plus the whole benign tail, and nothing in between.
+
+        n_attackers is how many attackers actually participated, so the injection rule
+        holds under random client selection as well as a fixed schedule.
+
+        A skipped round still writes a NaN CSV row, so round_evaluations.csv keeps a
+        fixed shape. Independent of SKIP_ROUND_EVAL (a hard off switch) and of the
+        stealth harness, which has its own gate in _should_run_stealth.
         """
+        if n_attackers > 0 and getattr(FLSettings, "EVAL_ON_INJECTION_ROUNDS", False):
+            return True
         start = getattr(FLSettings, "EVAL_START_ROUND", 1) or 1
         if round < start:
             return False
@@ -422,7 +434,7 @@ class Server:
         # Evaluate the model on ASR and mAP (unless skipped — see SKIP_ROUND_EVAL).
         self.wrapper.set_weights(new_global_weights)
 
-        if FLSettings.SKIP_ROUND_EVAL or not self._should_run_round_eval(round):
+        if FLSettings.SKIP_ROUND_EVAL or not self._should_run_round_eval(round, len(round_attacker_ids)):
             # Pilot-mode shortcut: PilotA's measurements live in attack_logs/
             # (per-epoch CPU snapshots → per-group L2 divergence + β_max). The
             # server-side mAP / ASR evals carry no information about that and

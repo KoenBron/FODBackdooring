@@ -123,6 +123,7 @@ def parse_args():
     fl_group.add_argument("--client-schedule", type=str, default="", help="Which malicious clients act in which rounds. Comma-separated tokens, freely mixed: 'round:client' (one round), 'start-end:client' (every round in the range), 'start-end/step:client' (every step-th round). The client may be '*' to rotate through the attacker ids, advancing once per emitted round and continuing across tokens. So '11-128/3:*' is the 40-injection every-third-round schedule over four attackers, and '11-105:*' is the continuous one. Ranges expand before validation, so round bounds, client indices and per-round capacity are still checked.")
     fl_group.add_argument("--skip-round-eval", action="store_true", default=FLSettings.SKIP_ROUND_EVAL, help="Skip the server's per-round mAP / ASR evaluation and save_if_best_model. Use during the PilotA pilot — pilot measurements live in attack_logs/, not in round_evaluations.csv, and PilotA submits a benign endpoint so ASR is trivially ~0.")
     fl_group.add_argument("--eval-every", type=int, default=FLSettings.EVAL_EVERY, help="Run the per-round mAP / ASR evaluation only every Nth round (default 1 = every round). The first and the last round are always evaluated; skipped rounds log NaN so round_evaluations.csv keeps a fixed shape. Evaluation is a fixed per-round cost that --benign-client-epochs / --malicious-client-epochs do not touch, so this cuts wall-clock without changing training dynamics. WARNING: pick N coprime with the injection period. Injections every 3rd round with --eval-every 3 never lands on an injection round, so every sample sits at the same offset from one and peak ASR is systematically under-read; --eval-every 2 samples both phases. A startup warning fires when the two schedules never coincide.")
+    fl_group.add_argument("--eval-on-injection-rounds", action="store_true", default=FLSettings.EVAL_ON_INJECTION_ROUNDS, help="Always evaluate rounds in which an attacker participated, regardless of --eval-start-round and --eval-every. ADDITIVE: it widens the evaluated set rather than narrowing it. Pair it with --eval-start-round set to the last injection round to measure exactly the injection rounds plus the benign tail, skipping everything in between. Membership follows who actually participated, so it works under random client selection too, and it makes the --eval-every aliasing warning moot.")
     fl_group.add_argument("--eval-start-round", type=int, default=FLSettings.EVAL_START_ROUND, help="Skip the per-round mAP / ASR evaluation before round N (default 1 = evaluate from the start). Rounds before N log NaN, exactly like rounds skipped by --eval-every, so round_evaluations.csv keeps a fixed shape. Combine with --eval-every to sample the remaining window. Set it to the last injection round to measure only retention: the build-up is then unmeasured, so report ASR at the window start rather than peak ASR.")
     fl_group.add_argument("--skip-map-eval", action="store_true", default=FLSettings.SKIP_MAP_EVAL, help="Skip only the clean mAP evaluation (run_clean_eval) to cut compute; mAP_50/mAP_50_95 are logged as NaN and best-model saving is skipped. ASR eval still runs unless --skip-asr-eval. Ignored when --skip-round-eval is set.")
     fl_group.add_argument("--skip-asr-eval", action="store_true", default=FLSettings.SKIP_ASR_EVAL, help="Skip only the poison ASR evaluation (run_poison_eval) to cut compute; ASR/fail_rate/avg_conf_fail are logged as NaN. mAP eval still runs unless --skip-map-eval. Ignored when --skip-round-eval is set.")
@@ -311,6 +312,7 @@ def apply_settings(args):
     if args.eval_start_round < 1:
         raise ValueError(f"--eval-start-round must be >= 1 (got {args.eval_start_round}).")
     FLSettings.EVAL_START_ROUND = args.eval_start_round
+    FLSettings.EVAL_ON_INJECTION_ROUNDS = args.eval_on_injection_rounds
     FLSettings.SKIP_MAP_EVAL = args.skip_map_eval
     FLSettings.SKIP_ASR_EVAL = args.skip_asr_eval
     # Output subdirectory: CLI overrides the global_settings default (which sets
@@ -480,6 +482,8 @@ def warn_eval_cadence_aliasing():
     an error -- but the absolute numbers are not comparable to every-round runs.
     """
     n = FLSettings.EVAL_EVERY
+    if FLSettings.EVAL_ON_INJECTION_ROUNDS:
+        return          # every injection round is evaluated outright; no phase bias possible
     if n <= 1 or not FLSettings.USE_CLIENT_SCHEDULE or not FLSettings.CLIENT_SCHEDULE:
         return
     injections = sorted(FLSettings.CLIENT_SCHEDULE)

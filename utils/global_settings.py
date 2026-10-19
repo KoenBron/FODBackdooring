@@ -294,6 +294,14 @@ class FLSettings:
     # exactly like a round skipped by EVAL_EVERY, so the file shape never changes.
     EVAL_START_ROUND = 1
 
+    # Always evaluate rounds in which at least one attacker participated, regardless of
+    # EVAL_START_ROUND and EVAL_EVERY. ADDITIVE: it widens the evaluated set rather than
+    # restricting it, so pairing it with EVAL_START_ROUND = <last injection round> gives
+    # exactly "every injection round, plus the whole benign tail" and nothing in between.
+    # Membership is decided by who actually participated, not by the schedule, so it also
+    # works under random client selection.
+    EVAL_ON_INJECTION_ROUNDS = False
+
     # FedOpt / server-side learning rate. Only consulted when AGGREGATION_STRATEGY == "fedopt"
     # by the strategy itself; the model-replacement scaler always reads it (defaults to 1.0
     # so behavior under fedavg is unchanged). GAMMA_CAP bounds the replacement scaler γ.
