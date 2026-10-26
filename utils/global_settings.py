@@ -161,6 +161,10 @@ class FLSettings:
     PARTIAL_SELECT_MODE = "cutoff"  # "cutoff" (div > cutoff*floor, variable size) | "topk" (fixed k by rho)
     PARTIAL_CUTOFF = 1.0            # cutoff mode: keep tensors with div > PARTIAL_CUTOFF * floor (1.0 == rho>0 gate)
     PARTIAL_TOPK = 20              # topk mode: size of the per-tensor carrying set C
+    # names mode: the carrying set is exactly the eligible tensors whose names start
+    # with one of these prefixes. div/b never gate membership, so the set is fixed and
+    # identical in every round. A module prefix takes every tensor under it.
+    PARTIAL_CARRYING_NAMES = ()
     # Source of the carrier-set amplification factor gamma. Both modes apply the
     # SAME  gamma*theta_mal - (gamma-1)*theta_t  replacement formula to C; they only
     # differ in where gamma comes from:

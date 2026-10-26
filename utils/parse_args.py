@@ -142,8 +142,9 @@ def parse_args():
     # Attacker Configuration
     atk_group = parser.add_argument_group('Attacker Configuration')
     atk_group.add_argument("--attack-protocol", type=str, default=FLSettings.ATTACK_PROTOCOL, choices=["composable", "pilot_a", "pilot_b", "laysel_fl", "partial"], help="Top-level malicious-client routing. 'composable' = today's knob-tuned path (Neurotoxin / model replacement / TARGETED_* attack composed via the existing --enable-* flags). 'pilot_a' (per-group) / 'pilot_b' (per-tensor) = observational localization pilots. 'partial' = partial-amplification attack: dynamic per-tensor carrying-layer selection (Increment 1 submits the malicious endpoint un-amplified). 'laysel_fl' = preset recipe, not yet wired (raises NotImplementedError).")
-    atk_group.add_argument("--partial-select-mode", type=str, default=FLSettings.PARTIAL_SELECT_MODE, choices=["cutoff", "topk"], help="partial protocol: per-tensor carrying-layer selector. 'cutoff' = all eligible tensors with div > (--partial-cutoff)*floor (variable-size; PilotB's selector; cutoff=1 equals the rho>0 gate). 'topk' = fixed --partial-topk tensors by denoised rho.")
+    atk_group.add_argument("--partial-select-mode", type=str, default=FLSettings.PARTIAL_SELECT_MODE, choices=["cutoff", "topk", "names"], help="partial protocol: per-tensor carrying-layer selector. 'cutoff' = all eligible tensors with div > (--partial-cutoff)*floor (variable-size; PilotB's selector; cutoff=1 equals the rho>0 gate). 'topk' = fixed --partial-topk tensors by denoised rho. 'names' = a FIXED set given by --partial-carrying-names, ignoring div/b entirely.")
     atk_group.add_argument("--partial-cutoff", type=float, default=FLSettings.PARTIAL_CUTOFF, help="partial protocol (cutoff mode): keep per-tensor layers whose normalized divergence exceeds this multiple of the floor (div > cutoff*floor). 1.0 reproduces the rho>0 gate.")
+    atk_group.add_argument("--partial-carrying-names", type=str, default="", help="partial protocol (names mode): comma-separated tensor-name prefixes that define the carrying set. Membership is by name only -- divergence and the noise floor are ignored, so the set is identical in every round and the plastic freeze is a formality. A module prefix takes every tensor under it, so \"roi_heads.box_head.fc6\" selects fc6.weight and fc6.bias (12,846,080 params, 31.03%% of the model). Only eligible (trainable, non-BN) tensors can match. Required by, and only used by, --partial-select-mode names.")
     atk_group.add_argument("--partial-topk", type=int, default=FLSettings.PARTIAL_TOPK, help="partial protocol (topk mode): size of the per-tensor carrying set C (top-k tensors by denoised divergence rho).")
     atk_group.add_argument("--partial-gamma-mode", type=str, default=FLSettings.PARTIAL_GAMMA_MODE, choices=["fixed", "replacement", "budgeted"], help="partial protocol: source of the carrier-set gamma. 'fixed' = use --partial-amp-gamma (the trade-off sweep knob). 'replacement' = derive gamma = k/(server_lr*n_mal) capped at --gamma-cap, i.e. the SAME Bagdasaryan factor as full model replacement, so the carrying tensors are genuinely model-replaced after aggregation. 'budgeted' = EXPLOIT-ONLY per-carrier gamma from a total-L2 norm budget (--partial-norm-budget x this client's own mean benign-anchor norm): carriers take the replacement gamma in descending selection-score order until the budget is spent, the one that exhausts it is throttled to fit exactly, and later carriers go unamplified. Makes --partial-amp-gamma inert.")
     atk_group.add_argument("--partial-norm-budget", type=float, default=FLSettings.PARTIAL_NORM_BUDGET, help="partial protocol (budgeted gamma mode): norm-inflation ceiling B. The submitted update's L2 norm is held <= B * (this client's OWN mean benign-anchor norm, frozen at the plastic freeze; never pooled across clients). B=1.0 submits at the benign scale (no excess to spend -> every carrier unamplified); B>1 buys amplification headroom. B<1 is rejected (shrinking the update is the constrain phase's job).")
@@ -261,6 +262,14 @@ def apply_settings(args):
     FLSettings.PARTIAL_SELECT_MODE = args.partial_select_mode
     FLSettings.PARTIAL_CUTOFF = args.partial_cutoff
     FLSettings.PARTIAL_TOPK = args.partial_topk
+    FLSettings.PARTIAL_CARRYING_NAMES = tuple(
+        x.strip() for x in args.partial_carrying_names.split(",") if x.strip())
+    if FLSettings.PARTIAL_SELECT_MODE == "names" and not FLSettings.PARTIAL_CARRYING_NAMES:
+        raise ValueError("--partial-select-mode names requires --partial-carrying-names "
+                         "(a comma-separated list of tensor-name prefixes).")
+    if FLSettings.PARTIAL_CARRYING_NAMES and FLSettings.PARTIAL_SELECT_MODE != "names":
+        print(f"{ANSIColor.YELLOW}[WARNING]{ANSIColor.RESET} --partial-carrying-names is set but "
+              f"--partial-select-mode is {FLSettings.PARTIAL_SELECT_MODE!r}; the names are IGNORED.")
     FLSettings.PARTIAL_GAMMA_MODE = args.partial_gamma_mode
     FLSettings.PARTIAL_AMP_GAMMA = args.partial_amp_gamma
     FLSettings.PARTIAL_NORM_BUDGET = args.partial_norm_budget
@@ -664,6 +673,8 @@ def build_config_sections():
             partial.append(("PARTIAL_CUTOFF", FLSettings.PARTIAL_CUTOFF))
         else:
             partial.append(("PARTIAL_TOPK", FLSettings.PARTIAL_TOPK))
+        if FLSettings.PARTIAL_SELECT_MODE == "names":
+            partial.append(("PARTIAL_CARRYING_NAMES", ", ".join(FLSettings.PARTIAL_CARRYING_NAMES)))
         partial.append(("PARTIAL_GAMMA_MODE", FLSettings.PARTIAL_GAMMA_MODE))
         if FLSettings.PARTIAL_GAMMA_MODE == "fixed":
             partial.append(("PARTIAL_AMP_GAMMA", FLSettings.PARTIAL_AMP_GAMMA))

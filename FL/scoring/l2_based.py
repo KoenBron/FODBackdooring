@@ -181,7 +181,25 @@ def select_topk_signed(score, k):
     return ranked[:k]
 
 
-def select_by_mode(div, b, mode, cutoff, topk):
+def select_names(div, b, prefixes):
+    """Fixed carrying set: every tensor whose name starts with one of `prefixes`.
+
+    Selection is by NAME, so div/b never gate membership -- the set is identical in
+    every round and in the plastic freeze, whatever the trajectories did. The scores
+    are still reported as the div/b ratio so the ranking, the budget allocator's
+    descending walk and the logs keep the same meaning as in cutoff mode.
+
+    `div` must already be restricted to eligible tensors, so an ineligible name simply
+    never matches. A prefix matching a module ('roi_heads.box_head.fc6') takes every
+    tensor under it (.weight and .bias); a full tensor name takes exactly that one.
+    """
+    pres = tuple(prefixes)
+    hit = [n for n in div if n.startswith(pres)]
+    scored = [(n, (div[n] / b[n]) if b[n] > 0 else float("inf")) for n in hit]
+    return sorted(scored, key=lambda kv: kv[1], reverse=True)
+
+
+def select_by_mode(div, b, mode, cutoff, topk, names=None):
     """Route a (div, b) score pair to the configured carrying-layer selector.
 
     SINGLE source of the cutoff-vs-topk decision, so the per-round path and the
@@ -190,6 +208,7 @@ def select_by_mode(div, b, mode, cutoff, topk):
 
         'cutoff' -> select_cutoff(div, b, cutoff)         # variable size, div > cutoff*b
         'topk'   -> select_topk_signed(div - b, topk)     # fixed k by SIGNED denoised rho
+        'names'  -> select_names(div, b, names)           # fixed BY NAME, div/b ignored
 
     Both denoise against the benign-to-benign floor b, and each ranks by ITS OWN
     selection score: cutoff by the ratio div/b (the quantity it thresholds), topk by
@@ -205,4 +224,8 @@ def select_by_mode(div, b, mode, cutoff, topk):
     if mode == "topk":
         signed = {n: div[n] - b[n] for n in div}
         return select_topk_signed(signed, topk)
-    raise ValueError(f"Unknown select mode {mode!r}; expected 'cutoff' or 'topk'.")
+    if mode == "names":
+        if not names:
+            raise ValueError("select mode 'names' requires a non-empty name/prefix list.")
+        return select_names(div, b, names)
+    raise ValueError(f"Unknown select mode {mode!r}; expected 'cutoff', 'topk' or 'names'.")

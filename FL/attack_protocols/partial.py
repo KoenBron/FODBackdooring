@@ -336,6 +336,7 @@ class PartialAmplificationProtocol(AttackProtocol):
             mean_div, mean_b,
             FLSettings.PARTIAL_SELECT_MODE,
             FLSettings.PARTIAL_CUTOFF, FLSettings.PARTIAL_TOPK,
+            FLSettings.PARTIAL_CARRYING_NAMES,
         )
         return {
             "carrying": AttackState.plastic_frozen_set,
@@ -394,6 +395,7 @@ class PartialAmplificationProtocol(AttackProtocol):
             FLSettings.PARTIAL_SELECT_MODE,
             FLSettings.PARTIAL_CUTOFF,
             FLSettings.PARTIAL_TOPK,
+            FLSettings.PARTIAL_CARRYING_NAMES,
         )
 
         carrying = {name for name, _ in ranked}
@@ -459,6 +461,7 @@ class PartialAmplificationProtocol(AttackProtocol):
             FLSettings.PARTIAL_SELECT_MODE,
             FLSettings.PARTIAL_CUTOFF,
             FLSettings.PARTIAL_TOPK,
+            FLSettings.PARTIAL_CARRYING_NAMES,
         )
         AttackState.set_plastic_frozen({name for name, _ in ranked})
         # Freeze each attacker's OWN mean benign-anchor norm (empty when nothing collects
@@ -856,8 +859,7 @@ class PartialAmplificationProtocol(AttackProtocol):
         self.manager.logger.partial.write_freeze_summary(
             current_round=current_round,
             select_mode=FLSettings.PARTIAL_SELECT_MODE,
-            select_param=(FLSettings.PARTIAL_CUTOFF if FLSettings.PARTIAL_SELECT_MODE == "cutoff"
-                          else FLSettings.PARTIAL_TOPK),
+            select_param=self._select_param(),
             pooled_injections=AttackState.plastic_count,
             frozen_set=AttackState.plastic_frozen_set,
             carrying_params=sum(numel.get(n, 0) for n in AttackState.plastic_frozen_set),
@@ -952,7 +954,7 @@ class PartialAmplificationProtocol(AttackProtocol):
 
         # ---- 5. write the round log and return the submission ----
         mode = FLSettings.PARTIAL_SELECT_MODE
-        select_param = FLSettings.PARTIAL_CUTOFF if mode == "cutoff" else FLSettings.PARTIAL_TOPK
+        select_param = self._select_param()
         log_path = self.manager.logger.partial.write_round(
             current_round=current_round, client_id=cid, phase=phase,
             select_mode=mode, select_param=select_param,
@@ -984,9 +986,19 @@ class PartialAmplificationProtocol(AttackProtocol):
         }
         return submission, len(self.manager.subsets_mal[cid]), metrics
 
+    @staticmethod
+    def _select_param():
+        """The selector's own parameter, for the logs: cutoff value, k, or the names."""
+        mode = FLSettings.PARTIAL_SELECT_MODE
+        if mode == "cutoff":
+            return FLSettings.PARTIAL_CUTOFF
+        if mode == "names":
+            return ", ".join(FLSettings.PARTIAL_CARRYING_NAMES)
+        return FLSettings.PARTIAL_TOPK
+
     def _print_selection(self, cid, current_round, carrying, ranked, gamma, phase):
         mode = FLSettings.PARTIAL_SELECT_MODE
-        param = FLSettings.PARTIAL_CUTOFF if mode == "cutoff" else FLSettings.PARTIAL_TOPK
+        param = self._select_param()
         top = ", ".join(f"{name}={score:.3g}" for name, score in ranked[:5]) or "(none)"
         # In budgeted mode gamma is the per-carrier CEILING, not a factor applied to all
         # of C — say so, or the line reads as if every carrier got it (the norm-budget
