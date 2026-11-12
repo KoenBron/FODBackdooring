@@ -9,7 +9,7 @@ training; it simulates the norm-clip defense being considered separately.
 Split in two so the threshold/flag logic is torch-free and unit-testable:
   - update_norm(...) is the whole-update L2 norm of one update (needs torch;
     imported lazily so importing this module does NOT drag torch into the dev
-    sandbox / smoketests);
+    sandbox or any torch-free unit test);
   - build_report_rows(...) is pure Python over those floats.
 
 The benign reference is supplied per-cid by the caller (the server reads it from
@@ -31,7 +31,7 @@ def update_norm(client_weights, global_weights):
     function scores the malicious/benign trajectories (Partial protocol) and every
     submitted update (server), so all norms in the report are comparable. torch is
     imported HERE so the module stays torch-free at import time (the row builder below,
-    and its smoketest, need no torch).
+    and any test of it, need no torch).
     """
     import torch
     sq = 0.0

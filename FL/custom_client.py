@@ -52,7 +52,7 @@ class ClientManager:
         and the annotations file), so a resume reproduces the split exactly with nothing
         persisted — the same property the IID path has always had. The only randomness is
         numpy Generators seeded from that value; nothing here reads module-level RNG state
-        or iteration order of a dict/set. smoketest_noniid [7] holds that line.
+        or iteration order of a dict/set, so the split is reproducible from the seed alone.
         """
         labels, names = ds_benign.get_partition_labels(
             FLSettings.DIRICHLET_LABEL_RULE, FLSettings.PARTITIONING_SEED,

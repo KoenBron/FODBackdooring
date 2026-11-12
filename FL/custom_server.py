@@ -288,7 +288,7 @@ class Server:
         is_attacker = client_config["is_attacker"]
         client_type = "Attacker" if is_attacker else "Benign"
         client_update = {
-            "cid": client_index,# Same namespace everywhere: client_index from select_clients == cid == ATTACKER_IDS. No flwr node_id remap in the custom path.
+            "cid": client_index,# Same namespace everywhere: client_index from select_clients == cid == ATTACKER_IDS.
             "type": client_type,# "Attacker"/"Benign" — consumed by the stealth harness's label-aware metrics.
             "weights": client_weights_update,
             "num_samples": num_samples,

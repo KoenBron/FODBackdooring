@@ -210,7 +210,7 @@ def normclip_scales(norms, cids, c):
     Rescaling is a pure positive scalar, so it changes MAGNITUDE ONLY — the update's
     direction is preserved exactly. That is the point of including this defense: it is
     the one that acts purely on the norm axis, and it leaves cosine/Krum-style direction
-    separation untouched (asserted in smoketest_normclip_agg).
+    separation untouched.
 
     norms: {cid: ||Delta_i||}, whole-update L2. The caller supplies these, so the
            coordinate set is the caller's choice — FL.strategies.normclip uses

@@ -23,7 +23,7 @@ def plastic_phase_attacker_coverage(schedule, attacker_ids, plastic_rounds):
 
     Lives here (not in parse_args) because it is pure schedule semantics — the same
     knowledge select_clients already owns — and because parse_args transitively imports
-    torch, which would put this out of reach of the torch-free smoketests.
+    torch, which would put this out of reach of torch-free callers and tests.
 
     The plastic phase ends when the POOLED injection count reaches `plastic_rounds`, and
     the round that TRIGGERS the freeze is itself still plastic (its sample is the Nth), so

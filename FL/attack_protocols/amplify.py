@@ -25,7 +25,7 @@ def partial_amplify(theta_t, theta_mal, carrying, gamma):
     Returns a NEW dict; theta_mal / theta_t are not mutated. Non-carrying entries are
     SHARED (not cloned) with theta_mal — safe because the submission is only read
     downstream, never written. The arithmetic is elementwise and library-agnostic
-    (works on torch tensors and on plain floats, which the smoketest relies on).
+    (works on torch tensors and on plain floats, which makes it testable without torch).
 
     theta_t   : broadcast weights (full state_dict).
     theta_mal : malicious endpoint (full state_dict); carrying names index into it.

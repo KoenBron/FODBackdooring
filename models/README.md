@@ -1,11 +1,12 @@
 # Folder Purpose
-This directory contains the implementations of different models organised in subdirectories.
-Each model has its own model specific pytorch implementation and an accompanying interface.py file that defines how you can interact with the model. 
-The interface.py file in the top of this directory contains the abstract base class for this interface that all of the models should adhere to.
+Model implementations, each behind a common wrapper interface so the FL code never depends on a
+specific architecture. `interface.py` at the top of this directory defines the abstract base
+class every wrapper implements.
 
 ## Folder Structure
-- interface.py: Holds the abstract base class defining model interactions
-- fasterrcnn/:
-    - model.py: creates the model
-    - wrapper.py: Defines interactions with the model
-    
+- `interface.py`: Abstract base class defining how the FL code interacts with a model.
+- `fasterrcnn/`:
+    - `model.py`: Builds the torchvision `fasterrcnn_resnet50_fpn` model.
+    - `wrapper.py`: Implements the interface — weight get/set, local training steps, inference.
+    - `backdoor_roi_heads.py`: ROI-head surgery used by the box-transform (regression-head)
+      backdoor to rewrite box-regression targets for trigger-bearing objects.

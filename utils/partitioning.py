@@ -6,8 +6,8 @@ from utils.global_settings import FLSettings
 
 # torch is imported lazily, inside the two functions that need it, so that building an
 # index partition does NOT drag torch in — the same reason FL/normclip_report.py splits
-# its torch half off. It keeps the IID/non-IID partitioners reachable from the torch-free
-# smoketests, which is where their equivalence is checked.
+# its torch half off. It keeps the IID/non-IID partitioners importable without torch, which
+# is how their equivalence can be checked directly.
 
 def get_shuffled_indices(dataset_size):
     indices = list(range(dataset_size))
@@ -156,7 +156,7 @@ def build_iid_partitions(dataset_size, n_clients, target_image_indices=None):
     rebalanced one — followed by the np.array_split this module has always used. Only the
     RETURN SHAPE is new: a list of per-client index lists rather than one flat permutation,
     because Dirichlet label-skew partitions are not slices of a permutation. The IID result
-    is bit-identical to the old flat-permutation path (asserted in smoketest_noniid).
+    is bit-identical to the old flat-permutation path.
     """
     if not FLSettings.GUARANTEE_TARGET_OBJECTS:
         indices = get_shuffled_indices(dataset_size)

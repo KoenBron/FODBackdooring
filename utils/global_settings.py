@@ -446,12 +446,6 @@ class FLSettings:
     # stealth metrics (attacker-labelled metrics come back NaN/zero'd there).
     STEALTH_ON_BENIGN_ROUNDS = False
 
-    # flwr specific settings
-    FRACTION_CLIENT_EVAL = 0.0# Fraction to determine on how many client instance evaluation is done
-    MIN_FIT_CLIENTS = 2
-    FRACTION_GPU = 1.0
-    WORKERS_PER_CLIENT = 4
-
     # Remaining
     SEED = 4# For seeding the client selection per round
     PARTITIONING_SEED = 4# Used for partitioning the dataset amongst the clients

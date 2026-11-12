@@ -1,90 +1,102 @@
 # Federated Object Detection Backdooring
-This repository implements existing dissapearance and mislabelling backdoor attacks on CNN-based Object Detection models in a Federate Learning session.
-These attacks are established weaknesses of OD-models trained by a centralized server entity, but this work shows their implementation in a FL setting through utilizing Distributed Backdoor Attacks.
+
+This repository implements targeted **disappearance**, **mislabelling** and **box-transform**
+backdoor attacks against CNN-based object detection models (Faster R-CNN) trained in a
+Federated Learning session, together with a set of robust-aggregation defences and a
+passive detectability harness used to measure how visible each attack is to them.
 
 ## Setup
-This project is made in Python version **3.10.2**.
-To run this project as is locally:
-1. Install pytorch with pip (NOTE: We used pytorch version 2.10.0 with CUDA 13.0 in a Linux environment)
-    ```
+
+Developed on **Python 3.12** (3.10+ should work).
+
+1. Install PyTorch (we used torch 2.10.0 / CUDA 13.0 on Linux):
+    ```bash
     pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu130
     ```
-2. Install the remaining dependencies
-    ```
+2. Install the remaining dependencies:
+    ```bash
     pip install -r requirements.txt
     ```
-3. Make sure you have your dataset in COCO-annotation stored in a directory called dataset at the project root
+3. Place a COCO-annotated dataset in a `dataset/` directory at the project root. The
+   layout below is expected (configurable in `utils/dataset.py`; images must be `.jpg`):
     ```
-    mkdir dataset
+    dataset/training_annotations.json
+    dataset/validation_annotations.json
+    dataset/training_images/
+    dataset/validation_images/
     ```
-    1. Though this behviour is alterable in the `utils/dataset.py` file, the program expects the following folders and files to be present (NOTE: though modifiable, the program expects .jpg files for the images)
+4. Run a federated training session. `custom_fl_train.py` is the single entry point;
+   copy the example launcher and edit its argument arrays:
+    ```bash
+    cp run_custom_fl_train.sh.example run_fl_train.sh
+    chmod +x run_fl_train.sh
+    ./run_fl_train.sh
+    ```
 
-    ```
-    /dataset/training_annotations.json
-    /dataset/validation_annotations.json
-    /dataset/training_images/
-    /dataset/validation_images/
-    ```
-4. You can start the training of the model (NOTE: training parameters can be altered in `train.sh`)
-    ```
-    chmod +x run_train.sh
-    ./run_train.sh
-    ```
-5. You can start the training of the model (NOTE: training parameters can be altered in `train.sh`)
-    ```
-    chmod +x run_evaluation.sh
-    ./run_evaluation.sh
-    ```
 ## Repository Structure
 
-To navigate the project easily, the root files and directories are grouped by their functionality below:
+### Entry points
+* `custom_fl_train.py` — the federated learning simulation. All experiments run through this.
+* `run_custom_fl_train.sh.example` — template launcher showing how the arguments are grouped.
+* `evaluation.py` — clean-utility (mAP) and backdoor-efficacy (ASR) evaluation. Also imported
+  by `utils/model_log.py`, so it is part of the training path, not just a standalone tool.
 
-### Training & Evaluation Scripts
-These are the main entry points for running experiments.
-* `train_central.py` & `run_train_central.sh`: Scripts to train the Faster R-CNN model in a standard, centralized server setting (used as a baseline).
-* `custom_fl_train.py` & `run_fl_train.sh`: The core scripts for training the model in a simulated Federated Learning environment (default aggregation strategy: FedAvg).
-* `train.py` & `run_train.sh`: Legacy Federated Learning training scripts (alternative entry point / legacy flwr implementation).
-* `evaluation.py` & `run_evaluation.sh`: Scripts dedicated to evaluating trained models on utility (mAP) and backdoor efficacy (ASR).
-* `test_wrapper.py`: Example of helper script to validate wrapper implementation for training purposes.
+### Modules
+* `FL/` — the federated simulation: server/client orchestration, attack protocols, aggregation
+  strategies and the passive detectability harness.
+* `utils/` — dataset loading and poison injection, data partitioning (IID and non-IID),
+  argument parsing, logging and per-round evaluation.
+* `models/` — Faster R-CNN implementation behind a common wrapper interface.
+* `scripts/` — standalone analysis tools: result plotting, stealth summary tables and a
+  dry-run of the partitioner. Not imported by the training code.
+* `notebooks/` — exploratory analysis notebooks (outputs stripped to keep the clone small).
 
-### Modules & Source Code
-* `FL/`: Contains the logic for the Federated Learning simulation (e.g., client simulation, aggregation protocols like FedAvg, and defense mechanisms).
-* `utils/`: Helper functions and configurations, including `dataset.py` (COCO loading & poison injection), logging utilities, and global project settings.
-* `scripts/`: Assorted utility scripts (e.g., data preprocessing, log parsing).
-* `notebooks/`: Jupyter Notebooks used for data analysis, plotting graphs (like L2-distance clustering), and exploring results.
+### Aggregation strategies
+Selected with `--aggregation-strategy`:
 
-### Containerization & HPC (Cluster)
-Files required to run the code consistently on local machines or the DAIC cluster.
-* `Dockerfile` & `docker-compose.yml`: For building and running the project in an isolated Docker container.
-* `apptainer_build.def` & `apptainer/`: Definitions for building Apptainer/Singularity containers, required for HPC cluster compatibility.
-* `slurm_submit.sh`: The sbatch script for submitting training jobs to the Slurm workload manager on the cluster.
+| value | description |
+|---|---|
+| `fedavg` | sample-weighted mean (default) |
+| `fedopt` | server-side learning-rate blend, `(1-η)·w_global + η·avg(w_client)` |
+| `multikrum` | Multi-Krum (Blanchard et al. 2017) — keep the `m` most central updates, then FedAvg |
+| `foolsgold` | FoolsGold (Fung et al. 2020) — down-weight clients whose historical update directions agree |
+| `normclip` | norm clipping — rescale any update whose L2 norm exceeds `c ×` the round median |
 
-### Data & Output Directories
-* `dataset/`: Expected location for the COCO-formatted datasets and images (Not tracked in git).
-* `models/`: Directory where model implementation are stored (e.g. FasterRCNN)
-* `outputs/`: Directory where trained model checkpoints (`.pth`) and training metrics are saved.
-* `slurm_logs/`: Standard output and error logs generated by the Slurm cluster.
+Defences only ever see submitted updates, never the attacker/benign labels.
+
+### Attack protocols
+Selected with `--attack-protocol`: `composable` (the knob-driven Neurotoxin / model-replacement
+path), `partial` (partial-amplification with per-tensor carrying-layer selection),
+`pilot_a` / `pilot_b` (observational localization pilots).
+
+### Data partitioning
+`--partition-mode iid` (default) splits a seeded shuffle into equal chunks.
+`--partition-mode dirichlet` gives every client the same *number* of images but skews each
+client's *class composition* via `--dirichlet-alpha`, so label heterogeneity varies while
+partition size is held constant. `scripts/partition_report.py` dry-runs the partitioner and
+prints the resulting per-client compositions without training.
+
+### Output directories (not tracked)
+* `dataset/` — input data.
+* `outputs/` — checkpoints (`.pth`), per-round metrics CSVs and run configuration.
 
 ### Environment
-* `requirements.txt`: List of Python dependencies required to run the project.
+* `requirements.txt` — Python dependencies.
 
-## Usage Example
-Configure the simulation using command-line arguments. Below are a few common scenarios:
+## Usage Examples
 
-### 1. Basic Federated Learning (Benign)
-Run a standard training session without any data poisoning or malicious clients.
-
+### 1. Basic Federated Learning (benign)
 ```bash
 python custom_fl_train.py \
   --num-rounds 50 \
   --total-clients 10 \
   --clients-per-round 5 \
-  --attacker-fraction 0.0 \
+  --attacker-fraction 0.0
 ```
-* Sets up 50 rounds where each round 50 clients are chosen out of 10 total clienets. 
-* 0% of the total clients are attackers.
-### 2. Model Replacement backdoor attack
-Sets up a targeted disappearance attack on person objects using model replacement to amplify its efficacy.
+50 rounds, 5 of 10 clients sampled per round, no malicious clients.
+
+### 2. Model-replacement backdoor
+A targeted disappearance attack on `person` objects, amplified by model replacement.
 ```bash
 python custom_fl_train.py \
   --num-rounds 100 \
@@ -98,17 +110,14 @@ python custom_fl_train.py \
   --target-class "person" \
   --poison-rate 0.15 \
   --trigger-pattern FLOATING_UNIFORM \
-  --trigger-pos CENTER \
-  --trigger-color "255,0,0" \
+  --floating-pos CENTER \
+  --trigger-color "255,0,0"
 ```
-* Attackers: 10% of clients are malicious and train for 5 local epochs (vs. 2 for benign). It poisons 15% of the person objects in its local dataset.
+* **Attackers**: 10% of clients, training 5 local epochs against the benign 2, poisoning 15%
+  of the `person` objects in their partition.
+* **Trigger**: a red square scaled to and floating inside each target bounding box.
 
-* Strategy: Enables model replacement to amplify the backdoor impact.
-
-* Trigger: Injects a red FLOATING_UNIFORM (= a red square floating inside and scaled to the bounding box of the person object sca) targeting class "person".
-
-
-### 3. Fixed Client schedule
+### 3. Fixed client schedule
 ```bash
 python custom_fl_train.py \
   --num-rounds 20 \
@@ -118,7 +127,21 @@ python custom_fl_train.py \
   --use-client-schedule \
   --client-schedule "10:0,10:1,15:0"
 ```
-* Format: --client-schedule "round:client_idx,round:client_idx"
+Forces clients 0 and 1 into round 10 and client 0 into round 15; remaining slots are filled
+by randomly sampled benign clients.
 
-* Action: Forces Client 0 and 1 to participate in round 10, and Client 0 to participate again in round 15. Other benign clients will be randomly selected
-
+### 4. Non-IID partitioning against a robust aggregator
+```bash
+python custom_fl_train.py \
+  --num-rounds 60 \
+  --total-clients 20 \
+  --clients-per-round 9 \
+  --attacker-fraction 0.2 \
+  --partition-mode dirichlet \
+  --dirichlet-alpha 0.5 \
+  --aggregation-strategy multikrum \
+  --krum-f 1 \
+  --do-stealth-eval
+```
+Label-skewed partitions, Multi-Krum aggregation, and the passive detectability harness
+enabled so the per-client stealth metrics are written alongside the usual round metrics.
