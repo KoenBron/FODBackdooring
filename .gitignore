@@ -10,3 +10,7 @@ run_slurm_train.sh
 run_fl_train.sh
 *.swp
 summaries/
+EXPERIMENT_INVENTORY.md
+PARTIAL_AMP_FINDINGS.md
+runs/
+.ipynb_checkpoints/

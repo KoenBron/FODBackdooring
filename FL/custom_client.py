@@ -1,10 +1,19 @@
+import os
+
 import torch
 from torch.utils.data import DataLoader
 
 from models.fasterrcnn.wrapper import FasterRCNNWrapper
 from utils.dataset import CustomCocoDataset
 from utils.global_settings import ProjectPaths, BackdoorProperties, FLSettings, TrainingSettings
-from utils.partitioning import get_shuffled_indices, get_shuffled_indices_with_target_quota, partition_dataset
+from utils.noniid import (
+    allocate_label_skew,
+    composition_rows,
+    global_marginal,
+    print_composition_table,
+    write_composition_csv,
+)
+from utils.partitioning import build_iid_partitions, partition_dataset
 
 class ClientManager:
     def __init__(self, num_clients: int, logger):
@@ -17,8 +26,9 @@ class ClientManager:
 
         # Create the benign and malicious subset for each client once
         ds_mal, ds_benign = self._setup_datasets(num_clients=num_clients)
-        shuffled_indices = self._build_partition_indices(ds_benign, num_clients)
-        self.subsets_mal, self.subsets_benign = partition_dataset(dataset=ds_mal, n_clients=num_clients, indices=shuffled_indices), partition_dataset(dataset=ds_benign, n_clients=num_clients, indices=shuffled_indices)
+        client_indices = self._build_client_partitions(ds_benign, num_clients)
+        self.subsets_mal = partition_dataset(ds_mal, client_indices)
+        self.subsets_benign = partition_dataset(ds_benign, client_indices)
 
         # Clients work on the same model instance but load in their parameters
         num_classes = ds_benign.get_total_classes_count() + 1
@@ -30,27 +40,77 @@ class ClientManager:
         self.cached_global_weights = None
         self._neurotoxin_mask_logged = False
 
-    def _build_partition_indices(self, ds_benign, num_clients):
-        """
-        Returns the shuffled index list partition_dataset will slice into n_clients
-        chunks. By default this is the standard seeded shuffle. When
-        FLSettings.GUARANTEE_TARGET_OBJECTS is enabled, dispatches to the quota-aware
-        shuffler which guarantees attacker chunks contain a minimum number/fraction
-        of target-class images via index-level swaps with benign chunks. The output
-        contract is unchanged in both cases: a permutation of range(len(ds_benign)).
-        """
-        if not FLSettings.GUARANTEE_TARGET_OBJECTS:
-            return get_shuffled_indices(len(ds_benign))
+    def _build_client_partitions(self, ds_benign, num_clients):
+        """One index list per client, then the composition report.
 
-        return get_shuffled_indices_with_target_quota(
-            dataset_size=len(ds_benign),
-            n_clients=num_clients,
-            attacker_ids=FLSettings.ATTACKER_IDS,
-            target_image_indices=ds_benign.get_target_image_indices(),
-            min_target_fraction=FLSettings.ATTACKER_TARGET_MIN_FRACTION,
-            min_target_count=FLSettings.ATTACKER_TARGET_MIN_COUNT,
-            benign_target_floor=FLSettings.BENIGN_TARGET_FLOOR,
+        Two modes. 'iid' is the historical seeded shuffle sliced into equal chunks
+        (optionally target-quota rebalanced first) — unchanged. 'dirichlet' gives every
+        client the same number of images but skews each client's CLASS composition; see
+        utils/noniid.py for why sizes are held fixed.
+
+        Both modes are fully derived from PARTITIONING_SEED (plus the partitioning flags
+        and the annotations file), so a resume reproduces the split exactly with nothing
+        persisted — the same property the IID path has always had. The only randomness is
+        numpy Generators seeded from that value; nothing here reads module-level RNG state
+        or iteration order of a dict/set, so the split is reproducible from the seed alone.
+        """
+        labels, names = ds_benign.get_partition_labels(
+            FLSettings.DIRICHLET_LABEL_RULE, FLSettings.PARTITIONING_SEED,
+            FLSettings.DIRICHLET_LABEL_P)
+        target_bucket = ds_benign.get_target_class_bucket(names)
+
+        if FLSettings.PARTITION_MODE == "dirichlet":
+            # The attacker target-class quota is GATED on GUARANTEE_TARGET_OBJECTS, exactly
+            # as it is on the IID path (build_iid_partitions takes the plain shuffle when
+            # the switch is off). Applying it unconditionally here made every Dirichlet run
+            # carry a 60% target-class floor the IID baseline did not have, which pins the
+            # target class at EVERY alpha — attackers held 497/827 person images and benign
+            # 110 whether alpha was 0.1 or 100, so alpha -> infinity was no longer the IID
+            # limit and the two arms differed by more than the skew under study.
+            # Off (the default) the allocator draws the target class like any other.
+            quota_on = FLSettings.GUARANTEE_TARGET_OBJECTS
+            client_indices, requested = allocate_label_skew(
+                labels=labels,
+                n_buckets=len(names),
+                n_clients=num_clients,
+                attacker_ids=FLSettings.ATTACKER_IDS,
+                alpha=FLSettings.DIRICHLET_ALPHA,
+                seed=FLSettings.PARTITIONING_SEED,
+                target_idx=target_bucket if quota_on else None,
+                target_min_count=FLSettings.ATTACKER_TARGET_MIN_COUNT if quota_on else 0,
+                target_min_fraction=(FLSettings.ATTACKER_TARGET_MIN_FRACTION
+                                     if quota_on else 0.0),
+                match_attackers=(FLSettings.DIRICHLET_ATTACKER_MODE == "matched"),
+            )
+        else:
+            client_indices = build_iid_partitions(
+                len(ds_benign), num_clients, ds_benign.get_target_image_indices())
+            # An IID partition is drawn from the global marginal, so that is the reference
+            # its drift is measured against — giving the baseline row for the same CSV.
+            requested = [global_marginal(labels, len(names))] * num_clients
+
+        self._report_partitions(client_indices, labels, requested, names,
+                                ds_benign.get_target_image_indices())
+        return client_indices
+
+    def _report_partitions(self, client_indices, labels, requested, names,
+                           target_image_indices):
+        """Write partition_composition.csv and print the table.
+
+        Written for BOTH modes so an IID run produces a directly comparable baseline.
+        The partitioning flags themselves are already recorded in config.txt's
+        'Partitioning' section, and the partition is fully derived from them plus
+        PARTITIONING_SEED, so the CSV is a view of the split rather than the record of it.
+        """
+        rows = composition_rows(
+            client_indices, labels, requested, names, FLSettings.ATTACKER_IDS,
+            target_name=BackdoorProperties.TARGET_CLASS,
+            contains_target=set(target_image_indices),
         )
+        out = getattr(self.logger, "output_path", None)
+        if out is not None:
+            write_composition_csv(os.path.join(out, "partition_composition.csv"), rows)
+        print_composition_table(rows, names)
 
     def _setup_datasets(self, num_clients=None):
         """
@@ -150,6 +210,28 @@ class ClientManager:
             self._neurotoxin_mask_logged = True
         return mask
 
+    def _replacement_gamma(self, m):
+        """Bagdasaryan model-replacement scale  γ = k / (η · m),  clamped at
+        FLSettings.GAMMA_CAP (None = uncapped).
+
+        SINGLE SOURCE OF TRUTH for the replacement factor, shared by full model
+        replacement (_do_model_replacement, whole state dict) and partial
+        amplification (Partial protocol, carrying-set only). Both then apply the
+        SAME  γ·local − (γ−1)·global  formula; they differ only in WHICH tensors
+        it touches, not in how γ is derived.
+
+        m: number of malicious clients that round.
+        """
+        k = FLSettings.CLIENTS_PER_ROUND
+        eta = FLSettings.SERVER_LR
+
+        gamma_uncapped = k / (eta * m)
+        # GAMMA_CAP=None means "no cap" — honor it instead of crashing inside min().
+        gamma = gamma_uncapped if FLSettings.GAMMA_CAP is None else min(gamma_uncapped, FLSettings.GAMMA_CAP)
+        if FLSettings.GAMMA_CAP and gamma_uncapped > FLSettings.GAMMA_CAP:
+            print(f"[MODEL REPLACEMENT] gamma capped: {gamma_uncapped:.3f} -> {gamma:.3f} (k={k}, eta={eta}, m={m})")
+        return gamma
+
     def _do_model_replacement(self, local_weights, global_weights, m):
         """
         Scales the local weights so that — after server-side FedOpt aggregation with
@@ -167,14 +249,7 @@ class ClientManager:
         global_weights: tensor with the original server provided weights
         m: number of malicious clients that round
         """
-        k = FLSettings.CLIENTS_PER_ROUND
-        eta = FLSettings.SERVER_LR
-
-        gamma_uncapped = k / (eta * m)
-        # GAMMA_CAP=None means "no cap" — honor it instead of crashing inside min().
-        gamma = gamma_uncapped if FLSettings.GAMMA_CAP is None else min(gamma_uncapped, FLSettings.GAMMA_CAP)
-        if FLSettings.GAMMA_CAP and gamma_uncapped > FLSettings.GAMMA_CAP:
-            print(f"[MODEL REPLACEMENT] gamma capped: {gamma_uncapped:.3f} -> {gamma:.3f} (k={k}, eta={eta}, m={m})")
+        gamma = self._replacement_gamma(m)
 
         if gamma == 1.0:
             # No-op: η = 1 and m = k means submitting the local weights as-is reaches w_X
@@ -241,9 +316,12 @@ class ClientManager:
         if protocol == "pilot_b":
             from FL.attack_protocols.pilot_b import PilotBProtocol
             return PilotBProtocol(self).run(server_weights, client_config)
+        if protocol == "partial":
+            from FL.attack_protocols.partial import PartialAmplificationProtocol
+            return PartialAmplificationProtocol(self).run(server_weights, client_config)
         raise NotImplementedError(
             f"--attack-protocol {protocol!r} selected but not yet wired. "
-            f"LaySelFL and Ours land in Phase 2 and Phase 3."
+            f"LaySelFL lands in a later phase."
         )
 
     # ---- Benign and composable-attacker paths ----

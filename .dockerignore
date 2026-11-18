@@ -1,9 +1,0 @@
-.git
-.gitignore
-
-outputs
-exp
-__pycache__
-*.pyc
-
-.venv

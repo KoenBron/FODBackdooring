@@ -1,11 +1,17 @@
 from FL.strategies.fedavg import FedAvg
 from FL.strategies.fedopt import FedOpt
+from FL.strategies.multikrum import MultiKrum
+from FL.strategies.foolsgold import FoolsGold
+from FL.strategies.normclip import NormClip
 from models.fasterrcnn.wrapper import FasterRCNNWrapper
 from utils.global_settings import ProjectPaths, BackdoorProperties, TrainingSettings, FLSettings
 from utils.dataset import CustomCocoDataset
 from utils.round_evaluator import RoundEvaluator
-from FL.stealth_defenses import analyze as stealth_analyze, DEFENSE_NAMES as STEALTH_DEFENSE_NAMES
+from FL.stealth_defenses import (analyze as stealth_analyze,
+                                 DEFENSE_NAMES as STEALTH_DEFENSE_NAMES,
+                                 format_round_digest as stealth_format_round_digest)
 from FL.groups import build_bucket_map, build_eligibility
+from FL.attack_state import AttackState
 
 from torch.utils.data import DataLoader
 
@@ -32,7 +38,7 @@ _PROTOCOL_STEALTH_GRANULARITY = {
     "pilot_a": "group",
     "pilot_b": "tensor",
     "laysel_fl": "tensor",
-    "ours": "group",
+    "partial": "tensor",
     "composable": "group",
 }
 
@@ -57,6 +63,7 @@ class Server:
             self._stealth_bucket_map = self._build_stealth_bucket_map()
             self._stealth_eligible_names, self._stealth_eligible_buckets = build_eligibility(
                 self.wrapper.model, self._stealth_bucket_map)
+
         # Fail fast on an unknown --stealth-disable block name. Validated here (not
         # in parse_args) so parse_args needn't import the torch-backed registry.
         _unknown = set(FLSettings.STEALTH_DISABLED) - set(STEALTH_DEFENSE_NAMES)
@@ -66,10 +73,18 @@ class Server:
 
         # If checkpoint path to resume training from is given, load it to the server model
         self.round_offset = 0
+        self._pending_strategy_state = None
         if checkpoint_id is not None:
             self._load_from_checkpoint(checkpoint_id=checkpoint_id)
 
         self.strategy = self._select_strategy(strategy=strategy)
+
+        # Restore a stateful strategy's own state (FoolsGold's per-client histories)
+        # once it exists. Applied after construction because the checkpoint is read
+        # before the strategy is built.
+        if self._pending_strategy_state is not None and hasattr(self.strategy, "load_state_dict"):
+            self.strategy.load_state_dict(self._pending_strategy_state)
+        self._pending_strategy_state = None
 
         # Dict of dicts to index client updates by client_index
         self.client_round_updates = {}
@@ -132,6 +147,9 @@ class Server:
                 checkpoint = torch.load(checkpoint_path)
                 self.wrapper.set_weights(checkpoint["model_state_dict"])
                 self.round_offset = checkpoint["round"]
+                # Stash rather than apply: the strategy is constructed AFTER this runs,
+                # so self.strategy does not exist yet. __init__ applies it below.
+                self._pending_strategy_state = checkpoint.get("strategy_state")
                 print(f"[INFO] Loading model from: {checkpoint_path} to resume training\n[INFO] Completed rounds: {self.round_offset}, starting training of round {self.round_offset + 1}")
             except Exception as e:
                 raise Exception(f"[ERROR] Exception occurred while loading checkpoint: {e}")
@@ -151,6 +169,11 @@ class Server:
             "model_state_dict": self.wrapper.get_weights(),
             "round": round,
         }
+        # Stateful strategies (FoolsGold's cumulative per-client update histories) ride
+        # along in the SAME file as the model and round number, so a resume cannot
+        # desync a history from the model it was accumulated against.
+        if hasattr(self.strategy, "state_dict"):
+            checkpoint["strategy_state"] = self.strategy.state_dict()
         torch.save(checkpoint, checkpoint_path)
 
     def _resolve_stealth_granularity(self):
@@ -171,6 +194,41 @@ class Server:
         to 'other' via .get — same bucket map the pilots use.
         """
         return build_bucket_map(self.wrapper.model, self._resolve_stealth_granularity())
+
+    @staticmethod
+    def _should_run_round_eval(round, n_attackers=0):
+        """Whether this round runs the mAP / ASR evaluation.
+
+        Three settings compose as one union:
+
+          EVAL_ON_INJECTION_ROUNDS  always evaluate a round an attacker acted in,
+                                    whatever the window says (additive).
+          EVAL_START_ROUND          skip everything before this round.
+          EVAL_EVERY                within the window, evaluate every nth round, plus
+                                    the window's first round and the last, so a run
+                                    always keeps its start and end whatever n divides.
+
+        So EVAL_ON_INJECTION_ROUNDS with EVAL_START_ROUND set to the last injection
+        gives every injection round plus the whole benign tail, and nothing in between.
+
+        n_attackers is how many attackers actually participated, so the injection rule
+        holds under random client selection as well as a fixed schedule.
+
+        A skipped round still writes a NaN CSV row, so round_evaluations.csv keeps a
+        fixed shape. Independent of SKIP_ROUND_EVAL (a hard off switch) and of the
+        stealth harness, which has its own gate in _should_run_stealth.
+        """
+        if n_attackers > 0 and getattr(FLSettings, "EVAL_ON_INJECTION_ROUNDS", False):
+            return True
+        start = getattr(FLSettings, "EVAL_START_ROUND", 1) or 1
+        if round < start:
+            return False
+        n = getattr(FLSettings, "EVAL_EVERY", 1) or 1
+        if n <= 1:
+            return True
+        # `start` replaces round 1 as the always-on anchor, so the first evaluated round
+        # is the one the window opens on rather than whichever multiple of n follows it.
+        return round % n == 0 or round == start or round >= FLSettings.NUM_ROUNDS
 
     def _should_run_stealth(self, round_attacker_ids):
         """Decide whether to run the passive stealth harness this round.
@@ -202,8 +260,21 @@ class Server:
                 return FedAvg(model_state_dict=self.wrapper.get_weights())
             case "fedopt":
                 return FedOpt(server_lr=FLSettings.SERVER_LR, model_state_dict=self.wrapper.get_weights())
+            case "multikrum":
+                return MultiKrum(model_state_dict=self.wrapper.get_weights(),
+                                 f=FLSettings.KRUM_F, m=FLSettings.MULTIKRUM_M)
+            case "foolsgold":
+                return FoolsGold(model_state_dict=self.wrapper.get_weights(),
+                                 kappa=FLSettings.FOOLSGOLD_KAPPA,
+                                 feature_group=FLSettings.FOOLSGOLD_FEATURE_GROUP,
+                                 normalise=FLSettings.FOOLSGOLD_NORMALISE)
+            case "normclip":
+                return NormClip(model_state_dict=self.wrapper.get_weights(),
+                                c=FLSettings.NORMCLIP_AGG_C,
+                                noise_sigma=FLSettings.NORMCLIP_NOISE_SIGMA,
+                                seed=FLSettings.SEED)
             case _:
-                raise Exception(f"No valid aggregation strategy name is given: {strategy}. Choices are: ['fedavg', 'fedopt'] ")
+                raise Exception(f"No valid aggregation strategy name is given: {strategy}. Choices are: ['fedavg', 'fedopt', 'multikrum', 'foolsgold', 'normclip'] ")
 
     def get_global_weights(self):
         """
@@ -217,7 +288,7 @@ class Server:
         is_attacker = client_config["is_attacker"]
         client_type = "Attacker" if is_attacker else "Benign"
         client_update = {
-            "cid": client_index,# Same namespace everywhere: client_index from select_clients == cid == ATTACKER_IDS. No flwr node_id remap in the custom path.
+            "cid": client_index,# Same namespace everywhere: client_index from select_clients == cid == ATTACKER_IDS.
             "type": client_type,# "Attacker"/"Benign" — consumed by the stealth harness's label-aware metrics.
             "weights": client_weights_update,
             "num_samples": num_samples,
@@ -234,10 +305,77 @@ class Server:
         # Broadcast (pre-aggregation) global; the reference all client deltas are
         # measured against. self.wrapper still holds it until set_weights() below.
         broadcast_global = self.wrapper.get_weights()
+        # ADVERSARIAL MODEL: the aggregation strategy is the server's view, which cannot
+        # see who is malicious. Strip the "type" (Attacker/Benign) label before handing
+        # updates to aggregate() so no strategy — Multi-Krum today, FoolsGold / norm-clip
+        # later — can cheat by reading ground truth. The observational stealth harness
+        # below still reads self.client_round_updates (with "type") for its own metrics.
+        agg_updates = [{"cid": u["cid"], "weights": u["weights"], "num_samples": u["num_samples"]}
+                       for u in self.client_round_updates.values()]
         new_global_weights = self.strategy.aggregate(
-            client_updates=list(self.client_round_updates.values()),# Expects a list
+            client_updates=agg_updates,# Expects a list; label-free by construction
             global_weights=broadcast_global,# Needed by FedOpt for the (1-η)·w_global + η·w_avg blend; ignored by FedAvg
         )
+
+        # If the strategy filtered clients (robust aggregators), log its decision.
+        # OBSERVATIONAL: comparing the kept/rejected sets against who actually attacked
+        # uses ground truth for EVALUATION only — it never re-enters the aggregation.
+        selection = getattr(self.strategy, "last_selection", None)
+        if selection is not None:
+            attackers = {cid for cid, u in self.client_round_updates.items() if u["type"] == "Attacker"}
+            rejected = set(selection["rejected"])
+            print(f"[ROUND {round}] {self.strategy.__class__.__name__} kept {selection['kept']} "
+                  f"rejected {selection['rejected']} (m={selection['m']}, f={selection['f']}, n={selection['n']}); "
+                  f"attackers this round={sorted(attackers)}, "
+                  f"attackers rejected={sorted(rejected & attackers)}/{len(attackers)}", flush=True)
+
+            # A re-weighting defense (FoolsGold) carries per-client weights that the
+            # kept/rejected view above cannot show. Persist them for offline analysis.
+            # The Attacker/Benign label is joined in HERE, on the server side, so the
+            # strategy stays label-free: it never saw who was malicious when it decided.
+            # Norm-clip records a per-client SCALE rather than a weight. The kept/rejected
+            # split above only says who was touched at all; the scale is the real story
+            # (0.99 is "barely clipped"), so persist it for offline analysis.
+            if "scales" in selection:
+                self.logger.write_normclip_aggregation([
+                    {
+                        "round": round,
+                        "cid": cid,
+                        "type": self.client_round_updates[cid]["type"],
+                        "is_attacker": int(cid in attackers),
+                        "delta_norm": selection["scores"][cid],
+                        "threshold": selection["threshold"],
+                        "median_norm": selection["median_norm"],
+                        "scale": selection["scales"][cid],
+                        "clipped": int(selection["scales"][cid] < 1.0),
+                        "n_participants": selection["n"],
+                        "noise_sigma": selection["noise_sigma"],
+                    }
+                    for cid in sorted(selection["scales"])
+                ])
+
+            if "weights" in selection:
+                self.logger.write_foolsgold_weights([
+                    {
+                        "round": round,
+                        "cid": cid,
+                        "type": self.client_round_updates[cid]["type"],
+                        "is_attacker": int(cid in attackers),
+                        "weight": selection["weights"][cid],
+                        # 1.0 == the contribution of a fully-trusted client (mode
+                        # "none") or its 1/n fair share (mode "sum"); 0 == silenced.
+                        "trust_ratio": selection["trust_ratio"][cid],
+                        "suppressed": int(cid in selection["rejected"]),
+                        "silenced": int(cid in selection["silenced"]),
+                        "max_cs": selection["scores"][cid],
+                        "n_participants": selection["n"],
+                        # sum(w): the effective step multiplier under the paper-faithful mode.
+                        "weight_sum": selection["weight_sum"],
+                        "normalise": selection["normalise"],
+                        "degenerate": int(bool(selection.get("degenerate", False))),
+                    }
+                    for cid in sorted(selection["weights"])
+                ])
 
         # Passive backdoor-detectability harness (B1). OBSERVATIONAL ONLY: reads
         # the raw client updates before they are freed below; never alters the
@@ -270,11 +408,33 @@ class Server:
             )
             self.logger.log_stealth_per_client(per_client_rows)
             self.logger.log_stealth_summary(summary_row)
+            self.logger.log_stealth_digest(
+                stealth_format_round_digest(per_client_rows, summary_row))
+
+        # Observational norm-clip report (never alters aggregation). One row per malicious
+        # client: does its submitted-update L2 norm exceed x*(benign-trajectory ref) or
+        # x*(round median), across the x sweep. Reads the same raw client updates and the
+        # broadcast global as the stealth harness; the benign reference comes from the
+        # Partial protocol via AttackState (live in plastic/disabled, frozen in exploit).
+        if FLSettings.DO_NORMCLIP_REPORT and round_attacker_ids:
+            from FL.normclip_report import update_norm, build_report_rows
+            norms = {cid: update_norm(u["weights"], broadcast_global)
+                     for cid, u in self.client_round_updates.items()}
+            ctx = {cid: (AttackState.get_normclip_ctx(cid) or {}) for cid in round_attacker_ids}
+            rows = build_report_rows(
+                current_round=round,
+                norms=norms,
+                attacker_ids=round_attacker_ids,
+                benign_ref_by_cid={cid: c.get("benign_ref") for cid, c in ctx.items()},
+                phase_by_cid={cid: c.get("phase", "") for cid, c in ctx.items()},
+                x_values=FLSettings.NORMCLIP_REPORT_X,
+            )
+            self.logger.log_normclip_report(rows)
 
         # Evaluate the model on ASR and mAP (unless skipped — see SKIP_ROUND_EVAL).
         self.wrapper.set_weights(new_global_weights)
 
-        if FLSettings.SKIP_ROUND_EVAL:
+        if FLSettings.SKIP_ROUND_EVAL or not self._should_run_round_eval(round, len(round_attacker_ids)):
             # Pilot-mode shortcut: PilotA's measurements live in attack_logs/
             # (per-epoch CPU snapshots → per-group L2 divergence + β_max). The
             # server-side mAP / ASR evals carry no information about that and
@@ -336,6 +496,15 @@ class Server:
         # stealth harness above (stealth_per_client / stealth_summary) supersedes
         # the old client_update_log.
         self._save_latest_model(round=round)
+        # Persist attacker state immediately after the checkpoint, back-to-back, so
+        # nothing (notably the remove_from_gpu CUDA sync below) sits in the window
+        # between the two durable round-writes. A kill in that window leaves the
+        # checkpoint at round N but attack_state at N-1; since resume starts at N+1
+        # (round N is not replayed), that round's pooled plastic sample would be
+        # dropped. Checkpoint-first is deliberate: the residual failure is a dropped
+        # sample (graceful — the pool is one short), never a replayed round that
+        # double-counts the pooled sums.
+        self.logger.save_attack_state()
 
         # Prepare for another round
         self.round_evaluator.remove_from_gpu()

@@ -30,6 +30,7 @@ import math
 import torch
 
 from FL.groups import ordered_buckets
+from FL.strategies._robust import krum_select
 
 # ----------------------------------------------------------------------------
 # CSV schema. Identity columns are always present; every other column belongs
@@ -121,21 +122,20 @@ def krum(stats, f, m):
     Krum / Multi-Krum (Blanchard 2017). score_i = sum of the (n-f-2) smallest
     squared distances from i to the other clients. Krum selects argmin; Multi-
     Krum keeps the m lowest-scoring clients. Lower score = more 'central'.
+
+    The scoring/selection is delegated to FL.strategies._robust.krum_select — the
+    SINGLE SOURCE OF TRUTH shared with the Multi-Krum aggregation strategy — so the
+    passive detector and the active defense can never disagree on what Krum does.
+    This wrapper only reshapes the result into the harness's per-client schema.
+    krum_select sorts its own cids, so equal-score ties break by ascending cid — the
+    same order this harness produced before the extraction (PairwiseStats.cids was,
+    and still is, sorted).
     """
-    cids = stats.cids
-    n = len(cids)
-    k = max(1, n - f - 2)
-    score = {}
-    for i in cids:
-        dists = sorted(stats.sqdist[i][j] for j in cids if j != i)
-        score[i] = float(sum(dists[:k]))
-    ranked = sorted(cids, key=lambda c: score[c])
-    selected = ranked[0]
-    m = m if (m is not None and m > 0) else max(1, n - f)
-    keep = set(ranked[:m])
+    res = krum_select(stats.sqdist, stats.cids, f, m)
+    selected, keep, score = res["selected"], res["kept"], res["scores"]
     return {c: {"krum_score": score[c],
                 "krum_selected": (c == selected),
-                "multikrum_selected": (c in keep)} for c in cids}
+                "multikrum_selected": (c in keep)} for c in stats.cids}
 
 
 def norm_clip(norms, cids, c):
@@ -227,6 +227,35 @@ def _rate(flags, labels, want_label):
         return float("nan")
     num = sum(1 for fl, l in zip(flags, labels) if l == want_label and fl)
     return num / denom
+
+
+def _band(values, labels):
+    """(benign_mean, benign_sd, attacker_mean, z) for one per-client metric.
+
+    The benign cohort is the reference distribution: z = (attacker mean - benign
+    mean) / benign sd, i.e. how many benign standard deviations the attackers sit
+    from the benign centre. This is the interpretable separability number, and it
+    stays defined on attacker-free rounds (attacker_mean and z come back NaN while
+    the benign band is still measured) so a benign-only run still characterises the
+    band it would later have to hide in.
+
+    Population sd over the benign clients present THIS round, so it is the spread
+    the defender could actually observe. NaN when fewer than two benign clients,
+    or when the benign spread is exactly zero.
+    """
+    ben = [v for v, l in zip(values, labels) if l == 0 and not _isnan(v)]
+    att = [v for v, l in zip(values, labels) if l == 1 and not _isnan(v)]
+    nan = float("nan")
+    b_mean = sum(ben) / len(ben) if ben else nan
+    b_sd = nan
+    if len(ben) >= 2:
+        var = sum((v - b_mean) ** 2 for v in ben) / len(ben)
+        b_sd = math.sqrt(var)
+    a_mean = sum(att) / len(att) if att else nan
+    z = nan
+    if att and ben and not _isnan(b_sd) and b_sd > 0:
+        z = (a_mean - b_mean) / b_sd
+    return b_mean, b_sd, a_mean, z
 
 
 def _isnan(x):
@@ -366,8 +395,13 @@ def _norm_per_client(ctx):
 
 
 def _norm_summary(ctx):
+    b_mean, b_sd, a_mean, z = _band(ctx.col("update_l2"), ctx.labels)
     return {"auc_update_l2": _auc(ctx.col("update_l2"), ctx.labels),
-            "cohens_d_update_l2": _cohens_d(ctx.col("update_l2"), ctx.labels)}
+            "cohens_d_update_l2": _cohens_d(ctx.col("update_l2"), ctx.labels),
+            "benign_l2_mean": b_mean, "benign_l2_sd": b_sd,
+            "attacker_l2_mean": a_mean,
+            "l2_ratio": (a_mean / b_mean) if b_mean else float("nan"),
+            "l2_z": z}
 
 
 def _cosine_per_client(ctx):
@@ -389,8 +423,11 @@ def _cosine_per_client(ctx):
 def _cosine_summary(ctx):
     # Attackers deviate from the benign consensus direction, so their cos_to_median
     # is LOWER -> AUC below 0.5. Read separability as |AUC - 0.5| (or 1 - AUC).
+    b_mean, b_sd, a_mean, z = _band(ctx.col("cos_to_median"), ctx.labels)
     return {"auc_cos_to_median": _auc(ctx.col("cos_to_median"), ctx.labels),
-            "cohens_d_cos_to_median": _cohens_d(ctx.col("cos_to_median"), ctx.labels)}
+            "cohens_d_cos_to_median": _cohens_d(ctx.col("cos_to_median"), ctx.labels),
+            "benign_cos_to_median_mean": b_mean, "benign_cos_to_median_sd": b_sd,
+            "attacker_cos_to_median_mean": a_mean, "cos_to_median_z": z}
 
 
 def _krum_per_client(ctx):
@@ -419,8 +456,11 @@ def _median_per_client(ctx):
 
 
 def _median_summary(ctx):
+    b_mean, b_sd, a_mean, z = _band(ctx.col("dist_to_median"), ctx.labels)
     return {"auc_dist_to_median": _auc(ctx.col("dist_to_median"), ctx.labels),
-            "cohens_d_dist_to_median": _cohens_d(ctx.col("dist_to_median"), ctx.labels)}
+            "cohens_d_dist_to_median": _cohens_d(ctx.col("dist_to_median"), ctx.labels),
+            "benign_dist_to_median_mean": b_mean, "benign_dist_to_median_sd": b_sd,
+            "attacker_dist_to_median_mean": a_mean, "dist_to_median_z": z}
 
 
 def _normclip_per_client(ctx):
@@ -445,6 +485,42 @@ def _cluster_summary(ctx):
     suspect = [bool(r["cluster_outlier"]) for r in ctx.rows]
     return {"cluster_tpr": _rate(suspect, ctx.labels, 1),
             "cluster_fpr": _rate(suspect, ctx.labels, 0)}
+
+
+def _cohort_per_client(ctx):
+    """Agreement with the BENIGN cohort itself, rather than with a derived reference.
+
+    cos_to_median and dist_to_median both score a client against the coordinate-wise
+    median, which is a synthetic point no client submitted. These two columns instead
+    average over the real benign clients present this round, excluding the client
+    being scored so a benign client is never compared with itself.
+
+    Read together they separate the two questions a defender asks: do the benign
+    clients agree with EACH OTHER (benign rows), and does the attacker agree with
+    THEM (attacker rows). On an attacker-free round only the first is defined, which
+    is exactly the benign-band measurement a benign-only run is for.
+    """
+    nan = float("nan")
+    out = {}
+    for c in ctx.cids:
+        peers = [b for b in ctx.benign_cids if b != c]
+        if ctx.stats is None or not peers:
+            out[c] = {"mean_cos_to_benign": nan, "mean_dist_to_benign": nan}
+            continue
+        cosines = [ctx.stats.cos[c][p] for p in peers]
+        dists = [math.sqrt(max(0.0, ctx.stats.sqdist[c][p])) for p in peers]
+        out[c] = {"mean_cos_to_benign": sum(cosines) / len(cosines),
+                  "mean_dist_to_benign": sum(dists) / len(dists)}
+    return out
+
+
+def _cohort_summary(ctx):
+    c_mean, c_sd, c_att, c_z = _band(ctx.col("mean_cos_to_benign"), ctx.labels)
+    d_mean, d_sd, d_att, d_z = _band(ctx.col("mean_dist_to_benign"), ctx.labels)
+    return {"benign_cos_to_benign_mean": c_mean, "benign_cos_to_benign_sd": c_sd,
+            "attacker_cos_to_benign_mean": c_att, "cos_to_benign_z": c_z,
+            "benign_dist_to_benign_mean": d_mean, "benign_dist_to_benign_sd": d_sd,
+            "attacker_dist_to_benign_mean": d_att, "dist_to_benign_z": d_z}
 
 
 class MetricBlock:
@@ -473,16 +549,28 @@ class MetricBlock:
 _BLOCKS = [
     MetricBlock("norm", False, _norm_per_client, _norm_summary,
                 lambda m: ["update_l2"],
-                ["auc_update_l2", "cohens_d_update_l2"]),
+                ["auc_update_l2", "cohens_d_update_l2",
+                 "benign_l2_mean", "benign_l2_sd", "attacker_l2_mean",
+                 "l2_ratio", "l2_z"]),
     MetricBlock("cosine", False, _cosine_per_client, _cosine_summary,
                 lambda m: ["cos_to_median"],
-                ["auc_cos_to_median", "cohens_d_cos_to_median"]),
+                ["auc_cos_to_median", "cohens_d_cos_to_median",
+                 "benign_cos_to_median_mean", "benign_cos_to_median_sd",
+                 "attacker_cos_to_median_mean", "cos_to_median_z"]),
     MetricBlock("krum", True, _krum_per_client, _krum_summary,
                 lambda m: ["krum_score", "krum_selected", "multikrum_selected"],
                 ["multikrum_tpr", "multikrum_fpr", "auc_krum_score", "cohens_d_krum_score"]),
     MetricBlock("median", False, _median_per_client, _median_summary,
                 lambda m: ["dist_to_median"],
-                ["auc_dist_to_median", "cohens_d_dist_to_median"]),
+                ["auc_dist_to_median", "cohens_d_dist_to_median",
+                 "benign_dist_to_median_mean", "benign_dist_to_median_sd",
+                 "attacker_dist_to_median_mean", "dist_to_median_z"]),
+    MetricBlock("cohort", True, _cohort_per_client, _cohort_summary,
+                lambda m: ["mean_cos_to_benign", "mean_dist_to_benign"],
+                ["benign_cos_to_benign_mean", "benign_cos_to_benign_sd",
+                 "attacker_cos_to_benign_mean", "cos_to_benign_z",
+                 "benign_dist_to_benign_mean", "benign_dist_to_benign_sd",
+                 "attacker_dist_to_benign_mean", "dist_to_benign_z"]),
     MetricBlock("normclip", False, _normclip_per_client, _normclip_summary,
                 lambda m: ["normclip_flagged", "normclip_threshold"],
                 ["normclip_tpr", "normclip_fpr"]),
@@ -528,6 +616,87 @@ def summary_columns(enabled=None):
     for name in _resolve_enabled(enabled):
         cols.extend(_BLOCK_BY_NAME[name].summary_cols)
     return cols
+
+
+# ----------------------------------------------------------------------------
+# Human-readable per-round digest
+# ----------------------------------------------------------------------------
+
+def _fmt(v, nd=4):
+    return "   n/a  " if v is None or _isnan(v) else f"{v:.{nd}f}"
+
+
+def _pm(mean, sd, nd=4):
+    return f"{_fmt(mean, nd)} +/- {_fmt(sd, nd)}"
+
+
+def format_round_digest(rows, summary):
+    """One human-readable block per round, for stealth_rounds.txt.
+
+    The CSVs are the record; this is the thing you actually read. Every line
+    contrasts the BENIGN BAND (mean +/- sd over the benign clients present) with the
+    attacker value, and gives z = how many benign sds apart they are. Magnitude and
+    direction are separated because they are the two channels an attacker trades
+    against each other, and a run can be quiet on one while loud on the other.
+
+    Works on attacker-free rounds: the attacker columns read n/a and only the band
+    is printed, which is the point of a benign-only run.
+
+    Pure formatting over the analyze() outputs, so it needs no torch and no context.
+    """
+    if not rows:
+        return ""
+    att_rows = [r for r in rows if r.get("is_attacker")]
+    ben_rows = [r for r in rows if not r.get("is_attacker")]
+    att_ids = ",".join(str(r["cid"]) for r in att_rows) or "none"
+    head = (f"round {summary.get('round')} | {len(rows)} clients | "
+            f"{len(ben_rows)} benign, {len(att_rows)} attacker ({att_ids})")
+    L = ["=" * len(head), head, "=" * len(head)]
+
+    def have(k):
+        return k in summary
+
+    if have("benign_l2_mean"):
+        L.append(f"  magnitude  ||delta||     benign {_pm(summary['benign_l2_mean'], summary['benign_l2_sd'])}"
+                 f"   attacker {_fmt(summary.get('attacker_l2_mean'))}"
+                 f"   ratio {_fmt(summary.get('l2_ratio'), 2)}x   z {_fmt(summary.get('l2_z'), 1)}")
+    if have("benign_dist_to_median_mean"):
+        L.append(f"             dist->median  benign {_pm(summary['benign_dist_to_median_mean'], summary['benign_dist_to_median_sd'])}"
+                 f"   attacker {_fmt(summary.get('attacker_dist_to_median_mean'))}"
+                 f"                 z {_fmt(summary.get('dist_to_median_z'), 1)}")
+    if have("benign_dist_to_benign_mean"):
+        L.append(f"             dist->benign  benign {_pm(summary['benign_dist_to_benign_mean'], summary['benign_dist_to_benign_sd'])}"
+                 f"   attacker {_fmt(summary.get('attacker_dist_to_benign_mean'))}"
+                 f"                 z {_fmt(summary.get('dist_to_benign_z'), 1)}")
+    if have("benign_cos_to_median_mean"):
+        L.append(f"  direction  cos->median   benign {_pm(summary['benign_cos_to_median_mean'], summary['benign_cos_to_median_sd'])}"
+                 f"   attacker {_fmt(summary.get('attacker_cos_to_median_mean'))}"
+                 f"                 z {_fmt(summary.get('cos_to_median_z'), 1)}")
+    if have("benign_cos_to_benign_mean"):
+        L.append(f"             cos->benign   benign {_pm(summary['benign_cos_to_benign_mean'], summary['benign_cos_to_benign_sd'])}"
+                 f"   attacker {_fmt(summary.get('attacker_cos_to_benign_mean'))}"
+                 f"                 z {_fmt(summary.get('cos_to_benign_z'), 1)}")
+
+    def counts(key, want=1):
+        b = sum(1 for r in ben_rows if int(r.get(key, 0) or 0) == want)
+        a = sum(1 for r in att_rows if int(r.get(key, 0) or 0) == want)
+        return f"benign {b}/{len(ben_rows)}, attacker {a}/{len(att_rows)}"
+
+    dfn = []
+    if rows and "multikrum_selected" in rows[0]:
+        dfn.append(f"multi-krum KEPT: {counts('multikrum_selected')}")
+    if rows and "normclip_flagged" in rows[0]:
+        dfn.append(f"normclip flagged: {counts('normclip_flagged')}")
+    if rows and "cluster_outlier" in rows[0]:
+        dfn.append(f"cluster outlier: {counts('cluster_outlier')}")
+    if dfn:
+        L.append("  defences   " + " | ".join(dfn))
+
+    L.append("  per client " + "  ".join(
+        f"[{'A' if r.get('is_attacker') else 'b'}{r['cid']} l2={_fmt(r.get('update_l2'), 3)}"
+        f" cosM={_fmt(r.get('cos_to_median'), 3)}]" for r in rows))
+    L.append("")
+    return "\n".join(L)
 
 
 # ----------------------------------------------------------------------------

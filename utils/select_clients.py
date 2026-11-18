@@ -18,6 +18,37 @@ def select_clients(round, generator):
         # Ordinary random sampling of all clients
         return generator.sample(clients, FLSettings.CLIENTS_PER_ROUND)
 
+def plastic_phase_attacker_coverage(schedule, attacker_ids, plastic_rounds):
+    """Which attackers do/don't act during the plastic phase, from the schedule alone.
+
+    Lives here (not in parse_args) because it is pure schedule semantics — the same
+    knowledge select_clients already owns — and because parse_args transitively imports
+    torch, which would put this out of reach of torch-free callers and tests.
+
+    The plastic phase ends when the POOLED injection count reaches `plastic_rounds`, and
+    the round that TRIGGERS the freeze is itself still plastic (its sample is the Nth), so
+    the attacker acting on the Nth injection IS covered. Walking rounds in ascending order
+    and stopping after the Nth injection therefore reproduces the runtime boundary exactly.
+    A round listing two attackers counts as two injections, matching accumulate_plastic.
+
+    Only meaningful with --use-client-schedule; under random selection who acts when is
+    unknowable in advance (the Partial protocol reports realised coverage at the freeze).
+
+    Returns (covered, missing) as sorted lists of cids.
+    """
+    attacker_ids = set(attacker_ids)
+    covered, injections = set(), 0
+    for rnd in sorted(schedule):
+        for cid in schedule[rnd]:
+            if cid not in attacker_ids:
+                continue
+            covered.add(cid)
+            injections += 1
+            if injections >= plastic_rounds:
+                return sorted(covered), sorted(attacker_ids - covered)
+    return sorted(covered), sorted(attacker_ids - covered)
+
+
 def fast_forward_client_selection(start_round, generator):
     """
     Simulates previous client selection rounds up untill the starting round in case training is resumed from an interruption.

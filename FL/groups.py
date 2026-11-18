@@ -16,8 +16,8 @@ Two views of model.named_parameters():
                       amplification (per-group gamma). Aggregating *up* from per-tensor
                       logs is the canonical path — never log only per-group.
 
-Both views cover every named_parameter exactly once. Coverage is asserted by
-smoketest_groups.py at the project root.
+Both views cover every named_parameter exactly once -- add a group rather than growing a
+parallel map, or that coverage silently breaks.
 
 state_dict caveat: named_parameters() excludes BN buffers (running_mean/var,
 num_batches_tracked) and any other non-parameter state. When per-group L2 is

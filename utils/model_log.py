@@ -8,16 +8,18 @@ from contextlib import redirect_stdout
 
 from torch.utils.tensorboard import SummaryWriter
 from utils.global_settings import ProjectPaths, BackdoorProperties, TrainingSettings, FLSettings
-from evaluation import BatchEvaluator
 from FL.attack_state import AttackState
 from FL.attack_protocols.pilot_a import PilotALogger
 from FL.attack_protocols.pilot_b import PilotBLogger
+from FL.attack_protocols.partial import PartialLogger
 
 class ModelLogger:
-    def __init__(self, custom_path=None, config_dict=None, args=None):
+    def __init__(self, custom_path=None, args=None):
         """
         custom_path: The path to the directory from which logging should be resumed
-        config_dict: The training configurations used
+        args:        Parsed CLI args; their raw dump is appended under the structured
+                     config summary in config.txt (the summary itself is built from the
+                     global settings via parse_args.render_config_sections).
         """
         if custom_path is None:
             # Create a new model directory to write logs to and save the best model in
@@ -47,6 +49,20 @@ class ModelLogger:
                 # knows at construction.
                 self.stealth_per_client_path = os.path.join(self.output_path, "stealth_per_client.csv")
                 self.stealth_summary_path = os.path.join(self.output_path, "stealth_summary.csv")
+                self.stealth_digest_path = os.path.join(self.output_path, "stealth_rounds.txt")
+
+                # Observational norm-clip report (top-level, lazy header — its columns
+                # depend on the --normclip-report-x sweep, unknown until the first row).
+                self.normclip_report_path = os.path.join(self.output_path, "normclip_report.csv")
+
+                # FoolsGold per-round aggregation weights (top-level). Written only when
+                # --aggregation-strategy foolsgold is active.
+                self.foolsgold_weights_path = os.path.join(self.output_path, "foolsgold_weights.csv")
+
+                # Norm-clip AGGREGATION trace (top-level). Written only when
+                # --aggregation-strategy normclip is active. Distinct from
+                # normclip_report.csv, which is the passive per-attacker exceedance sweep.
+                self.normclip_agg_path = os.path.join(self.output_path, "normclip_aggregation.csv")
         else:
             # Load a checkpoint and write logs to that output path
             model_dir_path = os.path.join(ProjectPaths.OUTPUT_DIR, custom_path)
@@ -60,6 +76,10 @@ class ModelLogger:
                 self.round_eval_path = os.path.join(self.output_path, "round_evaluations.csv")
                 self.stealth_per_client_path = os.path.join(self.output_path, "stealth_per_client.csv")
                 self.stealth_summary_path = os.path.join(self.output_path, "stealth_summary.csv")
+                self.stealth_digest_path = os.path.join(self.output_path, "stealth_rounds.txt")
+                self.normclip_report_path = os.path.join(self.output_path, "normclip_report.csv")
+                self.foolsgold_weights_path = os.path.join(self.output_path, "foolsgold_weights.csv")
+                self.normclip_agg_path = os.path.join(self.output_path, "normclip_aggregation.csv")
 
                 # Validate if checkpoint of best recorded model is there
                 best_model_path = os.path.join(model_dir_path, "best_model.pth")
@@ -90,6 +110,7 @@ class ModelLogger:
         # protocol code straight-line (no None checks in dispatchers).
         self.pilot_a = PilotALogger(attack_logs_dir)
         self.pilot_b = PilotBLogger(attack_logs_dir)
+        self.partial = PartialLogger(attack_logs_dir)
 
         # Write the script containing the training settings there
         self.log_training_script()
@@ -97,22 +118,22 @@ class ModelLogger:
         # Initiate log writer
         self.writer = SummaryWriter(self.output_path)
 
-        # Write training configuarion params to txt file
-        if config_dict:
-            with open(os.path.join(self.output_path, "config.txt"), "a") as f, redirect_stdout(f):
-                if BackdoorProperties.BACKDOOR_ACTIVE: 
-                    BatchEvaluator.print_poison_properties()
-                print("\n----------------------TRAINING CONFIGURATION SUMMARY----------------------")
-                for k, v in config_dict.items():
-                    f.write(f"{k}: {v}\n")
+        # Write the run configuration to config.txt: a neatly grouped, relevant-
+        # settings summary at the TOP (single source shared with the stdout summary),
+        # then the raw commandline arguments beneath it (as before).
+        from utils.parse_args import render_config_sections, print_poison_properties  # local import: avoids any import cycle
+        with open(os.path.join(self.output_path, "config.txt"), "a") as f:
+            f.write("==================== RUN CONFIGURATION ====================\n")
+            if BackdoorProperties.BACKDOOR_ACTIVE:
+                with redirect_stdout(f):
+                    print_poison_properties()
+            render_config_sections(f.write)
 
-                # Also write all commandline args
-                print("\n----------------------TRAINING ARGUMENTS----------------------")
-                args_dict = vars(args)
-                for k, v in args_dict.items():
+            if args is not None:
+                f.write("\n==================== RAW ARGUMENTS ====================\n")
+                for k, v in vars(args).items():
                     f.write(f"{k}: {v}\n")
-
-                print("\n----------------------END OF SUMMARY----------------------\n")
+            f.write("\n==================== END OF CONFIGURATION ====================\n")
                     
     def log_training_script(self):
         """
@@ -206,6 +227,75 @@ class ModelLogger:
             if write_header:
                 writer.writeheader()
             writer.writerow(summary_row)
+
+    def log_stealth_digest(self, text):
+        """Append one human-readable round block to stealth_rounds.txt.
+
+        The two CSVs stay the machine-readable record; this file is the one to read
+        when you want to see what separated the attacker from the benign cohort in a
+        given round without loading anything. Built by
+        stealth_defenses.format_round_digest, appended so a resume continues the file.
+        """
+        if not text:
+            return
+        with open(self.stealth_digest_path, 'a') as f:
+            f.write(text + "\n")
+
+    def log_normclip_report(self, rows):
+        """Append the observational norm-clip rows (one per malicious client this round).
+        rows: list of dicts from FL.normclip_report.build_report_rows. Header written
+        lazily from the first row's keys — the exceeds_*@x columns depend on the
+        --normclip-report-x sweep, which the logger doesn't know at construction. The
+        sweep is fixed per run, so the keys stay consistent across rounds; on resume the
+        file already has a header and is not rewritten."""
+        if not rows:
+            return
+        write_header = (not os.path.isfile(self.normclip_report_path)
+                        or os.path.getsize(self.normclip_report_path) == 0)
+        with open(self.normclip_report_path, 'a', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+            if write_header:
+                writer.writeheader()
+            for row in rows:
+                writer.writerow(row)
+
+    def write_foolsgold_weights(self, rows):
+        """Append this round's FoolsGold aggregation weights, one row per participant.
+
+        Same lazy-header append as write_normclip_report, so a resume adds to the existing
+        file rather than rewriting it. The Attacker/Benign label in these rows is
+        OBSERVATIONAL: the strategy itself never sees it (custom_server strips the label
+        before calling aggregate), and the column exists only so the weights can be scored
+        against ground truth offline.
+        """
+        if not rows:
+            return
+        write_header = (not os.path.isfile(self.foolsgold_weights_path)
+                        or os.path.getsize(self.foolsgold_weights_path) == 0)
+        with open(self.foolsgold_weights_path, 'a', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+            if write_header:
+                writer.writeheader()
+            for row in rows:
+                writer.writerow(row)
+
+    def write_normclip_aggregation(self, rows):
+        """Append this round's norm-clip decisions, one row per participant.
+
+        Same lazy-header append as the other observational CSVs. The Attacker/Benign label
+        is joined in on the SERVER side — the strategy never saw it — so the scales can be
+        scored against ground truth offline without compromising the adversarial model.
+        """
+        if not rows:
+            return
+        write_header = (not os.path.isfile(self.normclip_agg_path)
+                        or os.path.getsize(self.normclip_agg_path) == 0)
+        with open(self.normclip_agg_path, 'a', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+            if write_header:
+                writer.writeheader()
+            for row in rows:
+                writer.writerow(row)
 
     def save_attack_state(self):
         """Persist the current AttackState snapshot to this run's attack_logs/.

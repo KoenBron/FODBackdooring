@@ -113,7 +113,7 @@ def select_cutoff(div, baseline, cutoff):
     Select carrying layers whose RAW divergence exceeds cutoff * baseline
     (div > cutoff * baseline).
 
-    Takes div (not rho) so the rule is identical to PilotA's inline
+    Selection takes div (not rho) so the rule is identical to PilotA's inline
     _select_cutoff(div_g, b_g, c) — same semantics at per-group and per-tensor
     granularity, so the cross-granularity cutoff comparison is not contaminated
     by a (1 + cutoff) vs cutoff mismatch.
@@ -121,11 +121,24 @@ def select_cutoff(div, baseline, cutoff):
     Strict '>' (not '>=') so frozen layers, which have div = baseline = 0 under
     the expensive floor, are NOT selected (0 > 0 is False).
 
-    Returns a list of (name, div) tuples ORDERED by div descending (ties broken
-    by name). The order is the amplification priority: with a limited budget the
-    consumer amplifies from the front of the list.
+    RANKING is by the RATIO div / baseline, NOT raw div. That ratio is the exact
+    quantity the cutoff tests (div/b > cutoff), so it measures how strongly each
+    carrier clears its OWN benign floor: a high-div layer sitting on a high noise
+    floor is a weaker carrier than a lower-div layer on a near-zero floor, and must
+    rank below it. Ranking by raw div ignores the per-layer floor and misorders
+    them. This also makes the returned order match frozen_set.md, which ranks by the
+    same ratio (its 'ratio = div/b' column). baseline = 0 for an eligible layer
+    means unbounded clearance -> inf (sorts to the top).
+
+    Returns a list of (name, ratio) tuples ORDERED by ratio descending (ties broken
+    by name). The order is the amplification / norm-budget priority: with a limited
+    budget the consumer takes from the front of the list.
     """
-    selected = [(g, div[g]) for g in div if div[g] > baseline[g] * cutoff]
+    selected = []
+    for g in div:
+        if div[g] > baseline[g] * cutoff:
+            ratio = div[g] / baseline[g] if baseline[g] > 0 else float("inf")
+            selected.append((g, ratio))
     return sorted(selected, key=lambda x: (-x[1], x[0]))
 
 
@@ -166,3 +179,53 @@ def select_topk_signed(score, k):
     """
     ranked = sorted(score.items(), key=lambda kv: (-kv[1], kv[0]))
     return ranked[:k]
+
+
+def select_names(div, b, prefixes):
+    """Fixed carrying set: every tensor whose name starts with one of `prefixes`.
+
+    Selection is by NAME, so div/b never gate membership -- the set is identical in
+    every round and in the plastic freeze, whatever the trajectories did. The scores
+    are still reported as the div/b ratio so the ranking, the budget allocator's
+    descending walk and the logs keep the same meaning as in cutoff mode.
+
+    `div` must already be restricted to eligible tensors, so an ineligible name simply
+    never matches. A prefix matching a module ('roi_heads.box_head.fc6') takes every
+    tensor under it (.weight and .bias); a full tensor name takes exactly that one.
+    """
+    pres = tuple(prefixes)
+    hit = [n for n in div if n.startswith(pres)]
+    scored = [(n, (div[n] / b[n]) if b[n] > 0 else float("inf")) for n in hit]
+    return sorted(scored, key=lambda kv: kv[1], reverse=True)
+
+
+def select_by_mode(div, b, mode, cutoff, topk, names=None):
+    """Route a (div, b) score pair to the configured carrying-layer selector.
+
+    SINGLE source of the cutoff-vs-topk decision, so the per-round path and the
+    plastic-phase freeze select IDENTICALLY -- they differ only in whether div/b are
+    one round's raw scores or the pooled plastic means:
+
+        'cutoff' -> select_cutoff(div, b, cutoff)         # variable size, div > cutoff*b
+        'topk'   -> select_topk_signed(div - b, topk)     # fixed k by SIGNED denoised rho
+        'names'  -> select_names(div, b, names)           # fixed BY NAME, div/b ignored
+
+    Both denoise against the benign-to-benign floor b, and each ranks by ITS OWN
+    selection score: cutoff by the ratio div/b (the quantity it thresholds), topk by
+    the signed rho div - b (the quantity it top-k's). So the returned [(name, score)]
+    order always reflects how the mode chose its carriers — but the score's meaning
+    differs by mode (ratio vs signed rho), which the caller disambiguates via `mode`.
+    Returns ranked [(name, score)] descending. div/b keys MUST be pre-restricted to eligible tensors
+    (frozen/BN excluded) -- select_topk_signed relies on that (its 0-signed frozen
+    entries would otherwise pad the top-k).
+    """
+    if mode == "cutoff":
+        return select_cutoff(div, b, cutoff)
+    if mode == "topk":
+        signed = {n: div[n] - b[n] for n in div}
+        return select_topk_signed(signed, topk)
+    if mode == "names":
+        if not names:
+            raise ValueError("select mode 'names' requires a non-empty name/prefix list.")
+        return select_names(div, b, names)
+    raise ValueError(f"Unknown select mode {mode!r}; expected 'cutoff', 'topk' or 'names'.")
