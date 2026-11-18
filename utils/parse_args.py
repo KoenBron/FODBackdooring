@@ -4,7 +4,7 @@ from collections import defaultdict
 
 from utils.noniid import LABEL_RULES
 from utils.select_clients import plastic_phase_attacker_coverage
-from utils.global_settings import BackdoorProperties, FLSettings, TrainingSettings, TriggerType, AttackType, FloatingTriggerPos, EvaluationSettings, ANSIColor, ProjectPaths
+from utils.global_settings import BackdoorProperties, FLSettings, TrainingSettings, TriggerType, AttackType, TARGETED_ATTACK_TYPES, FloatingTriggerPos, EvaluationSettings, ANSIColor, ProjectPaths
 from utils.bbox_transform import BoxTransformMode
 
 _SCHEDULE_TOKEN = re.compile(r"^(\d+)(?:-(\d+)(?:/(\d+))?)?:(\d+|\*)$")
@@ -774,3 +774,45 @@ def print_configuration_summary():
     print(f"\n==================== {header} ====================")
     render_config_sections(lambda s: print(s, end=""))
     print("\n===========================================================\n")
+
+
+def print_poison_properties():
+    """Human-readable dump of the active backdoor/trigger configuration.
+
+    Printed into config.txt (via model_log) at the top of a run when a backdoor is
+    active. Reads only BackdoorProperties, so it is a pure config view. Lived on the
+    old evaluation.BatchEvaluator; moved here next to render_config_sections, the
+    project's other config-to-text helper, when evaluation.py was retired.
+    """
+    print("\n" + "=" * 40)
+    print("        POISONING CONFIGURATIONS USED")
+    print("=" * 40)
+
+    attack_name = BackdoorProperties.ATTACK_TYPE.name if hasattr(BackdoorProperties.ATTACK_TYPE, 'name') else BackdoorProperties.ATTACK_TYPE
+    print(f"   POISON_RATE     : {BackdoorProperties.POISON_RATE}")
+    print(f"   ATTACK_TYPE     : {attack_name}")
+
+    if BackdoorProperties.ATTACK_TYPE in TARGETED_ATTACK_TYPES:
+        print(f"   TARGET_CLASS    : {BackdoorProperties.TARGET_CLASS}")
+        if BackdoorProperties.ATTACK_TYPE == AttackType.TARGETED_MISLABELING:
+            print(f"   MISLABEL_CLASS  : {BackdoorProperties.MISLABEL_REPLACEMENT_CLASS}")
+
+    trigger_name = BackdoorProperties.TRIGGER_PATTERN.name if hasattr(BackdoorProperties.TRIGGER_PATTERN, 'name') else BackdoorProperties.TRIGGER_PATTERN
+    print(f"   TRIGGER_PATTERN : {trigger_name}")
+
+    if BackdoorProperties.TRIGGER_PATTERN in [TriggerType.UNIFORM, TriggerType.FLOATING_UNIFORM]:
+        print(f"   TRIGGER_COLOR   : {BackdoorProperties.TRIGGER_COLOR}")
+        if BackdoorProperties.TRIGGER_PATTERN == TriggerType.UNIFORM:
+            print(f"   TRIGGER_WIDTH   : {BackdoorProperties.TRIGGER_WIDTH}")
+            print(f"   TRIGGER_HEIGHT  : {BackdoorProperties.TRIGGER_HEIGHT}")
+        else:
+            pos_name = BackdoorProperties.FLOATING_TRIGGER_POSITION.name if hasattr(BackdoorProperties.FLOATING_TRIGGER_POSITION, 'name') else BackdoorProperties.FLOATING_TRIGGER_POSITION
+            print(f"   W_RATIO         : {BackdoorProperties.FLOATING_TRIGGER_W_RATIO}")
+            print(f"   H_RATIO         : {BackdoorProperties.FLOATING_TRIGGER_H_RATIO}")
+            print(f"   POSITION        : {pos_name}")
+    else:
+        if BackdoorProperties.TRIGGER_PATTERN == TriggerType.FULL_CHECKERBOARD:
+            print(f"   CHECKERBOARD_SIZE : {BackdoorProperties.BLOCK_SIZE}")
+        if BackdoorProperties.TRIGGER_PATTERN == TriggerType.FULL_NOISE:
+            print(f"   RNG_SEED        : {BackdoorProperties.RNG_SEED}")
+        print(f"   TRIGGER_ALPHA   : {BackdoorProperties.TRIGGER_ALPHA}")

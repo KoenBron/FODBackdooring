@@ -8,7 +8,6 @@ from contextlib import redirect_stdout
 
 from torch.utils.tensorboard import SummaryWriter
 from utils.global_settings import ProjectPaths, BackdoorProperties, TrainingSettings, FLSettings
-from evaluation import BatchEvaluator
 from FL.attack_state import AttackState
 from FL.attack_protocols.pilot_a import PilotALogger
 from FL.attack_protocols.pilot_b import PilotBLogger
@@ -122,12 +121,12 @@ class ModelLogger:
         # Write the run configuration to config.txt: a neatly grouped, relevant-
         # settings summary at the TOP (single source shared with the stdout summary),
         # then the raw commandline arguments beneath it (as before).
-        from utils.parse_args import render_config_sections  # local import: avoids any import cycle
+        from utils.parse_args import render_config_sections, print_poison_properties  # local import: avoids any import cycle
         with open(os.path.join(self.output_path, "config.txt"), "a") as f:
             f.write("==================== RUN CONFIGURATION ====================\n")
             if BackdoorProperties.BACKDOOR_ACTIVE:
                 with redirect_stdout(f):
-                    BatchEvaluator.print_poison_properties()
+                    print_poison_properties()
             render_config_sections(f.write)
 
             if args is not None:
