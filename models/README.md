@@ -1,12 +1,11 @@
-# Folder Purpose
-Model implementations, each behind a common wrapper interface so the FL code never depends on a
-specific architecture. `interface.py` at the top of this directory defines the abstract base
-class every wrapper implements.
+# models/
 
-## Folder Structure
-- `interface.py`: Abstract base class defining how the FL code interacts with a model.
-- `fasterrcnn/`:
-    - `model.py`: Builds the torchvision `fasterrcnn_resnet50_fpn` model.
-    - `wrapper.py`: Implements the interface — weight get/set, local training steps, inference.
-    - `backdoor_roi_heads.py`: ROI-head surgery used by the box-transform (regression-head)
-      backdoor to rewrite box-regression targets for trigger-bearing objects.
+Model implementations behind a common wrapper interface, so the FL code never depends on a
+specific architecture.
+
+| File | Purpose |
+|---|---|
+| `interface.py` | The abstract base class defining how the FL code interacts with any model (weight get/set, local training, inference, evaluation). |
+| `fasterrcnn/model.py` | Builds the torchvision `fasterrcnn_resnet50_fpn` detector. |
+| `fasterrcnn/wrapper.py` | Implements the interface for Faster R-CNN — weight transfer, local training steps, inference. |
+| `fasterrcnn/backdoor_roi_heads.py` | ROI-head surgery for the box-transform (regression-head) backdoor: rewrites box-regression targets for trigger-bearing objects during training. |
