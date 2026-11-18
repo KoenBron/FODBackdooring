@@ -11,12 +11,12 @@ available from the TU Delft repository: <http://repository.tudelft.nl/>.
 
 The framework lets you:
 
-- run a federated training session with any mix of benign and malicious clients;
-- inject disappearance, mislabelling or box-transform backdoors behind several trigger types;
-- aggregate with FedAvg, FedOpt, Multi-Krum, FoolsGold or norm clipping;
-- partition client data IID or non-IID (Dirichlet label skew at fixed partition size);
+- run a federated training session with any mix of benign and malicious clients
+- inject disappearance, mislabelling or box-transform backdoors behind several trigger types
+- aggregate with FedAvg, FedOpt, Multi-Krum, FoolsGold or norm clipping
+- partition client data IID or non-IID (Dirichlet label skew at fixed partition size)
 - log, each round, both utility/attack metrics and a passive read of what each defence
-  *would* have flagged.
+  *would* have flagged
 
 ---
 
@@ -33,7 +33,7 @@ Developed on **Python 3.12** (3.10+ should work).
    pip install -r requirements.txt
    ```
 3. Place a COCO-annotated dataset in a `dataset/` directory at the project root. The layout
-   below is expected (configurable in `utils/dataset.py`; images must be `.jpg`):
+   below is expected (configurable in `utils/dataset.py`, images must be `.jpg` unless manually altered):
    ```
    dataset/training_annotations.json
    dataset/validation_annotations.json
@@ -54,13 +54,14 @@ chmod +x run_fl_train.sh
 ./run_fl_train.sh
 ```
 
-Or call it directly for a minimal benign run:
+Or call it directly for a minimal benign participant only run:
 
 ```bash
 python custom_fl_train.py \
   --num-rounds 50 \
   --total-clients 10 \
   --clients-per-round 5 \
+  --output-subdir "new_run" \
   --attacker-fraction 0.0
 ```
 
@@ -72,7 +73,7 @@ checkpoints, metrics CSVs and configuration dump described under
 
 ## Configuration reference
 
-Arguments are grouped by concern. Pass any of them to `custom_fl_train.py`; run
+Arguments are grouped by concern. Pass any of them to `custom_fl_train.py` or run
 `python custom_fl_train.py --help` for the full list with defaults. The groups:
 
 ### Federated learning
@@ -89,9 +90,9 @@ Controls the FL loop and aggregation.
 | `--gamma-cap` | upper bound on the model-replacement scale γ |
 | `--seed` / `--partitioning-seed` | RNG seeds for client selection / data partitioning |
 | `--resume-from` | resume a run from its output directory name (see [Resuming](#resuming-and-determinism)) |
-| `--use-client-schedule` / `--client-schedule` | force specific clients into specific rounds, `"round:client,..."` |
-| `--eval-every` / `--eval-start-round` / `--eval-on-injection-rounds` | when per-round evaluation runs |
-| `--skip-round-eval` / `--skip-map-eval` / `--skip-asr-eval` | skip evaluation (whole / clean mAP / poison ASR) to cut compute |
+| `--use-client-schedule` / `--client-schedule` | force specific clients into specific rounds, `"round:client,..."` or `start_round-end_round/interval:*` for rotating through the malicious client pool every `interval` rounds
+| `--eval-every` / `--eval-start-round` / `--eval-on-injection-rounds` | when to run backdoor per-round clean and backdoor task evaluation runs |
+| `--skip-map-eval` / `--skip-asr-eval` / `--skip-round-eval` | skip evaluation (clean mAP / poison ASR / whole) to cut compute |
 | `--output-subdir` | subdirectory under `outputs/` for this run |
 
 ### Training hyperparameters
@@ -106,18 +107,56 @@ Selects the malicious-client behaviour. `--attack-protocol` picks the routing:
 |---|---|
 | `composable` | knob-driven path: model replacement / Neurotoxin / the `--attack-type` backdoor composed via flags |
 | `partial` | partial-amplification: per-tensor carrying-layer selection with selective scaling |
-| `pilot_a` / `pilot_b` | observational localization pilots (per-group / per-tensor) |
+| `pilot_a` / `pilot_b` | observational localization pilot experiments (per-group / per-tensor) |
 
 Model-replacement and Neurotoxin toggles (`--enable-model-replacement`,
-`--enable-neurotoxin`, `--neurotoxin-mask-ratio`) apply to the `composable` path. The
-`--partial-*` family (select mode, cutoff/topk, gamma mode, norm budget) configures the
-`partial` protocol. A target-class quota for attacker partitions is available via
-`--guarantee-target-objects` and the `--attacker-target-*` floors.
+`--enable-neurotoxin`, `--neurotoxin-mask-ratio`) apply to the `composable` path. A
+target-class quota for attacker partitions is available via `--guarantee-target-objects`
+and the `--attacker-target-*` floors. The `partial` protocol is configured by the
+`--partial-*` family, described next.
 
-### Partial-protocol phases
-`--partial-plastic-*` governs the observation ("plastic") phase that freezes the carrying
-set; `--partial-constrain`, `--partial-freeze-noncarrying` and `--partial-mask-noncarrying`
-govern how non-carrying parameters are handled during the exploit phase.
+### Partial-protocol configuration
+
+The `partial` protocol runs in two stages. An **observation ("plastic") phase** watches a
+few injection rounds to decide *which* tensors carry the backdoor and freezes that set;
+the **exploit phase** then amplifies only those carrying tensors every later round. Three
+independent choices configure it.
+
+**1. Which tensors carry** — `--partial-select-mode`:
+
+| Mode | Companion flag | Carrying set |
+|---|---|---|
+| `cutoff` | `--partial-cutoff C` | every eligible tensor whose denoised divergence exceeds `C ×` the noise floor — a variable-size set (`C=1` keeps any tensor that diverged at all) |
+| `topk` | `--partial-topk K` | the fixed `K` tensors with the highest denoised divergence |
+| `names` | `--partial-carrying-names` | a fixed, hand-given set of tensor-name prefixes; divergence is ignored, so the set is identical every round |
+
+**2. How much to amplify them** — `--partial-gamma-mode`:
+
+| Mode | Companion flag | Scale applied to the carrying update |
+|---|---|---|
+| `fixed` | `--partial-amp-gamma γ` | a hand-set factor γ (the sweep knob); γ=1 submits unchanged |
+| `replacement` | `--server-lr`, `--gamma-cap` | the Bagdasaryan model-replacement factor `k / (η·m)`, so the carrying tensors land on the malicious model after aggregation |
+| `budgeted` | `--partial-norm-budget B` | per-carrier factors sized so the submitted L2 norm stays ≤ `B ×` this client's own benign update norm; carriers take the replacement factor in priority order until the budget is spent. Exploit-phase only. |
+
+**3. When the carrying set freezes** — `--partial-plastic-rounds N`: observe `N` pooled
+injection rounds, then freeze one shared carrying set and reuse it for the rest of the run
+(`0` disables the plastic phase, reselecting the set every round). Two flags change what
+the attacker *submits* during observation, without affecting which tensors get selected:
+
+| Flag | Effect during the plastic phase |
+|---|---|
+| `--partial-plastic-no-amp` | submit unamplified (γ=1) so the localizer observes an undeformed global |
+| `--partial-plastic-submit-benign` | submit the benign anchor instead of the poisoned model, so the attacker is indistinguishable from a benign client throughout observation |
+
+**Exploit-phase handling of the non-carrying parameters** — three mutually-exclusive
+options for keeping the update inside the benign cluster (plain L2 / Krum can otherwise
+separate it):
+
+| Flag | Effect |
+|---|---|
+| `--partial-constrain` (+ `--partial-constrain-lambda`) | add a penalty pulling non-carrying parameters back toward the broadcast model during malicious training |
+| `--partial-freeze-noncarrying` | zero the non-carrying gradients during local training, pinning them at the broadcast model so the carrying layers co-adapt |
+| `--partial-mask-noncarrying` | train unrestricted, then reset the non-carrying parameters to the broadcast model only at submission |
 
 ### Data partitioning
 | Argument | Meaning |
@@ -233,9 +272,9 @@ by randomly sampled benign clients.
 ## Resuming and determinism
 
 A run is fully derived from `--seed` and `--partitioning-seed`, so the data partition and
-client selection reproduce exactly. Pass `--resume-from <date-directory-name>` to continue
+client selection reproduce exactly. Pass `--resume-from <date-directory-name>` and set the `--output-subdir` to the corresponding output subdirectory to continue
 an interrupted run: the server reloads `latest_fl_checkpoint.pth` and the attacker state
-from `attack_logs/attack_state.json`, and training continues from the next round. The
+from `attack_logs/attack_state.json` and training continues from the next round. The
 checkpoint is written last each round, so an interrupted round simply re-runs on resume.
 
 ---
